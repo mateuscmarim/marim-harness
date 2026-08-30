@@ -55,8 +55,9 @@ class SubAgentPane(VerticalScroll):
     streamed transcript widgets mounted after them. Replaces the old
     ``SubAgentWidget.body``."""
 
-    def __init__(self, stream_id: str, agent_type: str, model_label: str,
-                 title: str = "", task: str = "") -> None:
+    def __init__(
+        self, stream_id: str, agent_type: str, model_label: str, title: str = "", task: str = ""
+    ) -> None:
         self.stream_id = stream_id
         self.transcript_loaded = False
         # Kept so set_model can rebuild the header/subtitle when the real model
@@ -89,9 +90,13 @@ class SubAgentPane(VerticalScroll):
         self._usage_line = Static("", classes="subagent-usage")
         self._usage_line.display = False
         super().__init__(
-            self._header, self._subhead, self._task_toggle, self._task_body,
+            self._header,
+            self._subhead,
+            self._task_toggle,
+            self._task_body,
             self._usage_line,
-            id=pane_id(stream_id), classes="subagent-pane",
+            id=pane_id(stream_id),
+            classes="subagent-pane",
         )
 
     def toggle_task(self) -> None:
@@ -167,8 +172,9 @@ class SubAgentDetailHost(ContentSwitcher):
     """A ``ContentSwitcher`` of ``SubAgentPane``s — the screen's right pane. One
     pane per ``stream_id``; ``current`` selects which is visible."""
 
-    def add_pane(self, stream_id: str, agent_type: str, model_label: str,
-                 title: str = "", task: str = "") -> SubAgentPane:
+    def add_pane(
+        self, stream_id: str, agent_type: str, model_label: str, title: str = "", task: str = ""
+    ) -> SubAgentPane:
         pane = SubAgentPane(stream_id, agent_type, model_label, title, task)
         # Hide the pane before mounting. ContentSwitcher only hides children present
         # at compose time, and watch_current only toggles the old/new pair on a

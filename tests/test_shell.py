@@ -26,7 +26,7 @@ def _pid_alive(pid: int) -> bool:
             data = f.read()
         # Format: "pid (comm) state ...". comm may contain spaces/parens, so
         # find the LAST ')' (the close of comm); state is the next field.
-        state = data[data.rindex(")") + 1:].split()[0]
+        state = data[data.rindex(")") + 1 :].split()[0]
         if state == "Z":
             return False
     except (FileNotFoundError, ProcessLookupError, ValueError, IndexError):
@@ -66,8 +66,8 @@ def test_bounded_output_single_oversized_chunk_bounded():
     """A single line larger than the whole budget (no newline) must not blow memory:
     after the head fills, an oversized chunk is clipped to the last tail_cap."""
     acc = shell._BoundedOutput(budget=100)
-    acc.add(b"x" * 60)            # fills the head (>= head_cap of 50)
-    acc.add(b"y" * 10_000)        # giant chunk → clipped to tail_cap in the tail
+    acc.add(b"x" * 60)  # fills the head (>= head_cap of 50)
+    acc.add(b"y" * 10_000)  # giant chunk → clipped to tail_cap in the tail
     head, tail = acc.parts(b"")
     assert len(head) < 200 and len(tail) <= 50
     assert acc.dropped > 0
@@ -210,9 +210,7 @@ async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
     pulled live preview still shows the verdict at the end."""
     bp = await shell.start_bash(
         tmp_path,
-        "echo HEAD-MARKER; "
-        "for i in $(seq 1 5000); do echo filler$i; done; "
-        "echo TAIL-VERDICT",
+        "echo HEAD-MARKER; for i in $(seq 1 5000); do echo filler$i; done; echo TAIL-VERDICT",
         max_output=200,
     )
     final = await bp.wait()
@@ -231,8 +229,7 @@ async def test_start_bash_live_output_marks_dropped_middle(tmp_path: Path, monke
     monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 200)  # tiny running buffer → drops
     bp = await shell.start_bash(
         tmp_path,
-        "echo HEAD-MARKER; for i in $(seq 1 2000); do echo filler$i; done; "
-        "echo TAIL-VERDICT",
+        "echo HEAD-MARKER; for i in $(seq 1 2000); do echo filler$i; done; echo TAIL-VERDICT",
         max_output=1_000_000,  # preview cap far above head+tail → no _truncate_middle marker
     )
     await bp.wait()
@@ -282,6 +279,7 @@ async def test_start_bash_kill_stops_process(tmp_path: Path):
 @pytest.mark.anyio
 async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     out = await shell.run_bash(tmp_path, "for i in $(seq 1 500); do echo line $i; done")
     assert "full output saved to" in out and "bash result" in out
@@ -299,6 +297,7 @@ async def test_run_bash_offload_key_includes_timeout(tmp_path, monkeypatch):
     the same sha-derived offload file (see fs.py's grep key for the same
     reasoning)."""
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     command = "for i in $(seq 1 500); do echo line $i; done"
     await shell.run_bash(tmp_path, command, timeout=30)
@@ -319,11 +318,11 @@ async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
     both ends survive, the marker is present, and the saved body stays ~budget-sized."""
     monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 2_000)
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     out = await shell.run_bash(
         tmp_path,
-        "echo HEAD-MARKER; for i in $(seq 1 20000); do echo filler$i; done; "
-        "echo TAIL-VERDICT",
+        "echo HEAD-MARKER; for i in $(seq 1 20000); do echo filler$i; done; echo TAIL-VERDICT",
     )
     # Offloaded (large), and flagged as having hit the ceiling.
     assert "full output saved to" in out
@@ -341,6 +340,7 @@ async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
 @pytest.mark.anyio
 async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monkeypatch):
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     bp = await shell.start_bash(
         tmp_path, "for i in $(seq 1 500); do echo line $i; done", max_output=80
@@ -411,6 +411,7 @@ async def test_run_bash_offload_key_includes_stdin_data(tmp_path, monkeypatch):
     stdin_data must not collapse onto the same sha-derived offload file — including
     the None-vs-b"" edge case, which must not stringify identically."""
     from marim_harness.tools.impl import offload
+
     monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     padding = "x" * 200  # pad past the lowered inline limit so both runs offload
     await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=f"AAAA{padding}".encode())

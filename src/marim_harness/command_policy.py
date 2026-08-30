@@ -38,8 +38,8 @@ def split_patterns(text: str) -> list[str]:
 # *closed*, never silently turn into an ineffective literal: a broken deny rule
 # blocks everything (better a loud over-block than false protection), and a
 # broken allow rule grants nothing.
-_MATCH_ALL = re.compile("")        # matches any command, including ""
-_MATCH_NONE = re.compile("(?!)")   # never matches
+_MATCH_ALL = re.compile("")  # matches any command, including ""
+_MATCH_NONE = re.compile("(?!)")  # never matches
 
 
 def _compile(pattern: str, *, on_error: "re.Pattern[str]") -> "re.Pattern[str]":

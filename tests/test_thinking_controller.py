@@ -14,9 +14,7 @@ from marim_harness.tools.provider import BuiltinToolProvider
 
 def _harness(tmp_path, **kwargs) -> Harness:
     deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.auto))
-    return Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, "Be helpful.", **kwargs
-    )
+    return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, "Be helpful.", **kwargs)
 
 
 def test_config_default_seeds_the_live_level(tmp_path):

@@ -21,12 +21,24 @@ def test_three_agents_parse_with_expected_tools():
     expected = {
         # Explores over HTTP (bash/fetch_url) and writes only specs/plan.md.
         "planner": {
-            "read_file", "grep", "glob", "tree",
-            "fetch_url", "web_search", "bash", "write_file",
+            "read_file",
+            "grep",
+            "glob",
+            "tree",
+            "fetch_url",
+            "web_search",
+            "bash",
+            "write_file",
         },
         # Writes and iterates on its one script.
         "generator": {
-            "read_file", "grep", "glob", "tree", "write_file", "edit_file", "bash",
+            "read_file",
+            "grep",
+            "glob",
+            "tree",
+            "write_file",
+            "edit_file",
+            "bash",
         },
         # Repairs existing scripts; deliberately no write_file.
         "healer": {"read_file", "grep", "glob", "tree", "edit_file", "bash"},

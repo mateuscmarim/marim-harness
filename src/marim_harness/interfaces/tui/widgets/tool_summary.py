@@ -27,27 +27,47 @@ def _strip_workspace(path: str, root: Path) -> str:
     except ValueError:
         return path
 
+
 # Friendly verbs; unknown tools title-case their raw name (spawn_agent → "Spawn Agent").
 _TOOL_LABELS = {
-    "read_file": "Read", "write_file": "Write", "edit_file": "Edit", "bash": "Bash",
-    "grep": "Grep", "glob": "Glob", "tree": "Tree", "web_search": "Search",
-    "fetch_url": "Fetch", "wait_for_job": "Wait", "spawn_agent": "Spawn Agent",
+    "read_file": "Read",
+    "write_file": "Write",
+    "edit_file": "Edit",
+    "bash": "Bash",
+    "grep": "Grep",
+    "glob": "Glob",
+    "tree": "Tree",
+    "web_search": "Search",
+    "fetch_url": "Fetch",
+    "wait_for_job": "Wait",
+    "spawn_agent": "Spawn Agent",
     "ask_user": "Ask User",
-    "goto_definition": "Definition", "find_references": "References", "hover": "Hover",
-    "document_symbols": "Symbols", "workspace_symbols": "Symbols",
+    "goto_definition": "Definition",
+    "find_references": "References",
+    "hover": "Hover",
+    "document_symbols": "Symbols",
+    "workspace_symbols": "Symbols",
     "diagnostics": "Diagnostics",
 }
 
 # The salient argument per tool — the one worth showing as the target. Tools absent
 # here use the generic "first meaningful arg" fallback.
 _TARGET_ARG = {
-    "read_file": "path", "write_file": "path", "edit_file": "path",
-    "grep": "pattern", "glob": "pattern", "tree": "path",
-    "wait_for_job": "id", "web_search": "query", "fetch_url": "url",
+    "read_file": "path",
+    "write_file": "path",
+    "edit_file": "path",
+    "grep": "pattern",
+    "glob": "pattern",
+    "tree": "path",
+    "wait_for_job": "id",
+    "web_search": "query",
+    "fetch_url": "url",
     # Pin the memory tools' targets to the title/name: their args also carry a
     # multi-line `body`, so the order-dependent "first meaningful arg" fallback
     # could otherwise surface a chunk of memory text instead of the title.
-    "remember": "title", "recall": "name", "forget": "name",
+    "remember": "title",
+    "recall": "name",
+    "forget": "name",
 }
 
 

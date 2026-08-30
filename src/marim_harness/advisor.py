@@ -96,9 +96,7 @@ def _advise_prompt(transcript: str) -> str:
     )
 
 
-async def consult(
-    model: Model, messages: list, *, max_tokens: int = 2048
-) -> str:
+async def consult(model: Model, messages: list, *, max_tokens: int = 2048) -> str:
     """One advisor consultation: render the transcript, run a tool-free
     one-shot agent on ``model``, return advice text with a usage trailer.
 
@@ -149,10 +147,7 @@ def make_advisor(
     async def advise(messages: list) -> str:
         model_id = get_model_id()
         if not model_id:
-            return (
-                "Advisor unavailable: no advisor model is configured. "
-                "Continue without advice."
-            )
+            return "Advisor unavailable: no advisor model is configured. Continue without advice."
         try:
             # A claude-cli advisor must not share the session-carrying CLI
             # instance — aux_model_for swaps in a stateless ephemeral clone,

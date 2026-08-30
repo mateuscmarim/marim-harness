@@ -81,6 +81,7 @@ def test_cancelled_state_title_and_body():
 def test_malformed_inputs_do_not_raise():
     # Missing questions, non-dict items, non-list options — all degrade.
     assert parse_ask_user({}, "", "pending") == []
-    qas = parse_ask_user({"questions": ["x", {"question": "Ok?", "options": "nope"}]},
-                         json.dumps({"a": "v"}), "done")
+    qas = parse_ask_user(
+        {"questions": ["x", {"question": "Ok?", "options": "nope"}]}, json.dumps({"a": "v"}), "done"
+    )
     assert [qa.question for qa in qas] == ["Ok?"]

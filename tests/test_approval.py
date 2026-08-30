@@ -49,11 +49,7 @@ def _styled_text(detail, needle: str) -> set[str]:
     plain = detail.plain
     start = plain.index(needle)
     end = start + len(needle)
-    return {
-        str(span.style)
-        for span in detail.spans
-        if span.start <= start and span.end >= end
-    }
+    return {str(span.style) for span in detail.spans if span.start <= start and span.end >= end}
 
 
 class _Harness(App):
@@ -69,9 +65,7 @@ class _Harness(App):
         self.run_worker(self._ask())
 
     async def _ask(self) -> None:
-        self.result = await run_panel(
-            self, ApprovalPanel("edit_file", {"path": "a.txt"})
-        )
+        self.result = await run_panel(self, ApprovalPanel("edit_file", {"path": "a.txt"}))
 
 
 class _NamedHarness(App):
@@ -237,9 +231,7 @@ def test_format_detail_bash_shows_command():
 
 
 def test_format_detail_write_file_highlights_content_as_added():
-    detail = format_detail(
-        "write_file", {"path": "new.py", "content": "print('hi')"}
-    )
+    detail = format_detail("write_file", {"path": "new.py", "content": "print('hi')"})
     assert "new.py" in detail.plain
     assert "print('hi')" in detail.plain
     assert ADDED_STYLE in _styled_text(detail, "print('hi')")
@@ -357,9 +349,7 @@ def test_fallback_arg_dump_neutralizes_escapes():
         ),
     ],
 )
-def test_format_detail_neutralizes_escapes_at_every_model_supplied_site(
-    tool_name, args, legible
-):
+def test_format_detail_neutralizes_escapes_at_every_model_supplied_site(tool_name, args, legible):
     """Six of format_detail's model-supplied insertion points had no test that
     would fail on a revert: the earlier tests only covered the bash-command and
     write_file-content sites (and the fallback *value*, via repr(), which

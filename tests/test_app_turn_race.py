@@ -18,9 +18,7 @@ def _app(tmp_path: Path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -108,6 +106,7 @@ async def test_start_turn_clears_latch_on_error(tmp_path: Path):
     UI wedges (turn_busy stuck true with no worker)."""
     app = _app(tmp_path)
     async with app.run_test():
+
         def _boom(*a, **k):
             raise RuntimeError("no log")
 

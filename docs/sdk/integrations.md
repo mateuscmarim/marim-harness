@@ -1,7 +1,6 @@
 # Integrations
 
-MCP servers, LSP, forge (Gitea/GitHub), lifecycle hooks, and the bash
-command policy.
+MCP servers, LSP, lifecycle hooks, and the bash command policy.
 
 ## MCP servers
 
@@ -41,24 +40,6 @@ Servers connect lazily after `build()`. Two consequences:
 `with_defaults()`. The tools' availability also determines whether LSP names
 are grantable to [sub-agents](subagents.md) and count in the custom-tool
 collision check.
-
-## Forge
-
-`with_forge(backend)` attaches five forge-agnostic PR tools — `list_prs`,
-`view_pr`, `ci_status` (read-only) and `create_pr`, `checkout_pr` (gated for
-approval) — against an explicit `ForgeBackend` implementation (a Protocol;
-see `forge/backend.py`). The shipped backend is `TeaBackend`, which shells
-out to the `tea` CLI for Gitea. Passing the backend explicitly bypasses the
-CLI's `tea`-on-`PATH` auto-detection:
-
-```python
-from marim_harness.forge.tea_backend import TeaBackend
-
-builder.with_forge(TeaBackend(workspace_root))   # root: the repo `tea` runs in
-```
-
-A custom tool named like a forge tool fails `build()` when `with_forge` is
-on.
 
 ## Lifecycle hooks
 

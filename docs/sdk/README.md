@@ -18,7 +18,7 @@ async def main() -> None:
         workspace=Path("."),
         model="anthropic:claude-sonnet-4-6",
     ).build()
-    print(await harness.run_turn("list the files in this directory"))
+    print((await harness.run_turn("list the files in this directory")).result)
 
 
 asyncio.run(main())
@@ -63,7 +63,7 @@ from marim_harness import (
 | [Custom tools](custom-tools.md) | Tool signature, gating, collision rules, the import gotchas |
 | [Sub-agents](subagents.md) | `AgentDef`, grants, the depth ceiling |
 | [Sessions & state](sessions-and-state.md) | What touches disk, sessions, memory, skills, the XDG boundary |
-| [Integrations](integrations.md) | MCP servers, LSP, forge (Gitea/GitHub), lifecycle hooks, bash policy |
+| [Integrations](integrations.md) | MCP servers, LSP, lifecycle hooks, bash policy |
 | [Testing embedders](testing.md) | Network-free turn tests with `FunctionModel` / `TestModel` |
 | [Tutorial: a real embedder](tutorial-daily-report.md) | Walkthrough of the daily-report agent, end to end |
 

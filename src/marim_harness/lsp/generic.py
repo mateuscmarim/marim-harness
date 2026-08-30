@@ -104,41 +104,44 @@ class GenericStdioServer(LanguageServer):
 
     def _get_initialize_params(self, repository_absolute_path: str) -> InitializeParams:
         root_uri = pathlib.Path(repository_absolute_path).as_uri()
-        return cast(InitializeParams, {
-            "processId": os.getpid(),
-            "rootPath": repository_absolute_path,
-            "rootUri": root_uri,
-            # Declare the client capabilities for every LSP feature marim's nav
-            # tools consume. A conformant server gates each feature response on the
-            # matching client capability, so an under-declared block makes servers
-            # withhold document symbols / hover / definitions / references / workspace
-            # symbols — they return empty rather than erroring, which reads as "the
-            # server has nothing" when the real cause is the handshake. multilspy's
-            # bundled server classes declare these; GenericStdioServer must too, or
-            # declarative third-party plugins silently lose the five nav features.
-            "capabilities": {
-                "textDocument": {
-                    "synchronization": {"didSave": True},
-                    "publishDiagnostics": {"versionSupport": True},
-                    "hover": {"contentFormat": ["markdown", "plaintext"]},
-                    "definition": {"linkSupport": True},
-                    "references": {},
-                    "documentSymbol": {
-                        "hierarchicalDocumentSymbolSupport": True,
-                        "symbolKind": {"valueSet": list(range(1, 27))},
+        return cast(
+            InitializeParams,
+            {
+                "processId": os.getpid(),
+                "rootPath": repository_absolute_path,
+                "rootUri": root_uri,
+                # Declare the client capabilities for every LSP feature marim's nav
+                # tools consume. A conformant server gates each feature response on the
+                # matching client capability, so an under-declared block makes servers
+                # withhold document symbols / hover / definitions / references / workspace
+                # symbols — they return empty rather than erroring, which reads as "the
+                # server has nothing" when the real cause is the handshake. multilspy's
+                # bundled server classes declare these; GenericStdioServer must too, or
+                # declarative third-party plugins silently lose the five nav features.
+                "capabilities": {
+                    "textDocument": {
+                        "synchronization": {"didSave": True},
+                        "publishDiagnostics": {"versionSupport": True},
+                        "hover": {"contentFormat": ["markdown", "plaintext"]},
+                        "definition": {"linkSupport": True},
+                        "references": {},
+                        "documentSymbol": {
+                            "hierarchicalDocumentSymbolSupport": True,
+                            "symbolKind": {"valueSet": list(range(1, 27))},
+                        },
+                    },
+                    "workspace": {
+                        "workspaceFolders": True,
+                        "configuration": True,
+                        "symbol": {"symbolKind": {"valueSet": list(range(1, 27))}},
                     },
                 },
-                "workspace": {
-                    "workspaceFolders": True,
-                    "configuration": True,
-                    "symbol": {"symbolKind": {"valueSet": list(range(1, 27))}},
-                },
+                "initializationOptions": {},
+                "workspaceFolders": [
+                    {"uri": root_uri, "name": os.path.basename(repository_absolute_path)}
+                ],
             },
-            "initializationOptions": {},
-            "workspaceFolders": [
-                {"uri": root_uri, "name": os.path.basename(repository_absolute_path)}
-            ],
-        })
+        )
 
     @asynccontextmanager
     async def start_server(self) -> AsyncGenerator[GenericStdioServer, None]:

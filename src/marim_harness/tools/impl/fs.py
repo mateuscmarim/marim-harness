@@ -47,8 +47,16 @@ _BINARY_SNIFF_BYTES = 8192
 # grep skips them entirely (the dominant cost of searching a large repo is
 # descending into .git/node_modules/.venv rather than the real source).
 _NOISE_DIRS = {
-    ".git", "node_modules", "__pycache__", ".venv", ".mypy_cache",
-    ".pytest_cache", ".ruff_cache", "dist", "build", ".egg-info",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+    ".egg-info",
     ".worktrees",
 }
 
@@ -82,9 +90,7 @@ def _require_read_before_write(ledger: ReadLedger | None, p: Path, path: str) ->
         )
 
 
-def _resolve_with_extra_roots(
-    root: Path, path: str, extra_roots: tuple[Path, ...]
-) -> Path:
+def _resolve_with_extra_roots(root: Path, path: str, extra_roots: tuple[Path, ...]) -> Path:
     """Resolve ``path`` inside ``root``, or failing that inside one of
     ``extra_roots``. The root-first ordering is load-bearing: a relative path
     always resolves against — and lands in — the workspace; only a path the
@@ -507,8 +513,7 @@ def edit_file(
     return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
 
 
-def tree(root: Path, path: str = ".", depth: int = 2,
-         offload_dir: Path | None = None) -> str:
+def tree(root: Path, path: str = ".", depth: int = 2, offload_dir: Path | None = None) -> str:
     """Render an indented directory tree rooted at ``path``, descending up to
     ``depth`` levels. Dirs sort first (with a trailing slash); known-noise dirs
     are listed but not expanded. Large trees are offloaded to a file."""
@@ -520,8 +525,11 @@ def tree(root: Path, path: str = ".", depth: int = 2,
     if not lines:
         return "(empty)"
     return offload_if_large(
-        "\n".join(lines), kind="tree", key=f"{path}\0{depth}",
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR, capped=capped,
+        "\n".join(lines),
+        kind="tree",
+        key=f"{path}\0{depth}",
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
+        capped=capped,
     )
 
 
@@ -567,16 +575,14 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> boo
     return _recurse(directory, level)
 
 
-def glob_files(root: Path, pattern: str,
-               offload_dir: Path | None = None) -> str:
+def glob_files(root: Path, pattern: str, offload_dir: Path | None = None) -> str:
     """List files under the workspace matching a glob pattern. Large match lists
     are offloaded to a file (handle + preview) instead of flooding the response."""
     try:
         candidates = list(root.glob(pattern))
     except (NotImplementedError, ValueError) as exc:
         raise ModelRetry(
-            "invalid glob pattern: use a path relative to the workspace, "
-            "no leading '/' or '..'"
+            "invalid glob pattern: use a path relative to the workspace, no leading '/' or '..'"
         ) from exc
     matches = []
     size = 0
@@ -611,8 +617,11 @@ def glob_files(root: Path, pattern: str,
         return "(no matches)"
     matches.sort()
     return offload_if_large(
-        "\n".join(matches), kind="glob", key=pattern,
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR, capped=capped,
+        "\n".join(matches),
+        kind="glob",
+        key=pattern,
+        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
+        capped=capped,
     )
 
 
@@ -663,24 +672,30 @@ def _walk_files(base: Path) -> Iterator[Path]:
 # Code. An unrecognized name falls back to a literal extension match (see
 # ``_type_extensions``), so a niche type still does something sensible.
 _TYPE_EXTENSIONS: dict[str, set[str]] = {
-    "py": {".py", ".pyi"}, "python": {".py", ".pyi"},
+    "py": {".py", ".pyi"},
+    "python": {".py", ".pyi"},
     "js": {".js", ".jsx", ".mjs", ".cjs"},
     "ts": {".ts", ".tsx", ".mts", ".cts"},
-    "rust": {".rs"}, "rs": {".rs"},
+    "rust": {".rs"},
+    "rs": {".rs"},
     "go": {".go"},
     "java": {".java"},
     "kotlin": {".kt", ".kts"},
     "c": {".c", ".h"},
     "cpp": {".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"},
     "cs": {".cs"},
-    "rb": {".rb"}, "ruby": {".rb"},
+    "rb": {".rb"},
+    "ruby": {".rb"},
     "php": {".php"},
     "swift": {".swift"},
-    "sh": {".sh", ".bash", ".zsh"}, "bash": {".sh", ".bash"},
+    "sh": {".sh", ".bash", ".zsh"},
+    "bash": {".sh", ".bash"},
     "json": {".json"},
-    "yaml": {".yaml", ".yml"}, "yml": {".yaml", ".yml"},
+    "yaml": {".yaml", ".yml"},
+    "yml": {".yaml", ".yml"},
     "toml": {".toml"},
-    "md": {".md", ".markdown"}, "markdown": {".md", ".markdown"},
+    "md": {".md", ".markdown"},
+    "markdown": {".md", ".markdown"},
     "html": {".html", ".htm"},
     "css": {".css", ".scss", ".sass", ".less"},
     "xml": {".xml"},
@@ -778,7 +793,10 @@ def _compile_grep_regex(
 
 
 def _iter_candidate_files(
-    root: Path, base: Path, globs: list[str] | None, exts: set[str] | None,
+    root: Path,
+    base: Path,
+    globs: list[str] | None,
+    exts: set[str] | None,
 ) -> Iterator[tuple[Path, str]]:
     """Yield ``(file, relpath)`` pairs under ``base`` that survive every
     syscall-free/cheap filter before a match attempt is worth paying for."""
@@ -861,9 +879,7 @@ def _emit_matches(
         col.emit(f"{rel}:{n_matches}")
     else:
         match_set = set(match_idx)
-        for gi, (lo, hi) in enumerate(
-            _context_ranges(match_idx, before, after, len(lines))
-        ):
+        for gi, (lo, hi) in enumerate(_context_ranges(match_idx, before, after, len(lines))):
             if (before or after) and gi:
                 col.emit("--")
                 if col.stop:
@@ -943,7 +959,9 @@ def grep(
         f"{head_limit!r}\0{int(case_insensitive)}\0{before}\0{after}\0{int(multiline)}"
     )
     return offload_if_large(
-        body, kind="grep", key=key,
+        body,
+        kind="grep",
+        key=key,
         offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
         capped=col.capped,
     )

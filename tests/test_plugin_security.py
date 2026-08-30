@@ -136,9 +136,7 @@ def test_remove_plugin_refuses_traversal_name(tmp_path, monkeypatch):
     # save-side path, mirroring a committed hostile plugins.json).
     gdir.mkdir(parents=True, exist_ok=True)
     (gdir / "plugins.json").write_text(
-        json.dumps(
-            {"plugins": {traversal: InstalledPlugin(traversal, "1.0.0", {}).to_dict()}}
-        ),
+        json.dumps({"plugins": {traversal: InstalledPlugin(traversal, "1.0.0", {}).to_dict()}}),
         encoding="utf-8",
     )
 

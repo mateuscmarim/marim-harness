@@ -24,8 +24,12 @@ def _session(store):
 
 
 def _store(tmp_path: Path, sid: str = "s") -> SessionStore:
-    return SessionStore(path=tmp_path / "sessions" / f"{sid}.json",
-                        workspace_root=tmp_path, session_id=sid, name=sid)
+    return SessionStore(
+        path=tmp_path / "sessions" / f"{sid}.json",
+        workspace_root=tmp_path,
+        session_id=sid,
+        name=sid,
+    )
 
 
 def _msgs() -> list:
@@ -45,7 +49,7 @@ def test_save_writes_a_v2_envelope_readable_back(tmp_path: Path):
 
 def test_save_is_a_noop_without_a_store(tmp_path: Path):
     t = SpawnTranscripts(_session(None), cap=2000)
-    t.save("sg1", _msgs(), meta={"stream_id": "sg1"})   # must not raise
+    t.save("sg1", _msgs(), meta={"stream_id": "sg1"})  # must not raise
     assert t.read("sg1") is None
     assert t.read_meta("sg1") is None
 
@@ -66,7 +70,7 @@ def test_persistence_follows_a_session_switch(tmp_path: Path):
     switch lands in the NEW session's dir, not the one it was constructed with."""
     session = _session(_store(tmp_path, "a"))
     t = SpawnTranscripts(session, cap=2000)
-    session.store = _store(tmp_path, "b")               # /switch
+    session.store = _store(tmp_path, "b")  # /switch
     t.save("sg1", _msgs(), meta={"stream_id": "sg1", "type": "general"})
     # The sidecar dir sits next to the session file: <session>.parent/<id>.subagents.
     assert (tmp_path / "sessions" / "b.subagents").exists()
@@ -77,16 +81,20 @@ def test_final_meta_stamps_status_usage_tool_count_and_duration(tmp_path: Path):
     t = SpawnTranscripts(_session(_store(tmp_path)), cap=2000)
     template = {"stream_id": "sg1", "type": "general", "status": "running"}
     usage = SimpleNamespace(input_tokens=5, output_tokens=3)
-    msgs = [ModelResponse(parts=[
-        ToolCallPart(tool_name="read_file", args={"path": "x"}),
-        ToolCallPart(tool_name="bash", args={"command": "ls"}),
-    ])]
+    msgs = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="read_file", args={"path": "x"}),
+                ToolCallPart(tool_name="bash", args={"command": "ls"}),
+            ]
+        )
+    ]
     meta = t.final_meta(template, "finished", usage, t0=0.0, messages=msgs)
     assert meta["status"] == "finished"
     assert meta["usage"] == {"input": 5, "output": 3}
     assert meta["tool_count"] == 2
     assert meta["duration"] >= 0.0
-    assert template["status"] == "running"              # template not mutated
+    assert template["status"] == "running"  # template not mutated
 
 
 def test_final_meta_is_none_when_there_is_no_template(tmp_path: Path):
@@ -97,8 +105,9 @@ def test_final_meta_is_none_when_there_is_no_template(tmp_path: Path):
 def test_count_tool_calls_counts_tool_call_parts():
     msgs = [
         ModelRequest(parts=[UserPromptPart(content="x")]),
-        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}),
-                             TextPart(content="thinking")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="read_file", args={}), TextPart(content="thinking")]
+        ),
         ModelResponse(parts=[ToolCallPart(tool_name="bash", args={})]),
     ]
     assert count_tool_calls(msgs) == 2

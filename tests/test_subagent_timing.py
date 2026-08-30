@@ -40,6 +40,7 @@ async def test_headless_spawn_emits_timing_with_na_ttft(tmp_path: Path, caplog):
 async def test_foreground_spawn_times_a_real_ttft(tmp_path: Path, caplog):
     """A foreground spawn forwards events to the UI, so it streams and the probe
     records a concrete time-to-first-token."""
+
     async def _sink(_sid, _event, _usage):  # a UI listener
         return None
 

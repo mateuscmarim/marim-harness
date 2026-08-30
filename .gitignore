@@ -14,6 +14,12 @@ __pycache__/
 coverage.xml
 htmlcov/
 
+# Quality-gate scratch: the tool reports the gate reads (.quality/), and the
+# copy staged out of that dotted path for artifact upload. Generated per run —
+# quality-baseline.json and quality-gate.toml are the tracked halves.
+.quality/
+quality-artifacts/
+
 # Python build / packaging artifacts (uv build, pip wheel, etc.)
 build/
 dist/

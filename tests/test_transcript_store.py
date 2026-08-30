@@ -6,10 +6,14 @@ from marim_harness.session import TranscriptStore
 
 
 def _msgs():
-    return [ModelResponse(parts=[
-        TextPart(content="working"),
-        ToolCallPart(tool_name="read_file", args={"path": "x"}, tool_call_id="c1"),
-    ])]
+    return [
+        ModelResponse(
+            parts=[
+                TextPart(content="working"),
+                ToolCallPart(tool_name="read_file", args={"path": "x"}, tool_call_id="c1"),
+            ]
+        )
+    ]
 
 
 def _store(tmp_path: Path) -> TranscriptStore:
@@ -58,27 +62,36 @@ def _msgs_v2():
 
 
 def _meta(sid: str, status: str = "running") -> dict:
-    return {"stream_id": sid, "type": "general", "task": "t", "status": status,
-            "model": None, "mcp": None, "depth": 1, "max_output_chars": None,
-            "isolation": None}
+    return {
+        "stream_id": sid,
+        "type": "general",
+        "task": "t",
+        "status": status,
+        "model": None,
+        "mcp": None,
+        "depth": 1,
+        "max_output_chars": None,
+        "isolation": None,
+    }
 
 
 def test_v2_envelope_round_trip(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
     ts.write("sg1", _msgs_v2(), 2000, meta=_meta("sg1"))
-    assert ts.read("sg1") is not None            # messages come back
+    assert ts.read("sg1") is not None  # messages come back
     meta = ts.read_meta("sg1")
     assert meta is not None and meta["status"] == "running"
 
 
 def test_v1_bare_list_still_reads_and_has_no_meta(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
-    ts.write("sg1", _msgs_v2(), 2000)               # no meta → v1 bare list on disk
+    ts.write("sg1", _msgs_v2(), 2000)  # no meta → v1 bare list on disk
     import json
+
     files = list(ts._dir.glob("*.json"))
     assert len(files) == 1
     raw = json.loads(files[0].read_text())
-    assert isinstance(raw, list)                 # on-disk format unchanged for v1
+    assert isinstance(raw, list)  # on-disk format unchanged for v1
     assert ts.read("sg1") is not None
     assert ts.read_meta("sg1") is None
 
@@ -105,7 +118,7 @@ def test_scan_meta_maps_stream_ids_and_skips_junk(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
     ts.write("sg1", _msgs_v2(), 2000, meta=_meta("sg1"))
     ts.write("sg2", _msgs_v2(), 2000, meta=_meta("sg2", "finished"))
-    ts.write("sg3", _msgs_v2(), 2000)               # v1: no meta → not scanned
+    ts.write("sg3", _msgs_v2(), 2000)  # v1: no meta → not scanned
     (ts._dir / "t-corrupt.json").write_text("{not json")
     metas = ts.scan_meta()
     assert set(metas) == {"sg1", "sg2"}
@@ -115,7 +128,7 @@ def test_scan_meta_maps_stream_ids_and_skips_junk(tmp_path):
 def test_write_stamps_updated_timestamp(tmp_path):
     ts = TranscriptStore(tmp_path / "s.json", "sid")
     ts.write("sg1", _msgs_v2(), 2000, meta=_meta("sg1"))
-    assert ts.read_meta("sg1")["updated"]        # non-empty ISO stamp
+    assert ts.read_meta("sg1")["updated"]  # non-empty ISO stamp
 
 
 def test_has_transcript_true_for_v1_and_v2_false_for_missing(tmp_path):
@@ -123,7 +136,7 @@ def test_has_transcript_true_for_v1_and_v2_false_for_missing(tmp_path):
     join uses it to tell a legacy v1 (pre-envelope) spawn that ran to completion
     apart from a spawn that never executed at all (no file)."""
     ts = TranscriptStore(tmp_path / "s.json", "sid")
-    ts.write("sg-v1", _msgs_v2(), 2000)                       # v1 bare list
+    ts.write("sg-v1", _msgs_v2(), 2000)  # v1 bare list
     ts.write("sg-v2", _msgs_v2(), 2000, meta=_meta("sg-v2"))  # v2 envelope
     assert ts.has_transcript("sg-v1")
     assert ts.has_transcript("sg-v2")
@@ -139,9 +152,13 @@ def _img_msgs():
     from pydantic_ai.messages import BinaryContent, ToolReturnPart
 
     img = BinaryContent(data=b"\x89PNG\r\n\x1a\n" + b"p" * 4096, media_type="image/png")
-    return [ModelRequest(parts=[
-        ToolReturnPart(tool_name="read_file", content=img, tool_call_id="c9"),
-    ])]
+    return [
+        ModelRequest(
+            parts=[
+                ToolReturnPart(tool_name="read_file", content=img, tool_call_id="c9"),
+            ]
+        )
+    ]
 
 
 def test_write_externalizes_image_bytes_to_cache(tmp_path, monkeypatch):
@@ -156,7 +173,7 @@ def test_write_externalizes_image_bytes_to_cache(tmp_path, monkeypatch):
     assert len(files) == 1
     raw = files[0].read_text()
     assert "marim-image-cache://" in raw
-    assert "p" * 100 not in raw          # no trace of the base64 body
+    assert "p" * 100 not in raw  # no trace of the base64 body
     loaded = ts.read("sg-img")
     assert loaded is not None
     content = loaded[0].parts[0].content

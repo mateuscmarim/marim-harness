@@ -1,4 +1,5 @@
 """Durable JSONL ledger: dual-write (workspace + global) append, and read-back."""
+
 from __future__ import annotations
 
 import json

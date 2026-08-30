@@ -12,9 +12,7 @@ def test_render_shell_results_block_empty_is_falsy():
 
 
 def test_render_shell_results_block_formats_commands_and_output():
-    block = render_shell_results_block(
-        [("git status", "exit 0\nclean"), ("ls", "exit 0\nfoo.py")]
-    )
+    block = render_shell_results_block([("git status", "exit 0\nclean"), ("ls", "exit 0\nfoo.py")])
     assert block.startswith("<user-shell-commands>")
     assert block.endswith("</user-shell-commands>")
     assert "$ git status" in block

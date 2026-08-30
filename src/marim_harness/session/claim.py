@@ -89,9 +89,7 @@ class SessionClaim:
         self.release()
 
 
-def try_acquire(
-    session_path, *, kind: str, endpoint: str | None = None
-) -> SessionClaim | None:
+def try_acquire(session_path, *, kind: str, endpoint: str | None = None) -> SessionClaim | None:
     """Take ownership of ``session_path``, or return None if someone else has it.
 
     Never blocks. On a platform without ``fcntl`` this always succeeds with an
@@ -150,8 +148,6 @@ def read_holder(session_path) -> Holder | None:
     except (OSError, ValueError):
         return None
     try:
-        return Holder(
-            pid=int(data["pid"]), kind=str(data["kind"]), endpoint=data.get("endpoint")
-        )
+        return Holder(pid=int(data["pid"]), kind=str(data["kind"]), endpoint=data.get("endpoint"))
     except (KeyError, TypeError, ValueError):
         return None

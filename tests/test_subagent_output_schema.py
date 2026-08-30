@@ -67,7 +67,9 @@ async def test_non_object_schema_falls_back_to_prompt_contract(tmp_path: Path):
 
     h = _make_harness(FunctionModel(fn), _make_deps(tmp_path))
     out = await h.subagents.run(
-        "explore", "list things", "s1",
+        "explore",
+        "list things",
+        "s1",
         output_schema={"type": "array", "items": {"type": "string"}},
     )
     assert "Output contract" in seen["prompt"]

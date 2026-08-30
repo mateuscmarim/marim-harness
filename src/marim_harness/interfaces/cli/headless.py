@@ -114,7 +114,10 @@ async def run_headless(
     try:
         await harness.connect()  # open any configured MCP servers for this run
         await harness.session_start("resume" if harness.session.history else "startup")
-        output = await harness.run_turn(prompt, event_stream_handler=handler)
+        outcome = await harness.run_turn(prompt, event_stream_handler=handler)
+        # Headless prints text: a plain turn always has one, and the structured
+        # harnesses this could carry are an embedder (SDK) concern, not a CLI one.
+        output = outcome.result or ""
     except Exception as exc:  # keep the failure surface small and scriptable
         detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
         print(detail, file=err)

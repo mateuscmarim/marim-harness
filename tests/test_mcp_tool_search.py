@@ -9,7 +9,7 @@ from marim_harness.mcp.manager import McpManager, should_defer
         ("off", 100, 15, False),
         ("on", 0, 15, True),
         ("on", 100, 15, True),
-        ("auto", 15, 15, False),   # at threshold -> not deferred (strictly greater)
+        ("auto", 15, 15, False),  # at threshold -> not deferred (strictly greater)
         ("auto", 16, 15, True),
         ("auto", 3, 15, False),
         ("bogus", 100, 15, False),  # unknown policy is conservative: no deferral
@@ -134,10 +134,12 @@ class _NamedServer:
 
 @pytest.mark.anyio
 async def test_live_tools_by_server_groups_sorted_names():
-    m = _manager_with([
-        _NamedServer("mddocs", ["mddocs_b", "mddocs_a"]),
-        _NamedServer("nasa", ["nasa_x"]),
-    ])
+    m = _manager_with(
+        [
+            _NamedServer("mddocs", ["mddocs_b", "mddocs_a"]),
+            _NamedServer("nasa", ["nasa_x"]),
+        ]
+    )
     groups = await m.live_tools_by_server()
     assert groups == {"mddocs": ["mddocs_a", "mddocs_b"], "nasa": ["nasa_x"]}
 
@@ -163,6 +165,7 @@ async def test_live_tool_count_still_counts_after_refactor():
 
 class _InstrServer:
     """Fake MCP server: an id (the server name) + a plain-string instructions attribute."""
+
     def __init__(self, prefix, instructions):
         self.id = prefix
         self.instructions = instructions
@@ -170,6 +173,7 @@ class _InstrServer:
 
 class _RaisingInstrServer:
     """Fake whose .instructions raises AttributeError (simulates pre-init)."""
+
     def __init__(self, prefix):
         self.id = prefix
 
@@ -180,10 +184,12 @@ class _RaisingInstrServer:
 
 @pytest.mark.anyio
 async def test_discovered_server_instructions_selects_by_prefix():
-    m = _manager_with([
-        _InstrServer("mddocs", "Search first."),
-        _InstrServer("nasa", "Unused server."),
-    ])
+    m = _manager_with(
+        [
+            _InstrServer("mddocs", "Search first."),
+            _InstrServer("nasa", "Unused server."),
+        ]
+    )
     # only mddocs tools were discovered
     out = m.discovered_server_instructions({"mddocs_doc_index", "mddocs_grep_docs"})
     assert out == [("mddocs", "Search first.")]
@@ -191,12 +197,14 @@ async def test_discovered_server_instructions_selects_by_prefix():
 
 @pytest.mark.anyio
 async def test_discovered_server_instructions_skips_empty_and_raising():
-    m = _manager_with([
-        _InstrServer("a", ""),               # empty instructions -> skipped
-        _InstrServer("b", None),             # no instructions -> skipped
-        _RaisingInstrServer("c"),            # pre-init raise -> getattr None -> skipped
-        _InstrServer("d", "Real guide."),    # included
-    ])
+    m = _manager_with(
+        [
+            _InstrServer("a", ""),  # empty instructions -> skipped
+            _InstrServer("b", None),  # no instructions -> skipped
+            _RaisingInstrServer("c"),  # pre-init raise -> getattr None -> skipped
+            _InstrServer("d", "Real guide."),  # included
+        ]
+    )
     out = m.discovered_server_instructions({"a_x", "b_x", "c_x", "d_x"})
     assert out == [("d", "Real guide.")]
 

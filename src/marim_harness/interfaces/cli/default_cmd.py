@@ -29,34 +29,51 @@ def _version() -> str:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="marim")
     p.add_argument(
-        "--version", action="version", version=f"%(prog)s {_version()}",
+        "--version",
+        action="version",
+        version=f"%(prog)s {_version()}",
     )
     p.add_argument(
-        "workspace", nargs="?", default=None,
+        "workspace",
+        nargs="?",
+        default=None,
         help="workspace directory (defaults to the current directory)",
     )
     p.add_argument(
-        "--resume", action="store_true",
+        "--resume",
+        action="store_true",
         help="resume the saved conversation for this workspace",
     )
     p.add_argument(
-        "-p", "--print", nargs="?", const=True, default=None, dest="prompt",
+        "-p",
+        "--print",
+        nargs="?",
+        const=True,
+        default=None,
+        dest="prompt",
         metavar="PROMPT",
         help="run headlessly: PROMPT, or read the prompt from stdin if omitted",
     )
     p.add_argument(
-        "--output-format", choices=["text", "json", "stream-json"], default="text",
-        dest="output_format", help="headless output format (default: text)",
+        "--output-format",
+        choices=["text", "json", "stream-json"],
+        default="text",
+        dest="output_format",
+        help="headless output format (default: text)",
     )
     p.add_argument(
-        "--mode", choices=["plan", "auto"], default=None,
+        "--mode",
+        choices=["plan", "auto"],
+        default=None,
         help="initial permission mode (headless default: auto; interactive "
-             "default: MARIM_DEFAULT_MODE). 'ask' needs the TUI",
+        "default: MARIM_DEFAULT_MODE). 'ask' needs the TUI",
     )
     p.add_argument(
-        "--worktree", metavar="BRANCH", default=None,
+        "--worktree",
+        metavar="BRANCH",
+        default=None,
         help="run inside a git worktree for BRANCH under <repo>/.worktrees/, "
-             "creating it (from current HEAD) or reusing it",
+        "creating it (from current HEAD) or reusing it",
     )
     p.add_argument(
         "--think",

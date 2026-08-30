@@ -37,15 +37,17 @@ async def test_send_async_spawns_subprocess_not_blocking_run():
         _fake_exec.argv = argv
         return _FakeProc()
 
-    with patch(
-        "marim_harness.notifications.shutil.which",
-        return_value="/usr/bin/notify-send",
-    ), patch(
-        "marim_harness.notifications.asyncio.create_subprocess_exec",
-        side_effect=_fake_exec,
-    ) as mock_exec, patch(
-        "marim_harness.notifications.subprocess.run"
-    ) as mock_run:
+    with (
+        patch(
+            "marim_harness.notifications.shutil.which",
+            return_value="/usr/bin/notify-send",
+        ),
+        patch(
+            "marim_harness.notifications.asyncio.create_subprocess_exec",
+            side_effect=_fake_exec,
+        ) as mock_exec,
+        patch("marim_harness.notifications.subprocess.run") as mock_run,
+    ):
         await n.send_async("Title", "Body", EVENT_TURN_COMPLETE)
 
     mock_run.assert_not_called()  # never the blocking path
@@ -56,9 +58,7 @@ async def test_send_async_spawns_subprocess_not_blocking_run():
 @pytest.mark.anyio
 async def test_send_async_respects_disabled_and_coalesce():
     n = Notifier(NotificationConfig(enabled=False))
-    with patch(
-        "marim_harness.notifications.asyncio.create_subprocess_exec"
-    ) as mock_exec:
+    with patch("marim_harness.notifications.asyncio.create_subprocess_exec") as mock_exec:
         await n.send_async("t", "b", EVENT_TURN_COMPLETE)
     mock_exec.assert_not_called()
 
@@ -67,12 +67,15 @@ async def test_send_async_respects_disabled_and_coalesce():
 async def test_send_async_swallows_errors_and_rolls_back_timestamp():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "linux"
-    with patch(
-        "marim_harness.notifications.shutil.which",
-        return_value="/usr/bin/notify-send",
-    ), patch(
-        "marim_harness.notifications.asyncio.create_subprocess_exec",
-        side_effect=OSError("boom"),
+    with (
+        patch(
+            "marim_harness.notifications.shutil.which",
+            return_value="/usr/bin/notify-send",
+        ),
+        patch(
+            "marim_harness.notifications.asyncio.create_subprocess_exec",
+            side_effect=OSError("boom"),
+        ),
     ):
         await n.send_async("t", "b", EVENT_TURN_COMPLETE)  # must not raise
     # On failure the coalesce timestamp is rolled back so a retry isn't suppressed.
@@ -83,9 +86,7 @@ async def test_send_async_swallows_errors_and_rolls_back_timestamp():
 async def test_send_async_unknown_platform_is_noop():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "weirdos"
-    with patch(
-        "marim_harness.notifications.asyncio.create_subprocess_exec"
-    ) as mock_exec:
+    with patch("marim_harness.notifications.asyncio.create_subprocess_exec") as mock_exec:
         await n.send_async("t", "b", EVENT_TURN_COMPLETE)
     mock_exec.assert_not_called()
     # Nothing fired, so the coalesce timestamp must be rolled back.
@@ -96,11 +97,10 @@ async def test_send_async_unknown_platform_is_noop():
 async def test_send_async_missing_binary_rolls_back_timestamp():
     n = Notifier(NotificationConfig(enabled=True, events={"turn_complete"}))
     n._platform = "linux"
-    with patch(
-        "marim_harness.notifications.shutil.which", return_value=None
-    ), patch(
-        "marim_harness.notifications.asyncio.create_subprocess_exec"
-    ) as mock_exec:
+    with (
+        patch("marim_harness.notifications.shutil.which", return_value=None),
+        patch("marim_harness.notifications.asyncio.create_subprocess_exec") as mock_exec,
+    ):
         await n.send_async("t", "b", EVENT_TURN_COMPLETE)
     mock_exec.assert_not_called()
     assert EVENT_TURN_COMPLETE not in n._last_fired
@@ -119,9 +119,7 @@ def _app(tmp_path: Path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -134,10 +132,10 @@ async def test_notify_does_not_call_blocking_send_synchronously(tmp_path: Path):
     app.harness.deps.ui.notifier = notifier
 
     async with app.run_test():
-        with patch.object(notifier, "send") as blocking_send, patch.object(
-            notifier, "send_async", wraps=notifier.send_async
-        ) as async_send, patch(
-            "marim_harness.notifications.asyncio.create_subprocess_exec"
+        with (
+            patch.object(notifier, "send") as blocking_send,
+            patch.object(notifier, "send_async", wraps=notifier.send_async) as async_send,
+            patch("marim_harness.notifications.asyncio.create_subprocess_exec"),
         ):
             app.activity.desktop_notify("Turn complete", "done", EVENT_TURN_COMPLETE)
             blocking_send.assert_not_called()

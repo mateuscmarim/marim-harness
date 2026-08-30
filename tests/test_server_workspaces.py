@@ -54,7 +54,8 @@ def test_create_managed_git_clone(tmp_path):
     subprocess.run(["git", "add", "."], cwd=origin, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
-        cwd=origin, check=True,
+        cwd=origin,
+        check=True,
     )
     reg = _registry(tmp_path)
     record = reg.create_managed("cloned", git_url=str(origin))
@@ -126,8 +127,10 @@ def test_purge_failure_leaves_workspace_registered(tmp_path):
     ws_id = managed.id
 
     # Simulate rmtree failure (other than FileNotFoundError)
-    with mock.patch.object(shutil, "rmtree", side_effect=PermissionError("no permission")), \
-         pytest.raises(PermissionError, match="no permission"):
+    with (
+        mock.patch.object(shutil, "rmtree", side_effect=PermissionError("no permission")),
+        pytest.raises(PermissionError, match="no permission"),
+    ):
         reg.delete(ws_id, purge=True)
 
     # Workspace must still be registered

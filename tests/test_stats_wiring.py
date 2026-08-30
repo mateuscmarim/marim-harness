@@ -11,8 +11,11 @@ from marim_harness.stats.ledger import default_stats_base
 
 def test_with_sessions_writes_stats(tmp_path: Path):
     sessions = tmp_path / "sessions"
-    h = (HarnessBuilder(workspace=tmp_path / "ws", model=TestModel())
-         .with_sessions(dir=sessions).build())
+    h = (
+        HarnessBuilder(workspace=tmp_path / "ws", model=TestModel())
+        .with_sessions(dir=sessions)
+        .build()
+    )
     assert h.session.stats_recorder is not None
     h.session.add_usage(RunUsage(input_tokens=5, output_tokens=1))
     stats_base = default_stats_base(sessions)
@@ -27,8 +30,11 @@ def test_with_sessions_writes_stats(tmp_path: Path):
 
 def test_with_sessions_stats_false_writes_nothing(tmp_path: Path):
     sessions = tmp_path / "sessions"
-    h = (HarnessBuilder(workspace=tmp_path / "ws", model=TestModel())
-         .with_sessions(dir=sessions, stats=False).build())
+    h = (
+        HarnessBuilder(workspace=tmp_path / "ws", model=TestModel())
+        .with_sessions(dir=sessions, stats=False)
+        .build()
+    )
     assert h.session.stats_recorder is None
     h.session.add_usage(RunUsage(input_tokens=5, output_tokens=1))
     stats_base = default_stats_base(sessions)

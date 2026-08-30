@@ -44,14 +44,18 @@ def _bad_timeout(timeout_secs: float | None) -> str | None:
     if timeout_secs is None:
         return None
     if not math.isfinite(timeout_secs) or timeout_secs <= 0:
-        return (f"Invalid timeout_secs={timeout_secs!r}: it must be a positive "
-                "number of seconds. Omit it for the default, or request what "
-                "the work needs (long multi-agent runs may use e.g. 1800).")
+        return (
+            f"Invalid timeout_secs={timeout_secs!r}: it must be a positive "
+            "number of seconds. Omit it for the default, or request what "
+            "the work needs (long multi-agent runs may use e.g. 1800)."
+        )
     return None
 
 
 async def run_workflow(
-    ctx: RunContext[Deps], script: str, args: JsonValue = None,
+    ctx: RunContext[Deps],
+    script: str,
+    args: JsonValue = None,
     timeout_secs: float | None = None,
 ) -> str:
     """Run a Python orchestration script that spawns sub-agents with loops,

@@ -100,12 +100,16 @@ def _builtins() -> dict[str, AgentDef]:
             "Read-only investigation; reports findings, changes nothing. Use when "
             "investigating something before acting, especially over large files, "
             "logs, or output you don't want cluttering your own context.",
-            _EXPLORE_PROMPT, _EXPLORE_TOOLS, "built-in",
+            _EXPLORE_PROMPT,
+            _EXPLORE_TOOLS,
+            "built-in",
         ),
         "general": AgentDef(
             "general",
             "Full toolset; carries out a focused sub-task autonomously.",
-            _GENERAL_PROMPT, SUBAGENT_TOOLS, "built-in",
+            _GENERAL_PROMPT,
+            SUBAGENT_TOOLS,
+            "built-in",
         ),
     }
 
@@ -203,9 +207,7 @@ def _parse_agent(source: str, path: Path, plugin: str | None = None) -> AgentDef
     )
 
 
-def _all_roots(
-    workspace_root, *, trust_project: bool
-) -> list[tuple[str, Path, str | None]]:
+def _all_roots(workspace_root, *, trust_project: bool) -> list[tuple[str, Path, str | None]]:
     """The discovery roots in precedence order as ``(source, root, plugin)``:
     user roots (project, then global), then plugin roots.
 
@@ -245,9 +247,7 @@ def _discovery_signature(roots: list[tuple[str, Path, str | None]]) -> tuple:
     sig: list = []
     for source, root, _plugin in roots:
         try:
-            paths = sorted(
-                p for p in root.iterdir() if p.is_file() and p.suffix == ".md"
-            )
+            paths = sorted(p for p in root.iterdir() if p.is_file() and p.suffix == ".md")
         except OSError:
             sig.append((source, str(root), None))
             continue
@@ -279,7 +279,8 @@ def discover_agents(workspace_root, *, trust_project: bool | None = None) -> lis
     # slash, relative vs absolute) share one cache entry instead of duplicating.
     roots = _all_roots(workspace_root, trust_project=_project_trusted(trust_project))
     return cached_discover(
-        workspace_root, roots,
+        workspace_root,
+        roots,
         _discovery_signature,
         _collect_agents,
         lambda a: a.qualified_name,
@@ -302,9 +303,7 @@ def _collect_agents(seen: dict, source: str, root: Path, plugin: str | None) -> 
         seen[agent.qualified_name] = agent
 
 
-def find_agent(
-    workspace_root, name: str, *, trust_project: bool | None = None
-) -> AgentDef | None:
+def find_agent(workspace_root, name: str, *, trust_project: bool | None = None) -> AgentDef | None:
     """The effective sub-agent whose qualified name is ``name``, or None. Honors
     the same project-trust gate as ``discover_agents`` so an untrusted project's
     agent def can't be spawned by name either (built-ins remain reachable)."""
@@ -314,9 +313,7 @@ def find_agent(
     return None
 
 
-def effective_tools(
-    defn: AgentDef, *, allow_gated: bool, allow_net: bool
-) -> frozenset[str]:
+def effective_tools(defn: AgentDef, *, allow_gated: bool, allow_net: bool) -> frozenset[str]:
     """The tool names a spawn should actually grant: the definition's tools,
     with workspace-mutating (gated) tools removed unless the mode allows them
     (auto), and outbound network tools (web_search/fetch_url) removed unless
@@ -337,8 +334,11 @@ def effective_tools(
 
 
 def subagent_instructions(
-    defn: AgentDef, workspace_root, max_output_chars: int | None = None,
-    scratchpad: "Path | None" = None, scratchpad_writable: bool = True,
+    defn: AgentDef,
+    workspace_root,
+    max_output_chars: int | None = None,
+    scratchpad: "Path | None" = None,
+    scratchpad_writable: bool = True,
 ) -> str:
     """The system prompt for a spawned sub-agent: its role plus where it works,
     and — when the spawner set one — a soft output budget it should distill
@@ -478,10 +478,7 @@ def cap_subagent_output(
     the cap the spawner asked for actually holds."""
     if max_output_chars is None or len(output) <= max_output_chars:
         return output, None
-    note = (
-        f"\n\n[output capped at {max_output_chars} chars — "
-        f"full report saved to `{spill_path}`]"
-    )
+    note = f"\n\n[output capped at {max_output_chars} chars — full report saved to `{spill_path}`]"
     head = output[: max(0, max_output_chars - len(note))]
     return head + note, output
 
@@ -539,9 +536,7 @@ def cap_transcript(messages: list, cap: int, *, cap_reasoning: bool = False) -> 
                         # None, so a stale signature on truncated content 400s on
                         # the very next resumed request. Null it — pydantic-ai
                         # then omits the block instead of re-sending it broken.
-                        part = dataclasses.replace(
-                            part, content=_clip(text), signature=None
-                        )
+                        part = dataclasses.replace(part, content=_clip(text), signature=None)
                     else:
                         part = dataclasses.replace(part, content=_clip(text))
             new_parts.append(part)

@@ -107,9 +107,7 @@ async def test_successful_turn_consumes_hook_context(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_pre_run_failure_restores_consumables_and_checkpoint(
-    tmp_path: Path, monkeypatch
-):
+async def test_pre_run_failure_restores_consumables_and_checkpoint(tmp_path: Path, monkeypatch):
     """A raise AFTER prompt assembly but BEFORE the run — e.g. flaky MCP in
     compose_turn_toolsets (live_tool_count) — must restore the one-shot
     consumables and roll back the turn's dead checkpoint, exactly like a run

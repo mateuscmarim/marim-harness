@@ -14,8 +14,10 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     when the task matches its one-line description, then follow what it
     says."""
     skill = find_skill(
-        ctx.deps.workspace.root, name,
-        trust_project=ctx.deps.trust.project, dirs=ctx.deps.workspace.skill_dirs,
+        ctx.deps.workspace.root,
+        name,
+        trust_project=ctx.deps.trust.project,
+        dirs=ctx.deps.workspace.skill_dirs,
     )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
@@ -24,7 +26,9 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     # a file with a preview + read_file pointer. The directory pointer and how-to-read
     # header stay inline so the agent can still navigate even when the body offloads.
     body = offload_if_large(
-        read_skill_body(skill), kind="skill", key=str(skill.root),
+        read_skill_body(skill),
+        kind="skill",
+        key=str(skill.root),
         offload_dir=offload_dir(ctx),
     )
     return (
@@ -43,14 +47,18 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     a bundled file. Works for skills in any scope, including global ones
     outside the workspace, and saves you needing the skill's absolute path."""
     skill = find_skill(
-        ctx.deps.workspace.root, name,
-        trust_project=ctx.deps.trust.project, dirs=ctx.deps.workspace.skill_dirs,
+        ctx.deps.workspace.root,
+        name,
+        trust_project=ctx.deps.trust.project,
+        dirs=ctx.deps.workspace.skill_dirs,
     )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
     # Same context-flood guard as read_file: a large bundled file is spilled to a
     # file with a preview + read_file pointer instead of being inlined whole.
     return offload_if_large(
-        read_bundled_file(skill, path), kind="skill-file", key=f"{skill.root}\0{path}",
+        read_bundled_file(skill, path),
+        kind="skill-file",
+        key=f"{skill.root}\0{path}",
         offload_dir=offload_dir(ctx),
     )

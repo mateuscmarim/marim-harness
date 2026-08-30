@@ -21,8 +21,14 @@ from marim_harness.tools.provider import BuiltinToolProvider
 pytestmark = pytest.mark.anyio
 
 _UI_HOOK_FIELDS = {
-    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
-    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "request_approval",
+    "ask_user",
+    "on_subagent_event",
+    "on_subagent_notice",
+    "on_subagent_model",
+    "on_subagent_usage",
+    "detach_fanout",
+    "interactive",
     "notifier",
 }
 
@@ -40,8 +46,13 @@ def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
 
 def _make_harness(model, deps, **config_kwargs) -> Harness:
     """Local copy of tests/conftest.py's helper."""
-    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
-                   instructions="You are a coding agent.", **config_kwargs)
+    return Harness(
+        model=model,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="You are a coding agent.",
+        **config_kwargs,
+    )
 
 
 def _text_only_model() -> FunctionModel:
@@ -65,11 +76,17 @@ def _edit_model() -> FunctionModel:
                 parts=[ToolCallPart(tool_name="read_file", args={"path": "a.txt"})]
             )
         if state["n"] == 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="edit_file",
-                args={"path": "a.txt",
-                      "edits": [{"old_string": "foo", "new_string": "bar"}]},
-            )])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="edit_file",
+                        args={
+                            "path": "a.txt",
+                            "edits": [{"old_string": "foo", "new_string": "bar"}],
+                        },
+                    )
+                ]
+            )
         return ModelResponse(parts=[TextPart(content="done")])
 
     stream_state = {"n": 0}
@@ -77,16 +94,23 @@ def _edit_model() -> FunctionModel:
     async def stream_fn(messages, info):
         stream_state["n"] += 1
         if stream_state["n"] == 1:
-            yield {0: DeltaToolCall(name="read_file",
-                                    json_args=_json.dumps({"path": "a.txt"}),
-                                    tool_call_id="tc-read-1")}
+            yield {
+                0: DeltaToolCall(
+                    name="read_file",
+                    json_args=_json.dumps({"path": "a.txt"}),
+                    tool_call_id="tc-read-1",
+                )
+            }
         elif stream_state["n"] == 2:
-            yield {0: DeltaToolCall(
-                name="edit_file",
-                json_args=_json.dumps({"path": "a.txt",
-                                       "edits": [{"old_string": "foo",
-                                                  "new_string": "bar"}]}),
-                tool_call_id="tc-edit-1")}
+            yield {
+                0: DeltaToolCall(
+                    name="edit_file",
+                    json_args=_json.dumps(
+                        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]}
+                    ),
+                    tool_call_id="tc-edit-1",
+                )
+            }
         else:
             yield "done"
 
@@ -116,9 +140,7 @@ async def _wait_for(
     """
     # `is None`, not `or`: an explicit timeout=0 is a legitimate "fail on the first
     # unmet check" and must not be swallowed as unset.
-    deadline = asyncio.get_running_loop().time() + (
-        _WAIT_TIMEOUT if timeout is None else timeout
-    )
+    deadline = asyncio.get_running_loop().time() + (_WAIT_TIMEOUT if timeout is None else timeout)
     while not predicate():
         if asyncio.get_running_loop().time() > deadline:
             raise AssertionError(f"{what() if callable(what) else what} not reached in time")
@@ -159,9 +181,7 @@ async def test_wait_for_timeout_reports_observed_state():
     """
     seen = ["turn.started", "turn.finished"]
     with pytest.raises(AssertionError, match=r"event 'wake' \(saw \['turn.started'"):
-        await _wait_for(
-            lambda: False, timeout=0.0, what=lambda: f"event 'wake' (saw {seen})"
-        )
+        await _wait_for(lambda: False, timeout=0.0, what=lambda: f"event 'wake' (saw {seen})")
     with pytest.raises(AssertionError, match="host idle not reached in time"):
         await _wait_for(lambda: False, timeout=0.0, what="host idle")
 
@@ -264,8 +284,10 @@ async def test_steer_buffers_and_publishes(tmp_path):
 async def _settling_job(host, *, label="explore: probe", result="job result"):
     """Register a background job on the host that finishes immediately, so its
     settle drives the on_jobs_changed -> maybe_wake path."""
+
     async def work():
         return result
+
     return host.harness.deps.jobs.register("agent", label, work())
 
 
@@ -280,8 +302,7 @@ async def test_settled_job_wakes_idle_session_with_autonomous_trigger(tmp_path):
     await _drain_until(events, "turn.finished")
     await _wait_for(lambda: host.status == "idle")
     autonomous_starts = [
-        e for e in events
-        if e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+        e for e in events if e.type == "turn.started" and e.data.get("trigger") == "autonomous"
     ]
     assert len(autonomous_starts) == 1  # turn-end trigger must not double-fire
     await host.aclose()
@@ -295,8 +316,9 @@ async def test_wake_disabled_in_serve_does_not_fire(tmp_path):
     await _settling_job(host)
     await _wait_for(lambda: not host.harness.deps.jobs.any_running())
     await asyncio.sleep(0.05)  # give any erroneous wake a chance to enqueue
-    assert [e for e in events
-            if e.type == "turn.started" and e.data.get("trigger") == "autonomous"] == []
+    assert [
+        e for e in events if e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+    ] == []
     await _wait_for(lambda: host.status == "idle")
     await host.aclose()
 
@@ -323,22 +345,26 @@ async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
         await release.wait()
         yield "done"
 
-    host = SessionHost(_make_harness(FunctionModel(fn, stream_function=stream_fn), deps),
-                       EventBus())
+    host = SessionHost(
+        _make_harness(FunctionModel(fn, stream_function=stream_fn), deps), EventBus()
+    )
     events = _spy(host.bus)
-    host.submit("do work")                       # user turn starts, blocks
-    await _drain_until(events, "turn.started")    # (the user turn)
-    await _settling_job(host)                     # settles WHILE the turn is busy
+    host.submit("do work")  # user turn starts, blocks
+    await _drain_until(events, "turn.started")  # (the user turn)
+    await _settling_job(host)  # settles WHILE the turn is busy
     await asyncio.sleep(0.05)
-    assert [e for e in events
-            if e.type == "turn.started" and e.data.get("trigger") == "autonomous"] == []
-    release.set()                                 # let the user turn finish
+    assert [
+        e for e in events if e.type == "turn.started" and e.data.get("trigger") == "autonomous"
+    ] == []
+    release.set()  # let the user turn finish
     await _wait_for(
         lambda: any(
-            e.type == "turn.started" and e.data.get("trigger") == "autonomous"
-            for e in events),
-        what=lambda: f"autonomous turn.started after the user turn (saw "
-                     f"{[(e.type, e.data.get('trigger')) for e in events]})",
+            e.type == "turn.started" and e.data.get("trigger") == "autonomous" for e in events
+        ),
+        what=lambda: (
+            f"autonomous turn.started after the user turn (saw "
+            f"{[(e.type, e.data.get('trigger')) for e in events]})"
+        ),
     )
     await _wait_for(lambda: host.status == "idle", what="host idle")
     await host.aclose()

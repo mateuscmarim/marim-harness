@@ -45,12 +45,16 @@ def app(tmp_path, monkeypatch):
             workspace=WorkspaceConfig(root=workspace, mode=mode or Mode.auto),
             ui=UIHooks(),
         )
-        return Harness(model=_reply_model(), provider=BuiltinToolProvider(),
-                       deps=deps, instructions="You are a coding agent.",
-                       store=store, manager=manager)
+        return Harness(
+            model=_reply_model(),
+            provider=BuiltinToolProvider(),
+            deps=deps,
+            instructions="You are a coding agent.",
+            store=store,
+            manager=manager,
+        )
 
-    registry = WorkspaceRegistry(tmp_path / "state" / "workspaces.json",
-                                 tmp_path / "managed")
+    registry = WorkspaceRegistry(tmp_path / "state" / "workspaces.json", tmp_path / "managed")
     supervisor = SessionSupervisor(factory, idle_ttl=3600.0)
     return create_app(registry=registry, supervisor=supervisor, token=TOKEN), tmp_path
 
@@ -58,15 +62,16 @@ def app(tmp_path, monkeypatch):
 def _make_session(tc, tmp_path, mode="auto"):
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
-    ws = tc.post("/v1/workspaces", headers=AUTH,
-                 json={"name": "proj", "path": str(project)}).json()
-    sid = tc.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
-                  json={"name": "run1", "mode": mode}).json()["id"]
+    ws = tc.post("/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}).json()
+    sid = tc.post(
+        f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH, json={"name": "run1", "mode": mode}
+    ).json()["id"]
     return ws["id"], sid
 
 
 def _poll_idle(tc, base):
     import time
+
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         if tc.get(base, headers=AUTH).json().get("status") == "idle":
@@ -92,8 +97,9 @@ def test_ws_unknown_session_closes_4404(app):
     with TestClient(application) as tc:
         project = tmp_path / "proj"
         project.mkdir(exist_ok=True)
-        ws = tc.post("/v1/workspaces", headers=AUTH,
-                     json={"name": "proj", "path": str(project)}).json()
+        ws = tc.post(
+            "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+        ).json()
         with (
             pytest.raises(WebSocketDisconnect) as exc,
             tc.websocket_connect(
@@ -109,8 +115,7 @@ def test_ws_replays_turn_lifecycle(app):
     with TestClient(application) as tc:
         ws_id, sid = _make_session(tc, tmp_path)
         base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
-        assert tc.post(f"{base}/messages", headers=AUTH,
-                       json={"prompt": "hi"}).status_code == 202
+        assert tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
         _poll_idle(tc, base)
         # after_seq=0 replays the whole ring for the completed turn.
         types = []
@@ -134,9 +139,7 @@ def test_ws_resume_after_seq_skips_replayed(app):
         _poll_idle(tc, base)
         with tc.websocket_connect(f"{base}/ws?after_seq=0", headers=AUTH) as socket:
             first_seq = socket.receive_json()["seq"]
-        with tc.websocket_connect(
-            f"{base}/ws?after_seq={first_seq}", headers=AUTH
-        ) as socket:
+        with tc.websocket_connect(f"{base}/ws?after_seq={first_seq}", headers=AUTH) as socket:
             assert socket.receive_json()["seq"] == first_seq + 1
 
 
@@ -178,9 +181,7 @@ def test_ws_subscription_closes_when_pump_raises_non_cancelled(app, monkeypatch)
             # completing pump_task with a non-CancelledError exception
             # while the main coroutine is still blocked in receive().
             tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"})
-            assert send_called.wait(timeout=5.0), (
-                "pump's send_json was never invoked"
-            )
+            assert send_called.wait(timeout=5.0), "pump's send_json was never invoked"
             # Give the pump task a moment to actually finish raising
             # before we tear down the client connection below.
             time.sleep(0.05)

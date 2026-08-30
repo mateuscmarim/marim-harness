@@ -17,9 +17,7 @@ from ...atomic_io import atomic_write_text
 LEGACY_OFFLOAD_DIR = Path(".marim") / "output"
 
 
-def get_offload_dir(
-    workspace_root: Path | None, scratchpad: Path | None
-) -> Path | None:
+def get_offload_dir(workspace_root: Path | None, scratchpad: Path | None) -> Path | None:
     """Return the best directory for offloading large tool output.
 
     Prefer the session scratchpad (session-scoped, auto-cleaned) over the
@@ -30,7 +28,8 @@ def get_offload_dir(
         return scratchpad
     return workspace_root
 
-_INLINE_CHAR_LIMIT = 25_000      # at/below this, return inline (~6k tokens)
+
+_INLINE_CHAR_LIMIT = 25_000  # at/below this, return inline (~6k tokens)
 # Measured in characters (~bytes for ASCII); producers stop collecting here and callers may offload.
 MAX_OUTPUT_CHARS = 5_000_000
 _PREVIEW_LINES = 40
@@ -85,8 +84,7 @@ def _make_preview(lines: list[str]) -> str:
     return preview
 
 
-def _write_handle(content: str, *, kind: str, key: str,
-                  offload_dir: Path, capped: bool) -> str:
+def _write_handle(content: str, *, kind: str, key: str, offload_dir: Path, capped: bool) -> str:
     digest = hashlib.sha256(f"{kind}\0{key}".encode()).hexdigest()[:16]
     dest = offload_dir / f"{kind}-{digest}.txt"
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -94,8 +92,9 @@ def _write_handle(content: str, *, kind: str, key: str,
     lines = content.splitlines()
     preview = _make_preview(lines)
     cap_note = (
-        f"⚠️ Output hit the {MAX_OUTPUT_CHARS:,}-char ceiling; the file holds what "
-        "was collected.\n" if capped else ""
+        f"⚠️ Output hit the {MAX_OUTPUT_CHARS:,}-char ceiling; the file holds what was collected.\n"
+        if capped
+        else ""
     )
     return (
         f"⚠️ Large {kind} result ({len(content):,} chars, {len(lines):,} lines) — "
@@ -107,8 +106,7 @@ def _write_handle(content: str, *, kind: str, key: str,
     )
 
 
-def write_preview_file(content: str, *, filename: str,
-                       offload_dir: Path) -> tuple[str, str, int]:
+def write_preview_file(content: str, *, filename: str, offload_dir: Path) -> tuple[str, str, int]:
     """Write *content* to ``offload_dir/filename`` and return (absolute_path,
     preview, line_count) for the caller to format into a handle."""
     dest = offload_dir / filename
@@ -119,8 +117,9 @@ def write_preview_file(content: str, *, filename: str,
     return dest.as_posix(), preview, len(lines)
 
 
-def offload_if_large(content: str, *, kind: str, key: str,
-                     offload_dir: Path | None, capped: bool = False) -> str:
+def offload_if_large(
+    content: str, *, kind: str, key: str, offload_dir: Path | None, capped: bool = False
+) -> str:
     """Return ``content`` inline when small; otherwise offload to a file and
     return a handle + preview. With no offload directory (or on write failure),
     clip to the inline limit instead, so a large result can never flood
@@ -129,12 +128,10 @@ def offload_if_large(content: str, *, kind: str, key: str,
         return content
     if offload_dir is not None:
         try:
-            return _write_handle(content, kind=kind, key=key,
-                                 offload_dir=offload_dir, capped=capped)
+            return _write_handle(
+                content, kind=kind, key=key, offload_dir=offload_dir, capped=capped
+            )
         except OSError:
             pass
     clipped = content[:_INLINE_CHAR_LIMIT]
-    return (
-        f"{clipped}\n"
-        f"…(output clipped to {_INLINE_CHAR_LIMIT:,} chars; offload unavailable)"
-    )
+    return f"{clipped}\n…(output clipped to {_INLINE_CHAR_LIMIT:,} chars; offload unavailable)"

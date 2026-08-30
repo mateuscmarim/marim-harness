@@ -19,7 +19,7 @@ async def test_turn_creates_a_checkpoint(tmp_path):
     await harness.run_turn("first user message")
     cps = harness.checkpoints.list()
     assert len(cps) == 1
-    assert cps[0].history_len == 0          # captured before the turn ran
+    assert cps[0].history_len == 0  # captured before the turn ran
     assert cps[0].prompt_preview.startswith("first user message")
 
 
@@ -47,7 +47,7 @@ async def test_rewind_restores_workspace_files(tmp_path):
     harness = _make_harness(_text_model(), deps)
 
     (tmp_path / "sentinel.txt").write_text("before\n")
-    await harness.run_turn("first turn")               # snapshot captures "before"
+    await harness.run_turn("first turn")  # snapshot captures "before"
     (tmp_path / "sentinel.txt").write_text("after the turn\n")
-    harness.checkpoints.rewind(0)                       # back to before the turn
+    harness.checkpoints.rewind(0)  # back to before the turn
     assert (tmp_path / "sentinel.txt").read_text() == "before\n"

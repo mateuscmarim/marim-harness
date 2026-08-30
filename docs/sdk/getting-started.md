@@ -36,8 +36,8 @@ async def main() -> None:
         model="anthropic:claude-sonnet-4-6",    # any pydantic-ai model string
     ).build()
 
-    reply = await harness.run_turn("list the files in this directory")
-    print(reply)
+    outcome = await harness.run_turn("list the files in this directory")
+    print(outcome.result)
 
 
 asyncio.run(main())
@@ -95,7 +95,7 @@ gives you:
 | | `jobs` (background job tools) |
 | | `spawn` (`spawn_agent` — implied by `with_subagent`) |
 | | LSP (manager + the six navigation tools) |
-| | MCP servers, forge (Gitea/GitHub), hooks, extra instructions |
+| | MCP servers, hooks, extra instructions |
 
 Everything with reach beyond reading/writing files in the workspace is
 opt-in. The system prompt is gated the same way: a bare build's instructions

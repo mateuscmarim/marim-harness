@@ -90,9 +90,7 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
         base_url_key="MARIM_BASE_URL",
     ),
     # claude-cli stores nothing: the CLI owns auth; status is binary detection.
-    ProviderSpec(
-        "claude-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()
-    ),
+    ProviderSpec("claude-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
 
@@ -224,9 +222,7 @@ class ProvidersPane(Vertical):
                     yield Static("API key")
                     yield Input(password=True, id=f"prov-key-{name}")
             if name == "claude-cli":
-                yield Static(
-                    "(auth handled by the claude CLI itself)", classes="prov-note"
-                )
+                yield Static("(auth handled by the claude CLI itself)", classes="prov-note")
             elif name == "zen-go":
                 yield Static(
                     "Same key as zen — removing it deconfigures both.",
@@ -269,17 +265,11 @@ class ProvidersPane(Vertical):
         name = spec.name
         configured = self._configured(spec)
         tv = self.app.theme_variables
-        color = (
-            tv.get("success", "#5fae7e")
-            if configured
-            else tv.get("text-muted", "#7c828d")
-        )
+        color = tv.get("success", "#5fae7e") if configured else tv.get("text-muted", "#7c828d")
         self.query_one(f"#prov-dot-{name}", Static).update(
             Content.assemble(("●" if configured else "○", color))
         )
-        self.query_one(f"#prov-status-{name}", Static).update(
-            self._status_text(spec, configured)
-        )
+        self.query_one(f"#prov-status-{name}", Static).update(self._status_text(spec, configured))
         if spec.drop_keys:
             self.query_one(f"#prov-remove-{name}", Button).display = configured
         if spec.write_key is not None:
@@ -333,9 +323,7 @@ class ProvidersPane(Vertical):
         spec = self._spec_for_input(widget_id)
         if spec is None:
             return
-        env_key = (
-            spec.base_url_key if widget_id.startswith("prov-url-") else spec.write_key
-        )
+        env_key = spec.base_url_key if widget_id.startswith("prov-url-") else spec.write_key
         if env_key is None:
             return
         inp = self.query_one(f"#{widget_id}", Input)
@@ -370,8 +358,7 @@ class ProvidersPane(Vertical):
         return [
             other
             for other in PROVIDER_SPECS
-            if other.name != spec.name
-            and keys & (set(other.read_keys) | set(other.drop_keys))
+            if other.name != spec.name and keys & (set(other.read_keys) | set(other.drop_keys))
         ]
 
     def _after_change(self, spec: ProviderSpec, *, verify: bool = False) -> None:

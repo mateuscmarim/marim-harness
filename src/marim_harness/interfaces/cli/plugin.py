@@ -30,7 +30,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # Like ``git -C``: pick the workspace root for project-scoped plugins instead
     # of the cwd. Global plugins are found regardless. Must precede the subcommand.
     parser.add_argument(
-        "-C", "--workspace", default=None, metavar="DIR",
+        "-C",
+        "--workspace",
+        default=None,
+        metavar="DIR",
         help="Workspace root for project-scoped plugins (default: current directory).",
     )
     sub = parser.add_subparsers(dest="cmd")
@@ -44,7 +47,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inst.add_argument("--name", default=None, help="Override the installed name.")
     inst.add_argument(
-        "--ref", default=None, metavar="REF",
+        "--ref",
+        default=None,
+        metavar="REF",
         help="Pin a git source at a branch, tag, or commit SHA (ignored for local sources).",
     )
 
@@ -99,9 +104,9 @@ def _cmd_install(args, *, ws, out, err, input_fn, now_fn) -> int:
                     f"{summary['lsp']} LSP servers.",
                     file=out,
                 )
-                answer = input_fn(
-                    "Trust this plugin's hooks/MCP/LSP servers? [y/N] "
-                ).strip().lower()
+                answer = (
+                    input_fn("Trust this plugin's hooks/MCP/LSP servers? [y/N] ").strip().lower()
+                )
                 trust = answer in ("y", "yes")
     try:
         rec = install_plugin(
@@ -129,16 +134,18 @@ def _cmd_list(args, *, ws, out, err) -> int:
     plugins = discover_plugins(ws)
     if args.json:
         print(
-            json.dumps([
-                {
-                    "name": p.name,
-                    "scope": p.scope,
-                    "version": p.record.version,
-                    "enabled": p.record.enabled,
-                    "trusted": p.record.trusted,
-                }
-                for p in plugins
-            ]),
+            json.dumps(
+                [
+                    {
+                        "name": p.name,
+                        "scope": p.scope,
+                        "version": p.record.version,
+                        "enabled": p.record.enabled,
+                        "trusted": p.record.trusted,
+                    }
+                    for p in plugins
+                ]
+            ),
             file=out,
         )
         return 0
@@ -263,9 +270,7 @@ def main(
     if args.cmd == "info":
         return _cmd_info(args, ws=ws, out=out, err=err)
     if args.cmd in ("enable", "disable", "trust", "remove"):
-        return _cmd_toggle(
-            args, ws=ws, out=out, err=err, action=_toggle_action(args.cmd, args, ws)
-        )
+        return _cmd_toggle(args, ws=ws, out=out, err=err, action=_toggle_action(args.cmd, args, ws))
     if args.cmd == "update":
         return _cmd_update(args, ws=ws, out=out, err=err, now_fn=now_fn)
     if args.cmd == "validate":

@@ -16,6 +16,7 @@ _LAZY = {
     # knowing the runtime package layout.
     "Deps": ("marim_harness.runtime.deps", "Deps"),
     "ToolGroups": ("marim_harness.tools.provider", "ToolGroups"),
+    "TurnOutcome": ("marim_harness.runtime.outcome", "TurnOutcome"),
     "Mode": ("marim_harness.runtime.permissions", "Mode"),
     "CommandPolicy": ("marim_harness.command_policy", "CommandPolicy"),
     "AgentDef": ("marim_harness.workspace.agents", "AgentDef"),

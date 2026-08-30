@@ -40,9 +40,7 @@ def test_format_base_url_ipv6_round_trips_through_urlsplit() -> None:
 
 
 def test_daemon_runtime_url_brackets_ipv6_host() -> None:
-    runtime = DaemonRuntime(
-        host="::1", port=8643, pid=1, started="2026-08-30T00:00:00+00:00"
-    )
+    runtime = DaemonRuntime(host="::1", port=8643, pid=1, started="2026-08-30T00:00:00+00:00")
     assert runtime.url == "http://[::1]:8643"
 
 

@@ -4,6 +4,7 @@ Extracted from Harness to isolate the most complex, highest-cyclomatic-load
 subsystem (approval rounds, overflow retry, resumable flush, one-shot
 consumables, steer buffering) from model/session/MCP lifecycle management.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -14,7 +15,7 @@ from dataclasses import dataclass, replace
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import DeferredToolRequests, capture_run_messages
+from pydantic_ai import DeferredToolRequests, StructuredDict, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage
@@ -54,7 +55,9 @@ from .errors import (
     is_context_overflow_error,
     overflow_is_contention,
 )
+from .outcome import TurnOutcome
 from .permissions import Mode, resolve_approvals
+from .structured import validate_dict_output
 from .toolsets import compose_turn_toolsets
 from .ttft import TtftTrackingModel
 
@@ -72,6 +75,27 @@ _SHELL_RESULTS_BUDGET = 20_000
 # that a turn blocked on it still feels responsive.
 _CONTENTION_BACKOFF_SECONDS = 2.0
 
+# The fragment every pydantic-ai output-retry exhaustion carries: the message is
+# `Exceeded maximum output retries (n)` at all three raise sites
+# (_agent_graph.consume_output_retry and both wraps in _tool_execution), and no
+# other site emits it. See TurnController._is_structured_exhaustion for why the
+# message — not a ValidationError in the cause chain — is the discriminator.
+_OUTPUT_RETRY_EXHAUSTED = "maximum output retries"
+
+
+def _exhaustion_errors(exc: BaseException) -> list[str]:
+    """The `errors` payload for a structured-exhaustion outcome: the
+    UnexpectedModelBehavior message plus, when pydantic-ai chained one, the
+    underlying detail it raised `from`. The message alone is just
+    `Exceeded maximum output retries (2)` — true but content-free; the cause is
+    where the actual per-field ValidationError (or ToolRetryError) text lives,
+    which is what an embedder needs to see. Capped at those two: deeper links
+    are pydantic-ai internals, not schema feedback."""
+    errors = [str(exc)]
+    if exc.__cause__ is not None:
+        errors.append(str(exc.__cause__))
+    return errors
+
 
 @dataclass
 class _ConsumedContext:
@@ -79,22 +103,52 @@ class _ConsumedContext:
     jobs_digest: str | None = None
 
 
+def _dangling_tool_call_slots(history: list[ModelMessage]) -> set[tuple[int, int]]:
+    """The ``(message index, part index)`` of every ToolCallPart in ``history``
+    that nothing later answers — exactly the parts a provider rejects with
+    "unprocessed tool calls".
+
+    Matching is an ORDERED walk, not a flat "which ids have a return" set,
+    because a ``tool_call_id`` is not unique within a history. pydantic-ai's
+    output-tool retry loop reuses ONE id across every attempt: a rejected
+    ``final_result`` call is answered by a RetryPromptPart carrying the same
+    ``tool_call_id``, and the next attempt re-emits the call under that id
+    again. Under a flat set the FIRST attempt's answer vouches for the LAST
+    attempt's still-open call, so the trailing dangling call survives the repair
+    and wedges the session on the next request. Here a result closes the OLDEST
+    still-open call bearing its id, and a result with no open call is an orphan
+    that vouches for nothing — the same rule pydantic-ai's own
+    ``_repair_dangling_tool_calls`` applies.
+
+    A ``RetryPromptPart`` counts as an answer alongside ``ToolReturnPart``, but
+    only when it is tool-bound (``tool_name`` set): to every provider a
+    tool-bound retry *is* the tool's (error) result, while a nameless retry
+    renders as a plain user message and answers nothing — the same distinction
+    upstream's ``_is_tool_result_part`` draws. Counting only returns made the
+    repair synthesize a second, bogus result for a call a retry prompt had
+    already closed."""
+    from pydantic_ai.messages import RetryPromptPart, ToolCallPart, ToolReturnPart
+
+    open_calls: dict[str, list[tuple[int, int]]] = {}
+    for message_index, message in enumerate(history):
+        for part_index, part in enumerate(getattr(message, "parts", [])):
+            if isinstance(part, ToolCallPart):
+                open_calls.setdefault(part.tool_call_id, []).append((message_index, part_index))
+            elif isinstance(part, ToolReturnPart) or (
+                isinstance(part, RetryPromptPart) and part.tool_name is not None
+            ):
+                pending = open_calls.get(part.tool_call_id)
+                if pending:
+                    pending.pop(0)
+    return {slot for pending in open_calls.values() for slot in pending}
+
+
 def _has_unanswered_tool_calls(history: list[ModelMessage]) -> bool:
-    """True when some ToolCallPart in ``history`` has no matching ToolReturnPart.
-    Such a history ends an exchange mid-flight, and every provider rejects an
+    """True when some ToolCallPart in ``history`` is never answered. Such a
+    history ends an exchange mid-flight, and every provider rejects an
     unanswered tool_use on the next request — so persisting one makes the
     session unresumable until it's manually cleared."""
-    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
-
-    calls: set[str] = set()
-    returns: set[str] = set()
-    for message in history:
-        for part in getattr(message, "parts", []):
-            if isinstance(part, ToolCallPart):
-                calls.add(part.tool_call_id)
-            elif isinstance(part, ToolReturnPart):
-                returns.add(part.tool_call_id)
-    return bool(calls - returns)
+    return bool(_dangling_tool_call_slots(history))
 
 
 def _tool_call_is_unusable(part) -> bool:
@@ -170,8 +224,7 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
             part
             for part in parts
             if not (
-                isinstance(part, (ToolCallPart, ToolReturnPart))
-                and part.tool_call_id in broken_ids
+                isinstance(part, (ToolCallPart, ToolReturnPart)) and part.tool_call_id in broken_ids
             )
         ]
         if not kept:
@@ -206,31 +259,23 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
     in that state is unresumable until repaired. The synthesized return is placed
     in a ModelRequest right after the response that made the call, so it stays
     valid for providers that require results to immediately follow their call.
+    Which calls are dangling is decided by ``_dangling_tool_call_slots`` — read
+    its docstring before touching this: the answer is positional, because one
+    ``tool_call_id`` can legitimately appear on several calls in one history.
     Returns the input list unchanged when nothing is dangling, so callers can
     skip a redundant persist."""
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        ToolCallPart,
-        ToolReturnPart,
-    )
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-    answered = {
-        part.tool_call_id
-        for message in history
-        for part in getattr(message, "parts", [])
-        if isinstance(part, ToolReturnPart)
-    }
+    dangling = _dangling_tool_call_slots(history)
+    if not dangling:
+        return history
     repaired: list[ModelMessage] = []
-    changed = False
-    for message in history:
+    for message_index, message in enumerate(history):
         repaired.append(message)
-        if not isinstance(message, ModelResponse):
-            continue
         missing = [
             part
-            for part in message.parts
-            if isinstance(part, ToolCallPart) and part.tool_call_id not in answered
+            for part_index, part in enumerate(getattr(message, "parts", []))
+            if (message_index, part_index) in dangling
         ]
         if not missing:
             continue
@@ -246,9 +291,7 @@ def _repair_unanswered_tool_calls(history: list[ModelMessage]) -> list[ModelMess
                 ]
             )
         )
-        answered.update(part.tool_call_id for part in missing)
-        changed = True
-    return repaired if changed else history
+    return repaired
 
 
 class _RunRetry(Enum):
@@ -258,7 +301,7 @@ class _RunRetry(Enum):
     (a contention retry doesn't consume the compaction retry, and vice versa)."""
 
     CONTENTION = auto()  # pool contention: retry in place after a backoff
-    COMPACTED = auto()   # genuine overflow: history force-compacted; retry
+    COMPACTED = auto()  # genuine overflow: history force-compacted; retry
 
 
 class TurnController:
@@ -280,6 +323,7 @@ class TurnController:
         get_model: Callable[[], Model],
         get_thinking: Callable[[], str | None] = lambda: None,
         lsp_toolset: FunctionToolset[Deps] | None = None,
+        output_type: Any = None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -300,6 +344,16 @@ class TurnController:
         # to the next turn with no agent rebuild — the get_model pattern.
         self.get_thinking = get_thinking
         self.lsp_toolset = lsp_toolset
+        # Structured output for embedder turns (HarnessBuilder.with_output_type).
+        # Resolved ONCE here: a dict schema becomes StructuredDict (the
+        # provider-constrained dict type pydantic-ai uses for structured
+        # output), a BaseModel subclass passes through. _run_output_type
+        # turns it into the per-run output_type override carried by every
+        # agent.run round of the turn.
+        self._output_type_dict = output_type if isinstance(output_type, dict) else None
+        self._structured_type: Any = (
+            StructuredDict(output_type) if isinstance(output_type, dict) else output_type
+        )
 
         # One-shot turn state (consumed by _assemble_prompt, restored on failure).
         self._pending_error_note: str | None = None
@@ -353,6 +407,87 @@ class TurnController:
         from .harness import _DEFAULT_MODEL_SETTINGS
 
         return settings_for(self.get_thinking(), _DEFAULT_MODEL_SETTINGS)
+
+    def _is_structured_exhaustion(self, exc: BaseException) -> bool:
+        """Validation-exhaustion of a structured turn: pydantic-ai retried the
+        model's output against the schema and gave up. Only meaningful when a
+        structured output is active; every other UnexpectedModelBehavior keeps
+        the generic failure path.
+
+        Matched on the MESSAGE, not on a ValidationError in the cause chain.
+        The cause is not the discriminator it looks like: pydantic-ai's
+        ToolManager._check_max_retries raises `Tool 'x' exceeded max retries
+        count of N` **from** the tool's *argument* ValidationError, so a cause
+        walk swallows a plain tool-argument failure — infra-shaped, nothing to
+        do with the output schema — and robs it of the error note, the provider
+        dump and the overflow reclassification _handle_run_failure applies.
+        Conversely a genuine output exhaustion may carry NO ValidationError at
+        all (consume_output_retry after repeated empty / thinking-only
+        responses: the cause is a ToolRetryError or None). The message is
+        unambiguous where the cause is not: all three output-retry raise sites
+        (_agent_graph.consume_output_retry, and both wraps in _tool_execution)
+        emit `Exceeded maximum output retries (n)`, and no other site in
+        pydantic-ai emits that phrase."""
+        from pydantic_ai.exceptions import UnexpectedModelBehavior
+
+        if self._structured_type is None or not isinstance(exc, UnexpectedModelBehavior):
+            return False
+        return _OUTPUT_RETRY_EXHAUSTED in str(exc)
+
+    def _run_output_type(self) -> list[Any] | None:
+        """The per-run output override for structured harnesses, else None.
+
+        None leaves the agent's own ``[str, DeferredToolRequests]`` in place,
+        so a plain harness is byte-identical to pre-structured behavior.
+        The override always carries the deferred arm: without
+        DeferredToolRequests, pydantic-ai raises UserError at the first gated
+        tool call instead of deferring it — and the override rides EVERY
+        round, so an approval continuation keeps the same output schema."""
+        if self._structured_type is None:
+            return None
+        return [self._structured_type, DeferredToolRequests]
+
+    async def _correct_dict_output(
+        self,
+        outcome: TurnOutcome,
+        toolsets: Sequence[AbstractToolset[Any]] | None,
+        event_stream_handler: EventStreamHandler[Deps] | None,
+    ) -> TurnOutcome:
+        """Dict-schema enforcement after a clean turn: validate the emitted
+        object, and if it fails, run ONE corrective round through the same
+        approval machinery (its own persist/flush/rollback comes with it).
+        A second failure reports the validation errors through the outcome.
+        BaseModel schemas never reach here — pydantic-ai already validated
+        them in-run."""
+        if self._output_type_dict is None or outcome.subtype != "success":
+            return outcome
+        errors = validate_dict_output(outcome.structured_output, self._output_type_dict)
+        if not errors:
+            return outcome
+        corrective = (
+            "Your previous response failed schema validation:\n"
+            + "\n".join(f"- {e}" for e in errors)
+            + "\nRespond again with ONLY a JSON object matching the schema."
+        )
+        resumable = list(self.session.history)
+        retry_outcome = await self._run_with_approval(
+            corrective,
+            deferred_results=None,
+            toolsets=toolsets,
+            event_stream_handler=event_stream_handler,
+            resumable=resumable,
+        )
+        if retry_outcome.subtype != "success":
+            return retry_outcome
+        errors = validate_dict_output(retry_outcome.structured_output, self._output_type_dict)
+        if errors:
+            return TurnOutcome(
+                subtype="error_max_structured_output_retries",
+                result=retry_outcome.result,
+                structured_output=None,
+                errors=errors,
+            )
+        return retry_outcome
 
     def apply_session_start_context(self, ctx: str) -> None:
         """Stash SessionStart-injected context for the next turn's prompt."""
@@ -573,8 +708,7 @@ class TurnController:
             prompt = wrap_turn_context(injected, typed)
         return prompt
 
-    def steer(self, text: str,
-              attachments: list[tuple[bytes, str]] | None = None) -> None:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Inject a user message into the running turn. Reaches the model at the
         next request boundary (pydantic-ai drains 'asap' content before it).
         Buffers if no run is live yet; the buffer flushes when a ctx is captured."""
@@ -783,9 +917,7 @@ class TurnController:
         # cancellation here propagates rather than being swallowed.
         try:
             await asyncio.wait_for(
-                asyncio.to_thread(
-                    dump_provider_error, self.deps.workspace.root, exc
-                ),
+                asyncio.to_thread(dump_provider_error, self.deps.workspace.root, exc),
                 timeout=0.25,
             )
         except Exception as dump_exc:
@@ -813,25 +945,22 @@ class TurnController:
         persisted during the round."""
         if self.deps.workspace.mode is Mode.ask and requests.approvals:
             names = ", ".join(
-                getattr(c, "tool_name", None) or "(unknown)"
-                for c in requests.approvals
+                getattr(c, "tool_name", None) or "(unknown)" for c in requests.approvals
             )
             # Belt-and-suspenders: the hook engine is already best-effort
             # (runner.dispatch never raises), but a payload-assembly bug or
             # a future non-observe-only hook must never abort the turn and
             # lose the model's in-flight work. Degrade to a logged warning.
             try:
-                await self.hooks.notification(
-                    "approval_needed", "Approval needed", names
-                )
+                await self.hooks.notification("approval_needed", "Approval needed", names)
             except Exception as exc:  # noqa: BLE001 — a notification must never crash a turn
-                logger.warning(
-                    "approval-needed notification hook failed: %s", exc, exc_info=True
-                )
+                logger.warning("approval-needed notification hook failed: %s", exc, exc_info=True)
         try:
             get_scratchpad = self.deps.services.get_scratchpad
             deferred_results = await resolve_approvals(
-                requests, self.deps.workspace.mode, self.deps.ui.request_approval,
+                requests,
+                self.deps.workspace.mode,
+                self.deps.ui.request_approval,
                 workspace_root=self.deps.workspace.root,
                 scratchpad=get_scratchpad() if get_scratchpad is not None else None,
             )
@@ -858,15 +987,14 @@ class TurnController:
             try:
                 await asyncio.to_thread(self.session.persist)
             except Exception as persist_exc:
-                logger.warning(
-                    "approval rollback persist failed: %s", persist_exc, exc_info=True
-                )
+                logger.warning("approval rollback persist failed: %s", persist_exc, exc_info=True)
             raise
         return deferred_results
 
-    async def _finish_turn(self, output: str) -> str:
+    async def _finish_turn(self, output: Any) -> TurnOutcome:
         """The post-persist turn tail: Stop hook (must never crash a completed
-        turn) and the non-blocking autoname schedule. Returns the final text."""
+        turn) and the non-blocking autoname schedule. Turns end in a
+        TurnOutcome."""
         # The turn has already succeeded and persisted; a failing Stop hook
         # must not turn that into a turn-level exception. Degrade like the
         # approval notification above.
@@ -879,7 +1007,13 @@ class TurnController:
         # busy state / queued-prompt drain behind it) must not block on it.
         # Headless settles the task before teardown via wait_autoname.
         self.session.schedule_autoname()
-        return output
+        if isinstance(output, str):
+            return TurnOutcome(
+                subtype="success", result=output, structured_output=None, errors=None
+            )
+        # Structured-output terminal: the deferred arm never reaches here —
+        # _run_with_approval intercepts DeferredToolRequests mid-loop.
+        return TurnOutcome(subtype="success", result=None, structured_output=output, errors=None)
 
     async def _run_with_approval(
         self,
@@ -888,10 +1022,10 @@ class TurnController:
         toolsets: Sequence[AbstractToolset[Any]] | None,
         event_stream_handler: EventStreamHandler[Deps] | None,
         resumable: list[ModelMessage],
-    ) -> str:
+    ) -> TurnOutcome:
         """Drive the agent.run loop, handling DeferredToolRequests approval rounds,
         persisting on success, and rolling back to ``resumable`` on interrupt.
-        Returns the final text output."""
+        Returns the terminal TurnOutcome."""
         # One-shot retry latches, one per _RunRetry kind — see _RunRetry and
         # _handle_run_failure for why each recovery path gets exactly one shot
         # and why they don't consume each other.
@@ -925,8 +1059,32 @@ class TurnController:
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
                         usage=round_usage,
+                        # None ⇒ keep the agent's own [str, DeferredToolRequests];
+                        # a structured harness overrides it on every round,
+                        # continuations included (see _run_output_type).
+                        output_type=self._run_output_type(),
                     )
                 except BaseException as exc:
+                    if self._is_structured_exhaustion(exc):
+                        # Validation exhaustion is a terminal turn result, not an
+                        # infra failure: bank the spend, flush what the run
+                        # produced, and report through the outcome. No error
+                        # note — there is nothing the model can act on next turn.
+                        self.session.add_usage(round_usage)
+                        self._reclaim_undelivered_steers()
+                        await self._flush_resumable(captured, resumable)
+                        # The flush wrote a repaired, resumable history —
+                        # the dirty-history latch (if exhaustion struck on a
+                        # continuation round after an approval) no longer
+                        # applies. Same reset the terminal _handle_run_failure
+                        # path performs.
+                        self.deps.approval_round_active = False
+                        return TurnOutcome(
+                            subtype="error_max_structured_output_retries",
+                            result=None,
+                            structured_output=None,
+                            errors=_exhaustion_errors(exc),
+                        )
                     retry = await self._handle_run_failure(
                         exc, captured, resumable, deferred_results, round_usage, retried
                     )
@@ -983,9 +1141,7 @@ class TurnController:
                 # too — that run's request is what finally answers these calls,
                 # so the history is dirty for its whole duration.
                 self.deps.approval_round_active = True
-                deferred_results = await self._resolve_approval_round(
-                    result.output, resumable
-                )
+                deferred_results = await self._resolve_approval_round(result.output, resumable)
                 user_prompt = None  # continuation is driven by deferred_results
                 continue
             # Offload the success-path write so a multi-MB serialize+fsync doesn't
@@ -1015,9 +1171,9 @@ class TurnController:
         prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
-    ) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
+    ) -> TurnOutcome:
+        """Run the agent until it produces a final answer, looping through any
+        approval rounds. Returns the terminal TurnOutcome."""
         # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
         # session-lived, so the counter must be re-zeroed as each turn starts.
         self.deps.advisor_uses = 0
@@ -1084,12 +1240,14 @@ class TurnController:
             # duration_seconds=0 on abort despite real wall-clock work. Idempotent:
             # ensure_segment_started no-ops once the clock is running.
             self.session.ensure_segment_started()
-            user_prompt: str | list[str | BinaryContent] | None = (
-                await self._assemble_prompt(prompt)
+            user_prompt: str | list[str | BinaryContent] | None = await self._assemble_prompt(
+                prompt
             )
             if attachments and user_prompt is not None:
-                user_prompt = [user_prompt, *(BinaryContent(data=d, media_type=m)
-                                              for d, m in attachments)]
+                user_prompt = [
+                    user_prompt,
+                    *(BinaryContent(data=d, media_type=m) for d, m in attachments),
+                ]
             # Tool-search policy: compose_turn_toolsets folds the LSP toolset
             # (when enabled) and the MCP/plugin surface under one deferral decision.
             # OTHER builtins (on the Agent) remain unaffected.
@@ -1109,10 +1267,14 @@ class TurnController:
             # history in self.session.history, so this must NOT be recomputed from it
             # per iteration (that poisoned the rollback baseline across rounds).
             resumable = list(self.session.history)
-            return await self._run_with_approval(
-                user_prompt, deferred_results=None, toolsets=toolsets,
-                event_stream_handler=event_stream_handler, resumable=resumable,
+            outcome = await self._run_with_approval(
+                user_prompt,
+                deferred_results=None,
+                toolsets=toolsets,
+                event_stream_handler=event_stream_handler,
+                resumable=resumable,
             )
+            return await self._correct_dict_output(outcome, toolsets, event_stream_handler)
         except BaseException:
             # The run never reached the model (it failed before the first round
             # returned, so _run_with_approval left _consumed_this_turn set). The

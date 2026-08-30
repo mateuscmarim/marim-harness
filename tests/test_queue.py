@@ -94,9 +94,7 @@ def _app(tmp_path: Path) -> HarnessApp:
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test"
-    )
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -321,7 +319,7 @@ async def test_quit_with_queued_warns_once_then_allows(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.queue.enqueue("a")
-        assert app._maybe_warn_pending_quit() is True   # first: warned, cancel quit
+        assert app._maybe_warn_pending_quit() is True  # first: warned, cancel quit
         assert app._quit_warned_at is not None
         assert app._maybe_warn_pending_quit() is False  # second: proceed
 
@@ -331,7 +329,7 @@ async def test_quit_with_empty_queue_still_warns_once(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app._maybe_warn_pending_quit() is True   # first: warned, cancel quit
+        assert app._maybe_warn_pending_quit() is True  # first: warned, cancel quit
         assert app._maybe_warn_pending_quit() is False  # second: proceed
 
 

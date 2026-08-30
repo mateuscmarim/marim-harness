@@ -59,20 +59,19 @@ def test_actionable_error_note_surfaces_only_model_fixable_failures():
     assert _actionable_error_note(MarkupError("bad markup")) is None
     assert _actionable_error_note(RuntimeError("a render bug")) is None
     assert _actionable_error_note(asyncio.CancelledError()) is None
-    assert _actionable_error_note(
-        ModelHTTPError(status_code=429, model_name="m")
-    ) is None  # rate limit — transient
-    assert _actionable_error_note(
-        ModelHTTPError(status_code=503, model_name="m")
-    ) is None  # server error — transient
+    assert (
+        _actionable_error_note(ModelHTTPError(status_code=429, model_name="m")) is None
+    )  # rate limit — transient
+    assert (
+        _actionable_error_note(ModelHTTPError(status_code=503, model_name="m")) is None
+    )  # server error — transient
 
     # The model can adjust and continue from these.
-    assert _actionable_error_note(
-        ModelHTTPError(status_code=400, model_name="m", body="too long")
-    ) is not None
-    assert _actionable_error_note(
-        UnexpectedModelBehavior("Exceeded maximum retries")
-    ) is not None
+    assert (
+        _actionable_error_note(ModelHTTPError(status_code=400, model_name="m", body="too long"))
+        is not None
+    )
+    assert _actionable_error_note(UnexpectedModelBehavior("Exceeded maximum retries")) is not None
     assert _actionable_error_note(UsageLimitExceeded("limit reached")) is not None
 
 
@@ -90,11 +89,11 @@ async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path: Path)
     with pytest.raises(UnexpectedModelBehavior):
         await harness.run_turn("first request")
     echoed = await harness.run_turn("second request")
-    assert "did not complete" in echoed  # the note rode along
-    assert "second request" in echoed  # ...prepended to the real prompt
+    assert "did not complete" in echoed.result  # the note rode along
+    assert "second request" in echoed.result  # ...prepended to the real prompt
     # And it is one-shot: a third, clean turn carries no stale note.
     again = await harness.run_turn("third request")
-    assert "did not complete" not in again
+    assert "did not complete" not in again.result
 
 
 @pytest.mark.anyio
@@ -106,10 +105,10 @@ async def test_non_actionable_failure_leaves_no_note(tmp_path: Path):
     with pytest.raises(RuntimeError):
         await harness.run_turn("first request")
     echoed = await harness.run_turn("second request")
-    assert "did not complete" not in echoed
+    assert "did not complete" not in echoed.result
     # The date envelope wraps every turn now; the important thing is that no
     # error note from the failed first turn leaked into the second prompt.
-    assert echoed.endswith("second request")
+    assert echoed.result.endswith("second request")
 
 
 @pytest.mark.anyio
@@ -138,15 +137,21 @@ async def test_failed_turn_persists_so_a_new_harness_can_resume(tmp_path: Path):
     deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
-        model=_raising_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_raising_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     with pytest.raises(RuntimeError):
         await harness.run_turn("a request that crashed the turn")
 
     resumed = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     resumed.resume()
     user_texts = [
@@ -202,6 +207,7 @@ async def test_harness_aclose_shuts_down_lsp(tmp_path):
 def _named_model(model_id: str) -> FunctionModel:
     """A model whose every reply names the id it was built for, so a test can
     tell which model actually ran a turn."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=f"from {model_id}")])
 
@@ -217,7 +223,10 @@ def test_harness_rejects_config_mixed_with_legacy_kwargs(tmp_path: Path):
     deps = _make_deps(tmp_path)
     with pytest.raises(TypeError):
         Harness(
-            _named_model("m"), BuiltinToolProvider(), deps, "i",
+            _named_model("m"),
+            BuiltinToolProvider(),
+            deps,
+            "i",
             config=HarnessConfig(model_label="from-config"),
             model_label="from-kwargs",  # would be silently ignored before
         )
@@ -228,7 +237,10 @@ def test_harness_accepts_config_alone(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = Harness(
-        _named_model("m"), BuiltinToolProvider(), deps, "i",
+        _named_model("m"),
+        BuiltinToolProvider(),
+        deps,
+        "i",
         config=HarnessConfig(model_label="from-config"),
     )
     assert h.model_label == "from-config"
@@ -237,7 +249,10 @@ def test_harness_accepts_config_alone(tmp_path: Path):
 def test_harness_accepts_legacy_kwargs_alone(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = Harness(
-        _named_model("m"), BuiltinToolProvider(), deps, "i",
+        _named_model("m"),
+        BuiltinToolProvider(),
+        deps,
+        "i",
         model_label="from-kwargs",
     )
     assert h.model_label == "from-kwargs"
@@ -271,12 +286,17 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     return Harness(
-        model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
+        model=_named_model("startup"),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="x",
         config=HarnessConfig(
-            store=manager.create(), manager=manager,
-            model_source=source, model_id="startup",
-            summarizer=summarizer, titler=titler,
+            store=manager.create(),
+            manager=manager,
+            model_source=source,
+            model_id="startup",
+            summarizer=summarizer,
+            titler=titler,
         ),
     )
 
@@ -294,7 +314,7 @@ async def test_set_model_switches_model_and_label(tmp_path: Path):
     assert h.model_label == "fake/openai/gpt-5.2"
     assert src.built == ["openai/gpt-5.2"]
     out = await h.run_turn("hello")
-    assert out == "from openai/gpt-5.2"  # the new model actually ran the turn
+    assert out.result == "from openai/gpt-5.2"  # the new model actually ran the turn
 
 
 @pytest.mark.anyio
@@ -302,8 +322,7 @@ async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
     async def summarizer(messages, instructions=None):
         return "s"
 
-    h = _switch_harness(tmp_path, source=_FakeSource(),
-                        summarizer=summarizer, titler=_fake_titler)
+    h = _switch_harness(tmp_path, source=_FakeSource(), summarizer=summarizer, titler=_fake_titler)
     old_summarizer, old_titler = h.session.summarizer, h.session.titler
     h.set_model("openai/gpt-5.2")
     assert h.session.summarizer is not old_summarizer  # repointed at the new model
@@ -320,8 +339,13 @@ async def test_set_model_leaves_unconfigured_aux_alone(tmp_path: Path):
 
 def test_set_model_without_source_is_noop(tmp_path: Path):
     deps = _make_deps(tmp_path)
-    h = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
-                deps=deps, instructions="x", model_id="startup")
+    h = Harness(
+        model=_named_model("startup"),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        model_id="startup",
+    )
     h.set_model("openai/gpt-5.2")  # no source -> nothing changes
     assert h.model_id == "startup"
 
@@ -382,7 +406,11 @@ def test_build_collaborators_wires_full_graph(tmp_path):
     model = FunctionModel(lambda messages, info: None)
 
     collab = build_collaborators(
-        model, provider, deps, "instructions", HarnessConfig(lsp_enabled=True),
+        model,
+        provider,
+        deps,
+        "instructions",
+        HarnessConfig(lsp_enabled=True),
         get_model=lambda: model,
     )
 
@@ -390,7 +418,7 @@ def test_build_collaborators_wires_full_graph(tmp_path):
     assert isinstance(collab, Collaborators)
     assert collab.agent is not None
     assert collab.mcp is not None
-    assert collab.lsp is not None              # lsp_enabled=True
+    assert collab.lsp is not None  # lsp_enabled=True
     assert collab.session is not None
     assert collab.checkpoints is not None
     assert collab.hooks is not None
@@ -411,7 +439,11 @@ def test_build_collaborators_respects_lsp_disabled(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
     model = FunctionModel(lambda messages, info: None)
     collab = build_collaborators(
-        model, BuiltinToolProvider(), deps, "i", HarnessConfig(lsp_enabled=False),
+        model,
+        BuiltinToolProvider(),
+        deps,
+        "i",
+        HarnessConfig(lsp_enabled=False),
         get_model=lambda: model,
     )
     assert collab.lsp is None
@@ -492,13 +524,19 @@ def test_scratchpad_flag_gates_services_getter(tmp_path: Path, monkeypatch):
     store = SessionManager(tmp_path, base_dir=tmp_path / "sessions").create()
 
     off = Harness(
-        TestModel(), BuiltinToolProvider(), _make_deps(tmp_path, mode=Mode.ask), "i",
+        TestModel(),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path, mode=Mode.ask),
+        "i",
         config=HarnessConfig(scratchpad_enabled=False, store=store),
     )
     assert off.deps.services.get_scratchpad is None
 
     on = Harness(
-        TestModel(), BuiltinToolProvider(), _make_deps(tmp_path, mode=Mode.ask), "i",
+        TestModel(),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path, mode=Mode.ask),
+        "i",
         config=HarnessConfig(store=store),
     )
     getter = on.deps.services.get_scratchpad

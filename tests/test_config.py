@@ -276,8 +276,11 @@ async def test_model_source_list_models_fetches_local_catalog(monkeypatch):
 
     fake = AsyncMock(return_value=[ModelEntry(id="qwen2.5-coder", name="qwen2.5-coder")])
     monkeypatch.setattr("marim_harness.config.model.fetch_local_models", fake)
-    src = ModelSource(ModelConfig(provider="local", model="x", base_url="http://localhost:1234/v1",
-                                  api_key="lmstudio"))
+    src = ModelSource(
+        ModelConfig(
+            provider="local", model="x", base_url="http://localhost:1234/v1", api_key="lmstudio"
+        )
+    )
     entries = await src.list_models()
     assert [e.id for e in entries] == ["qwen2.5-coder"]
     fake.assert_awaited_once_with("http://localhost:1234/v1", "lmstudio", strict=False)
@@ -463,12 +466,14 @@ def test_trust_project_hooks_defaults_none(monkeypatch):
     # False — bootstrap falls through to the per-project trust store rather
     # than force-untrusting.
     from marim_harness.config.model import load_config
+
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
     assert load_config().trust_project_hooks is None
 
 
 def test_trust_project_hooks_env_truthy(monkeypatch):
     from marim_harness.config.model import load_config
+
     monkeypatch.setenv("MARIM_TRUST_PROJECT_HOOKS", "1")
     assert load_config().trust_project_hooks is True
 
@@ -536,9 +541,7 @@ def test_load_environment_survives_malformed_project_env(
 # ("unbudgeted"), so the sanitizer must leave it alone.
 @pytest.mark.parametrize("key", ["MARIM_SUBAGENT_TRANSCRIPT_CAP", "MARIM_WAKE_DEPTH_CAP"])
 @pytest.mark.parametrize("bad", ["-5", "0", "abc", "1.5", "  "])
-def test_load_environment_drops_invalid_positive_int(
-    isolated_env, monkeypatch, tmp_path, key, bad
-):
+def test_load_environment_drops_invalid_positive_int(isolated_env, monkeypatch, tmp_path, key, bad):
     """Negative/zero/non-integer numeric knobs are dropped so the downstream
     reader falls back to its default."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -584,33 +587,52 @@ def test_load_environment_deprecated_zero_budget_survives(isolated_env, monkeypa
 
 def test_parse_qualified_known_prefix_routes_to_provider():
     from marim_harness.config.model import parse_qualified
+
     active = {"openrouter", "local", "google"}
     assert parse_qualified("openrouter:anthropic/claude-sonnet-4-6", active, "openrouter") == (
-        "openrouter", "anthropic/claude-sonnet-4-6")
+        "openrouter",
+        "anthropic/claude-sonnet-4-6",
+    )
     assert parse_qualified("local:qwen2.5-coder", active, "openrouter") == (
-        "local", "qwen2.5-coder")
+        "local",
+        "qwen2.5-coder",
+    )
 
 
 def test_parse_qualified_bare_id_uses_default():
     from marim_harness.config.model import parse_qualified
+
     active = {"openrouter", "local"}
     assert parse_qualified("anthropic/claude-sonnet-4-6", active, "openrouter") == (
-        "openrouter", "anthropic/claude-sonnet-4-6")
+        "openrouter",
+        "anthropic/claude-sonnet-4-6",
+    )
 
 
 def test_parse_qualified_unknown_prefix_is_treated_as_bare_id():
     from marim_harness.config.model import parse_qualified
+
     # 'google' is NOT active here, so 'google/gemma' is a bare OpenRouter id, not a provider.
     active = {"openrouter", "local"}
     assert parse_qualified("google/gemma-2-9b", active, "openrouter") == (
-        "openrouter", "google/gemma-2-9b")
+        "openrouter",
+        "google/gemma-2-9b",
+    )
 
 
 def test_detect_active_providers_includes_each_with_creds(monkeypatch):
     from marim_harness.config import model as _m
     from marim_harness.config.model import detect_active_providers
-    for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
-              "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+
+    for k in (
+        "MARIM_PROVIDER",
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MARIM_BASE_URL",
+        "MARIM_API_KEY",
+        "MARIM_MODEL",
+    ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -623,8 +645,15 @@ def test_detect_active_providers_includes_each_with_creds(monkeypatch):
 
 def test_detect_active_providers_always_includes_default(monkeypatch):
     from marim_harness.config.model import detect_active_providers
-    for k in ("OPENROUTER_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
-              "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+
+    for k in (
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MARIM_BASE_URL",
+        "MARIM_API_KEY",
+        "MARIM_MODEL",
+    ):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("MARIM_PROVIDER", "google")  # default, but no key set
     configs, default = detect_active_providers()
@@ -641,10 +670,12 @@ async def test_multi_source_list_models_merges_and_tags(monkeypatch):
 
     orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
     loc = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
-    monkeypatch.setattr(orc, "list_models",
-                        AsyncMock(return_value=[ModelEntry(id="anthropic/c", name="C")]))
-    monkeypatch.setattr(loc, "list_models",
-                        AsyncMock(return_value=[ModelEntry(id="qwen", name="Qwen")]))
+    monkeypatch.setattr(
+        orc, "list_models", AsyncMock(return_value=[ModelEntry(id="anthropic/c", name="C")])
+    )
+    monkeypatch.setattr(
+        loc, "list_models", AsyncMock(return_value=[ModelEntry(id="qwen", name="Qwen")])
+    )
     multi = MultiModelSource({"openrouter": orc, "local": loc}, "openrouter")
     entries = await multi.list_models()
     tagged = {e.qualified for e in entries}
@@ -660,8 +691,9 @@ async def test_multi_source_list_models_survives_a_failing_provider(monkeypatch)
 
     ok = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
     bad = ModelSource(ModelConfig(provider="openrouter", model="x"))
-    monkeypatch.setattr(ok, "list_models",
-                        AsyncMock(return_value=[ModelEntry(id="qwen", name="Q")]))
+    monkeypatch.setattr(
+        ok, "list_models", AsyncMock(return_value=[ModelEntry(id="qwen", name="Q")])
+    )
     monkeypatch.setattr(bad, "list_models", AsyncMock(side_effect=RuntimeError("down")))
     multi = MultiModelSource({"local": ok, "openrouter": bad}, "openrouter")
     entries = await multi.list_models()
@@ -670,6 +702,7 @@ async def test_multi_source_list_models_survives_a_failing_provider(monkeypatch)
 
 def test_multi_source_build_routes_by_prefix(monkeypatch):
     from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+
     calls = {}
     orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
     loc = ModelSource(ModelConfig(provider="local", model="y", base_url="http://h/v1"))
@@ -683,17 +716,20 @@ def test_multi_source_build_routes_by_prefix(monkeypatch):
 
 def test_multi_source_is_local_always_true():
     from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+
     orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
     assert MultiModelSource({"openrouter": orc}, "openrouter").is_local is True
 
 
 def test_parse_qualified_empty_remainder():
     from marim_harness.config.model import parse_qualified
+
     assert parse_qualified("local:", {"local", "openrouter"}, "openrouter") == ("local", "")
 
 
 def test_multi_source_label_qualifies():
     from marim_harness.config.model import ModelConfig, ModelSource, MultiModelSource
+
     orc = ModelSource(ModelConfig(provider="openrouter", model="x"))
     multi = MultiModelSource({"openrouter": orc}, "openrouter")
     assert multi.label("openrouter:anthropic/c") == "openrouter:anthropic/c"
@@ -718,9 +754,7 @@ def test_default_mode_invalid_falls_back_to_ask(monkeypatch):
     assert load_config().default_mode == "ask"
 
 
-def test_load_environment_project_env_cannot_set_default_mode(
-    isolated_env, monkeypatch, tmp_path
-):
+def test_load_environment_project_env_cannot_set_default_mode(isolated_env, monkeypatch, tmp_path):
     # A cloned/untrusted project must NOT weaken the approval posture by shipping
     # MARIM_DEFAULT_MODE=auto in its .env — that comes only from the shell env or
     # the trusted global config.
@@ -818,7 +852,8 @@ def test_deprecated_max_context_tokens_still_honored(monkeypatch, caplog):
         load_config()  # a second load must NOT re-warn — the nag is one-time
     assert cfg.max_context_tokens == 70000
     deprecations = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if "MARIM_MAX_CONTEXT_TOKENS" in r.message and "deprecated" in r.message
     ]
     assert len(deprecations) == 1
@@ -913,8 +948,15 @@ def test_stats_env_off(monkeypatch, value):
 
 
 def _clear_provider_env(monkeypatch):
-    for k in ("MARIM_PROVIDER", "OPENROUTER_API_KEY", "GOOGLE_API_KEY",
-              "GEMINI_API_KEY", "MARIM_BASE_URL", "MARIM_API_KEY", "MARIM_MODEL"):
+    for k in (
+        "MARIM_PROVIDER",
+        "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "MARIM_BASE_URL",
+        "MARIM_API_KEY",
+        "MARIM_MODEL",
+    ):
         monkeypatch.delenv(k, raising=False)
 
 
@@ -1103,8 +1145,7 @@ async def test_model_source_list_models_routes_zen(monkeypatch):
     # marim_harness.config.model (where ModelSource.list_models looks it up),
     # not on catalog (which model.py's local binding no longer refers back to).
     monkeypatch.setattr(model_module, "fetch_zen_models", fake_fetch)
-    src = ModelSource(ModelConfig(provider="zen", model="mimo-v2.5-free",
-                                  api_key="sk-zen-test"))
+    src = ModelSource(ModelConfig(provider="zen", model="mimo-v2.5-free", api_key="sk-zen-test"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["mimo-v2.5-free"]
 
@@ -1141,8 +1182,7 @@ def test_parse_qualified_routes_zen_go():
     from marim_harness.config.model import parse_qualified
 
     active = {"zen", "zen-go", "openrouter"}
-    assert parse_qualified("zen-go:glm-5.2", active, "openrouter") == (
-        "zen-go", "glm-5.2")
+    assert parse_qualified("zen-go:glm-5.2", active, "openrouter") == ("zen-go", "glm-5.2")
 
 
 @pytest.mark.anyio
@@ -1158,7 +1198,6 @@ async def test_model_source_list_models_routes_zen_go(monkeypatch):
 
     # model.py imports the *name* fetch_zen_models, so patch it there.
     monkeypatch.setattr(model_module, "fetch_zen_models", fake_fetch)
-    src = ModelSource(ModelConfig(provider="zen-go", model="glm-5.2",
-                                  api_key="sk-zen-test"))
+    src = ModelSource(ModelConfig(provider="zen-go", model="glm-5.2", api_key="sk-zen-test"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["glm-5.2"]

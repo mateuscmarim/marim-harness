@@ -110,8 +110,12 @@ def test_recall_reads_project_memory_body(tmp_path: Path):
     from marim_harness.workspace import memory
 
     memory.save_memory(
-        memory.project_scope(tmp_path), name="My name", description="hook",
-        mem_type="user", body="The user is Mateus.", title="My name",
+        memory.project_scope(tmp_path),
+        name="My name",
+        description="hook",
+        mem_type="user",
+        body="The user is Mateus.",
+        title="My name",
     )
     agent = _agent()
     model, captured = _call_recall({"name": "My name", "scope": "project"})
@@ -125,8 +129,12 @@ def test_recall_reads_global_memory_outside_workspace(tmp_path: Path, monkeypatc
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     memory.save_memory(
-        memory.global_scope(), name="My name", description="hook",
-        mem_type="user", body="The user is Mateus.", title="My name",
+        memory.global_scope(),
+        name="My name",
+        description="hook",
+        mem_type="user",
+        body="The user is Mateus.",
+        title="My name",
     )
     agent = _agent()
     model, captured = _call_recall({"name": "My name", "scope": "global"})
@@ -153,8 +161,9 @@ def test_forget_deletes_memory_and_index_line(tmp_path: Path):
     from marim_harness.workspace import memory
 
     sc = memory.project_scope(tmp_path)
-    memory.save_memory(sc, name="Build tool", description="d",
-                       mem_type="project", body="b", title="Build tool")
+    memory.save_memory(
+        sc, name="Build tool", description="d", mem_type="project", body="b", title="Build tool"
+    )
     ctx = SimpleNamespace(
         deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
     )
@@ -201,8 +210,14 @@ def test_recall_appends_link_footer(tmp_path: Path):
     from marim_harness.workspace import memory
 
     sc = memory.project_scope(tmp_path)
-    memory.save_memory(sc, name="deploy", description="d", mem_type="project",
-                       body="After [[build]] run the deploy.", title="deploy")
+    memory.save_memory(
+        sc,
+        name="deploy",
+        description="d",
+        mem_type="project",
+        body="After [[build]] run the deploy.",
+        title="deploy",
+    )
     agent = _agent()
     model, captured = _call_recall({"name": "deploy", "scope": "project"})
     with agent.override(model=model):

@@ -213,15 +213,7 @@ async def test_hook_runner_logs_on_command_failure(caplog, tmp_path, monkeypatch
     from marim_harness.hooks import runner as hook_mod
     from marim_harness.hooks.runner import HookRunner
 
-    hooks_cfg = {
-        "SessionStart": [
-            {
-                "hooks": [
-                    {"type": "command", "command": "echo ok"}
-                ]
-            }
-        ]
-    }
+    hooks_cfg = {"SessionStart": [{"hooks": [{"type": "command", "command": "echo ok"}]}]}
     runner = HookRunner(hooks_cfg)
 
     # Monkeypatch _run_one to raise, so the belt-and-suspenders handler fires

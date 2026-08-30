@@ -43,6 +43,12 @@ jobs:
       - name: Lint (ruff)
         run: uv run ruff check src tests
 
+      # Formatting is enforced here, not by the quality gate. The gate's
+      # `format_drift` row reports the same fact, but a ratchet is weaker than a
+      # hard failure — and this step is what keeps that row pinned at 0.
+      - name: Format (ruff format)
+        run: uv run ruff format --check src tests
+
       - name: Type-check (pyright)
         run: uv run pyright
 

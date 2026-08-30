@@ -28,13 +28,10 @@ from tests.conftest import _make_deps, _make_harness, _text_model
 def _round(i: int, size: int) -> list:
     """One tool round: the assistant calls tool ``t{i}``; it returns ``size`` chars."""
     return [
-        ModelResponse(parts=[
-            ToolCallPart(tool_name="read_file", args={}, tool_call_id=f"t{i}")
-        ]),
-        ModelRequest(parts=[
-            ToolReturnPart(tool_name="read_file", content="x" * size,
-                           tool_call_id=f"t{i}")
-        ]),
+        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id=f"t{i}")]),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="read_file", content="x" * size, tool_call_id=f"t{i}")]
+        ),
     ]
 
 
@@ -86,35 +83,35 @@ def test_mask_set_is_stable_between_triggers():
     stateless newest-N mask would re-mask t2 here and bust the prefix cache."""
     masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     history = _history(rounds=4, size=1200)
-    masker.mask(history)                       # trigger 1: masks t0, t1
-    history += _round(4, size=200)             # small growth: stays under trigger
+    masker.mask(history)  # trigger 1: masks t0, t1
+    history += _round(4, size=200)  # small growth: stays under trigger
     view = masker.mask(history)
     returns = _returns(view)
-    assert returns["t2"] == "x" * 1200         # spared at trigger 1, STILL spared
+    assert returns["t2"] == "x" * 1200  # spared at trigger 1, STILL spared
     assert returns["t4"] == "x" * 200
 
 
 def test_second_trigger_extends_the_mask_set():
     masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
     history = _history(rounds=4, size=1200)
-    masker.mask(history)                       # trigger 1: masks t0, t1
-    history += _round(4, size=1200)            # big growth: crosses trigger again
+    masker.mask(history)  # trigger 1: masks t0, t1
+    history += _round(4, size=1200)  # big growth: crosses trigger again
     view = masker.mask(history)
     returns = _returns(view)
     assert returns["t2"] == MASKED_OBSERVATION  # newly stale, masked at trigger 2
-    assert returns["t3"] == "x" * 1200          # newest 2 spared
+    assert returns["t3"] == "x" * 1200  # newest 2 spared
     assert returns["t4"] == "x" * 1200
 
 
 def test_small_returns_are_never_masked():
     masker = ObservationMasker(trigger_tokens=750, keep_recent=1, min_chars=100)
     history = [ModelRequest(parts=[UserPromptPart(content="task")])]
-    history += _round(0, size=50)              # tiny: below min_chars
+    history += _round(0, size=50)  # tiny: below min_chars
     history += _round(1, size=4000)
     history += _round(2, size=4000)
     view = masker.mask(history)
     returns = _returns(view)
-    assert returns["t0"] == "x" * 50           # small stays, masking it buys nothing
+    assert returns["t0"] == "x" * 50  # small stays, masking it buys nothing
     assert returns["t1"] == MASKED_OBSERVATION
 
 
@@ -132,8 +129,9 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
     def fn(messages, info):
         calls["n"] += 1
         if calls["n"] <= 3:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="blob", args={}, tool_call_id=f"t{calls['n']}")])
+            return ModelResponse(
+                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{calls['n']}")]
+            )
         seen["messages"] = messages
         return ModelResponse(parts=[TextPart(content="done")])
 
@@ -145,7 +143,8 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
     # threshold = 0.8 * 400 = 320 tokens; each blob is ~500 tokens.
     runner._masking = MaskingPolicy(
         limits=ContextLimits(budget=None, window_override=400),
-        keep_recent=1, min_chars=100,
+        keep_recent=1,
+        min_chars=100,
     )
     mask_trigger = await runner._mask_trigger_for(None)
     sub, err = runner.build("general", mask_trigger=mask_trigger)
@@ -160,15 +159,19 @@ async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
     assert result.output == "done"
 
     request_returns = [
-        str(p.content) for m in seen["messages"]
-        for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+        str(p.content)
+        for m in seen["messages"]
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolReturnPart)
     ]
-    assert MASKED_OBSERVATION in request_returns        # stale observations masked
+    assert MASKED_OBSERVATION in request_returns  # stale observations masked
     assert any("x" * 100 in c for c in request_returns)  # newest spared
 
     stored_returns = [
-        str(p.content) for m in result.all_messages()
-        for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+        str(p.content)
+        for m in result.all_messages()
+        for p in getattr(m, "parts", [])
+        if isinstance(p, ToolReturnPart)
     ]
     # Write-back semantics: the processed (masked) history IS the stored history.
     assert MASKED_OBSERVATION in stored_returns
@@ -187,8 +190,6 @@ async def test_spawn_trigger_follows_the_loaded_window_not_the_budget(tmp_path):
 
     deps = _make_deps(tmp_path)
     runner = _make_harness(_text_model(), deps).subagents
-    runner._masking = MaskingPolicy(
-        limits=ContextLimits(budget=180_000, fetch_local=fake_local)
-    )
+    runner._masking = MaskingPolicy(limits=ContextLimits(budget=180_000, fetch_local=fake_local))
     trigger = await runner._mask_trigger_for("qwen/qwen3.5-9b")
     assert trigger == int(0.8 * 101_039)

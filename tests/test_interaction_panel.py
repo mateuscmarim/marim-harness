@@ -53,9 +53,7 @@ async def test_panel_mounts_above_status_bar():
     async with app.run_test() as pilot:
         await pilot.pause()
         children = list(app.screen.children)
-        assert children.index(app.panel) < children.index(
-            app.query_one("#status-bar")
-        )
+        assert children.index(app.panel) < children.index(app.query_one("#status-bar"))
 
 
 @pytest.mark.anyio

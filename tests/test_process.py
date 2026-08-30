@@ -61,7 +61,7 @@ def _find_descendants(pid: int) -> list[int]:
             with open(f"/proc/{entry}/stat") as f:
                 raw = f.read()
                 close = raw.rfind(")")
-                fields = raw[close + 2:].split()
+                fields = raw[close + 2 :].split()
                 ppid = int(fields[1])
                 if ppid == pid:
                     result.append(int(entry))

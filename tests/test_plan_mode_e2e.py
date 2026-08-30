@@ -116,7 +116,7 @@ async def test_plan_mode_full_cycle(tmp_path):
     final = await tc.run_turn("Plan a refactor of the parser.")
 
     # 1) The turn completed with the model's post-approval answer.
-    assert final == "Plan approved — executing now."
+    assert final.result == "Plan approved — executing now."
 
     # 2) The user was actually asked how to execute (present_plan reached the UI).
     assert chosen, "present_plan never prompted the user"

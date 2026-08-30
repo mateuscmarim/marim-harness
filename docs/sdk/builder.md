@@ -77,8 +77,6 @@ Details per method:
 - **`with_mcp_server(server)`** — attaches a ready pydantic-ai MCP
   server/toolset object. Marim's own JSON-spec format (`.marim/mcp.json`) is
   a CLI concern. See [Integrations](integrations.md#mcp-servers).
-- **`with_forge(backend)`** — attaches the five Gitea/GitHub PR tools against
-  an explicit `ForgeBackend`. See [Integrations](integrations.md#forge).
 - **`with_capability(capability)`** — attaches a pydantic-ai
   `AbstractCapability` (e.g. a [Pydantic AI
   Harness](https://pydantic.dev/docs/ai/harness/) module) after marim's
@@ -100,6 +98,10 @@ Details per method:
   `Mode.plan`). `ask` needs an approval callback (`Harness.bind_ui`) to grant
   anything — without one it denies every gated call, so plain headless
   embedding wants `auto` or `plan`.
+- **`with_output_type(schema)`** — validate every turn's output against a
+  pydantic `BaseModel` subclass or an object-rooted JSON Schema dict; tools
+  and the approval loop are unaffected mid-turn. See
+  [Turns, "Structured output"](turns.md#structured-output).
 - **`with_hooks(runner)`** — attaches a `HookRunner` for lifecycle hooks. See
   [Integrations](integrations.md#lifecycle-hooks). Incompatible with
   `with_deps` (see below).
@@ -145,7 +147,7 @@ What it validates:
 | Check | Failure reported |
 | --- | --- |
 | Model string resolves via `infer_model` | `model '...' is not resolvable: ...` |
-| Custom tool name vs every tool actually loaded — built-ins from enabled groups, plus `LSP_TOOLS` when `with_lsp(tools=True)`, plus `FORGE_TOOLS` when `with_forge(...)` | `custom tool '...' collides with a built-in tool` |
+| Custom tool name vs every tool actually loaded — built-ins from enabled groups, plus `LSP_TOOLS` when `with_lsp(tools=True)` | `custom tool '...' collides with a built-in tool` |
 | Custom tool registered twice | `custom tool '...' registered twice` |
 | `with_hooks` + `with_deps` together | `with_hooks is ignored when with_deps supplies a Deps — ...` |
 | Sub-agent grants an unknown tool name | `sub-agent '...' grants unknown tools: [...]` |

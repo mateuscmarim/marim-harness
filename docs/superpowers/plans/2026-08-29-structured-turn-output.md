@@ -6,7 +6,7 @@
 
 **Architecture:** The agent-level output union stays `[str, DeferredToolRequests]`; each structured turn passes `output_type=[SchemaType, DeferredToolRequests]` per run to `agent.run()` (verified against pydantic-ai ≥2.28: deferred approvals still fire and the continuation round returns the validated object). BaseModel schemas ride pydantic-ai's in-run validation; JSON-Schema dicts ride `StructuredDict` provider constraints plus post-turn jsonschema validation with one corrective turn.
 
-**Tech Stack:** Python ≥3.10, pydantic-ai-slim ≥2.28, pydantic v2, jsonschema (draft-07), pytest + anyio, TestModel/FunctionModel.
+**Tech Stack:** Python ≥3.10, pydantic-ai-slim ≥2.28, pydantic v2, jsonschema, pytest + anyio, TestModel/FunctionModel.
 
 **Spec:** `docs/superpowers/specs/2026-08-29-structured-turn-output-design.md`
 
@@ -163,7 +163,7 @@ git commit -m "feat(runtime): TurnOutcome terminal-turn payload"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `marim_harness.runtime.structured.validate_dict_output(output: Any, schema: dict) -> list[str]` — empty list means valid; otherwise human-readable error strings (draft-07). Task 6 calls it after a dict-schema turn completes.
+- Produces: `marim_harness.runtime.structured.validate_dict_output(output: Any, schema: dict) -> list[str]` — empty list means valid; otherwise human-readable error strings. Validator class resolution follows `workflows/schema.py` (`jsonschema.validators.validator_for(schema)`, which honors a schema's own `$schema` and defaults to the latest draft). Task 6 calls it after a dict-schema turn completes.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -234,15 +234,16 @@ Create `src/marim_harness/runtime/structured.py`:
 ``StructuredDict`` attaches a JSON Schema for provider-side constrained
 generation but never validates the emitted object, so a dict-schema turn
 gets checked here after the run. Lives in core (not workflows/schema.py)
-because core must not import the extra-gated workflows package; the
-draft-07 semantics match the workflow validator.
+because core must not import the extra-gated workflows package; validator
+class resolution matches it — validator_for(schema), which honors the
+schema's own $schema and defaults to the latest draft.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from jsonschema import Draft7Validator
+from jsonschema.validators import validator_for
 
 
 def validate_dict_output(output: Any, schema: dict) -> list[str]:
@@ -253,7 +254,7 @@ def validate_dict_output(output: Any, schema: dict) -> list[str]:
     """
     if not isinstance(output, dict):
         return [f"structured output is not a JSON object: {type(output).__name__}"]
-    validator = Draft7Validator(schema)
+    validator = validator_for(schema)(schema)
     errors = sorted(validator.iter_errors(output), key=lambda e: list(e.path))
     return [
         f"{'/'.join(str(p) for p in e.path) or '<root>'}: {e.message}"
@@ -753,10 +754,10 @@ In `src/marim_harness/runtime/controller.py`:
 
 (Adjust the `"Exceeded retries"` string only if step 2 showed a different message and no ValidationError in the chain.)
 
-2. In `_run_with_approval`'s `while True`, split the exception handling — the new clause comes FIRST (it must win over the generic `except Exception`):
+2. In `_run_with_approval`'s `while True`, split the exception handling — the new branch goes at the TOP of the existing `except BaseException as exc:` body (the real clause; it also catches cancellation — the classifier's `isinstance(UnexpectedModelBehavior)` keeps that path safe):
 
 ```python
-            except Exception as exc:
+            except BaseException as exc:
                 if self._is_structured_exhaustion(exc):
                     # Validation exhaustion is a terminal turn result, not an
                     # infra failure: bank the spend, persist the (resumable)
@@ -764,10 +765,12 @@ In `src/marim_harness/runtime/controller.py`:
                     # there is nothing the model can act on next turn.
                     self.session.add_usage(round_usage)
                     self._reclaim_undelivered_steers()
-                    self._clear_stash()
-                    if self.session.history:
-                        await self._flush_resumable(deadline=0.5)
-                        await asyncio.to_thread(self.session.persist)
+                    await self._flush_resumable(captured, resumable)
+                    # The flush wrote a repaired, resumable history — the
+                    # dirty-history latch (if exhaustion struck on a
+                    # continuation round after an approval) no longer applies.
+                    # Same reset the terminal _handle_run_failure path performs.
+                    self.deps.approval_round_active = False
                     return TurnOutcome(
                         subtype="error_max_structured_output_retries",
                         result=None,
@@ -780,7 +783,7 @@ In `src/marim_harness/runtime/controller.py`:
                 ...
 ```
 
-(the existing `_handle_run_failure` call and everything after it stay exactly as they are — only the new `if` block is inserted at the top of the `except Exception` body).
+(the existing `_handle_run_failure` call and everything after it stay exactly as they are — only the new `if` block is inserted at the top of the `except BaseException` body. `_flush_resumable` takes `(captured, resumable)` and persists internally — no separate persist call, and NEVER guard the flush on a non-empty session history: a brand-new session's first turn starts empty and its exchange must still be flushed).
 
 - [ ] **Step 4: Run the feature tests**
 
@@ -1072,8 +1075,7 @@ Run: `uv run pyright`
 Run: `uv run pytest`
 Expected: all green. Then the docs check:
 
-Run: `uv run python docs.py`
-Expected: no broken links / render errors.
+Run: `uv run python docs.py` — AMENDED AT EXECUTION: docs.py does not exist in this repo (plan defect); the final gate is ruff → pyright → pytest only.
 
 - [ ] **Step 6: Commit**
 

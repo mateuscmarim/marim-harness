@@ -26,8 +26,9 @@ def _fake_runner(calls: list, gate: asyncio.Event | None = None):
     """A run_background_agent stub. Records each started task; result echoes the
     task's first line so tests can tell whose report got injected where."""
 
-    async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None, thinking=None):
+    async def run(
+        type, task, mcp_names, budget, model, isolation, stream_id, depth, tier=None, thinking=None
+    ):
         if gate is not None:
             await gate.wait()
         calls.append(task)
@@ -38,7 +39,8 @@ def _fake_runner(calls: list, gate: asyncio.Event | None = None):
 
 def _ctx(tmp_path, calls, gate=None, **deps_kw):
     deps = _make_deps(
-        tmp_path, mode=Mode.auto,
+        tmp_path,
+        mode=Mode.auto,
         services=HarnessServices(run_background_agent=_fake_runner(calls, gate)),
         **deps_kw,
     )
@@ -60,18 +62,17 @@ async def test_dependent_waits_then_receives_injected_report(tmp_path):
     # finished yet (F5) — a single shared gate can't distinguish those states.
     gate_a, gate_b = asyncio.Event(), asyncio.Event()
 
-    async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None, thinking=None):
+    async def run(
+        type, task, mcp_names, budget, model, isolation, stream_id, depth, tier=None, thinking=None
+    ):
         await (gate_a if task.startswith("task A") else gate_b).wait()
         calls.append(task)
         return f"report[{task.splitlines()[0]}]"
 
-    deps = _make_deps(tmp_path, mode=Mode.auto,
-                      services=HarnessServices(run_background_agent=run))
+    deps = _make_deps(tmp_path, mode=Mode.auto, services=HarnessServices(run_background_agent=run))
     ctx = _Ctx(deps)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
     await asyncio.sleep(0)
     assert calls == []  # A gated, B waiting on A — neither inner run started
     assert f"(waiting on {a})" in ctx.deps.jobs.output(b)
@@ -104,8 +105,9 @@ async def test_multiple_prerequisites_injected_in_order(tmp_path):
     ctx = _ctx(tmp_path, calls)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
     b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True))
-    c = _job_id(await spawn_agent(
-        ctx, type="general", task="task C", background=True, after=[b, a]))
+    c = _job_id(
+        await spawn_agent(ctx, type="general", task="task C", background=True, after=[b, a])
+    )
     await ctx.deps.jobs.wait(c, 5)
     task_c = calls[-1]
     assert task_c.startswith("task C")
@@ -116,19 +118,18 @@ async def test_multiple_prerequisites_injected_in_order(tmp_path):
 async def test_failed_prerequisite_skips_dependent(tmp_path):
     calls: list = []
 
-    async def run(type, task, mcp_names, budget, model, isolation, stream_id, depth,
-                  tier=None, thinking=None):
+    async def run(
+        type, task, mcp_names, budget, model, isolation, stream_id, depth, tier=None, thinking=None
+    ):
         if task.startswith("task A"):
             raise RuntimeError("boom")
         calls.append(task)
         return "ok"
 
-    deps = _make_deps(tmp_path, mode=Mode.auto,
-                      services=HarnessServices(run_background_agent=run))
+    deps = _make_deps(tmp_path, mode=Mode.auto, services=HarnessServices(run_background_agent=run))
     ctx = _Ctx(deps)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
     result = await ctx.deps.jobs.wait(b, 5)
     assert ctx.deps.jobs.get(b).status == "failed"
     assert "PrerequisiteFailed" in result and a in result
@@ -140,8 +141,7 @@ async def test_cancelled_prerequisite_fails_dependent(tmp_path):
     gate = asyncio.Event()
     ctx = _ctx(tmp_path, calls, gate)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
     await ctx.deps.jobs.cancel(a)
     await ctx.deps.jobs.wait(b, 5)
     assert ctx.deps.jobs.get(b).status == "failed"
@@ -153,8 +153,7 @@ async def test_cancelling_waiting_dependent_leaves_prerequisite_running(tmp_path
     gate = asyncio.Event()
     ctx = _ctx(tmp_path, calls, gate)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
     await ctx.deps.jobs.cancel(b)
     assert ctx.deps.jobs.get(b).status == "cancelled"
     assert ctx.deps.jobs.get(a).status == "running"
@@ -166,8 +165,7 @@ async def test_cancelling_waiting_dependent_leaves_prerequisite_running(tmp_path
 async def test_unknown_after_id_registers_nothing(tmp_path):
     calls: list = []
     ctx = _ctx(tmp_path, calls)
-    out = await spawn_agent(
-        ctx, type="general", task="task B", background=True, after="job-77")
+    out = await spawn_agent(ctx, type="general", task="task B", background=True, after="job-77")
     assert "job-77" in out and "no such job" in out
     assert ctx.deps.jobs.list() == []
 
@@ -176,8 +174,7 @@ async def test_after_refused_on_foreground_spawn(tmp_path):
     calls: list = []
     ctx = _ctx(tmp_path, calls)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    out = await spawn_agent(
-        ctx, type="general", task="task B", background=False, after=a)
+    out = await spawn_agent(ctx, type="general", task="task B", background=False, after=a)
     assert "detached" in out and "wait_for_job" in out
     assert len(ctx.deps.jobs.list()) == 1  # only A
 
@@ -200,10 +197,8 @@ async def test_chain_runs_strictly_in_order(tmp_path):
     calls: list = []
     ctx = _ctx(tmp_path, calls)
     a = _job_id(await spawn_agent(ctx, type="general", task="task A", background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
-    c = _job_id(await spawn_agent(
-        ctx, type="general", task="task C", background=True, after=b))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
+    c = _job_id(await spawn_agent(ctx, type="general", task="task C", background=True, after=b))
     await ctx.deps.jobs.wait(c, 5)
     starts = [t.splitlines()[0] for t in calls]
     assert starts == ["task A", "task B", "task C"]
@@ -221,15 +216,13 @@ async def test_injected_heading_clips_multiline_label(tmp_path):
     calls: list = []
     ctx = _ctx(tmp_path, calls)
     multiline_task = "task A summary line\n\n## Scope\nlots of extra detail\nmore detail"
-    a = _job_id(await spawn_agent(
-        ctx, type="general", task=multiline_task, background=True))
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=a))
+    a = _job_id(await spawn_agent(ctx, type="general", task=multiline_task, background=True))
+    b = _job_id(await spawn_agent(ctx, type="general", task="task B", background=True, after=a))
     await ctx.deps.jobs.wait(b, 5)
     task_b = calls[-1]
 
     heading_start = task_b.index(f"### {a}")
-    heading_line = task_b[heading_start:task_b.index("\n", heading_start)]
+    heading_line = task_b[heading_start : task_b.index("\n", heading_start)]
     assert heading_line == f"### {a} — general: task A summary line"
     assert "## Scope" not in heading_line
     assert "## Scope" not in task_b  # dropped entirely, not just off the heading line
@@ -243,7 +236,8 @@ async def test_bash_job_as_prerequisite(tmp_path):
         return "bash-output"
 
     bash_id = ctx.deps.jobs.register("bash", "ls -la", _bash())
-    b = _job_id(await spawn_agent(
-        ctx, type="general", task="task B", background=True, after=bash_id))
+    b = _job_id(
+        await spawn_agent(ctx, type="general", task="task B", background=True, after=bash_id)
+    )
     await ctx.deps.jobs.wait(b, 5)
     assert "bash-output" in calls[0]

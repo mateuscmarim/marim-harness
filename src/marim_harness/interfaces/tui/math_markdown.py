@@ -61,9 +61,7 @@ _converter = None
 _SUBSCRIPTS = "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₒₓₔₕₖₗₘₙₚₛₜᵢᵣᵤᵥᵦᵧᵨᵩᵪ"
 _SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ"
 _BIG_OPS = "∫∬∭∮∯∰∑∏⋀⋁⋂⋃"
-_BOUNDED_OP = re.compile(
-    f"\\(([{_BIG_OPS}][{_SUBSCRIPTS}]+)\\)(?=\\^|[{_SUPERSCRIPTS}])"
-)
+_BOUNDED_OP = re.compile(f"\\(([{_BIG_OPS}][{_SUBSCRIPTS}]+)\\)(?=\\^|[{_SUPERSCRIPTS}])")
 
 
 def latex_to_unicode(src: str) -> str | None:
@@ -223,8 +221,13 @@ def _block_math_paragraph(tok: Token) -> list[Token]:
     custom Textual block classes — deliberately out of scope, see the spec)."""
     text = Token("text", "", 0, content=_converted_or_literal(tok))
     inline = Token(
-        "inline", "", 0,
-        content=text.content, children=[text], map=tok.map, level=tok.level + 1,
+        "inline",
+        "",
+        0,
+        content=text.content,
+        children=[text],
+        map=tok.map,
+        level=tok.level + 1,
     )
     return [
         Token("paragraph_open", "p", 1, map=tok.map, level=tok.level),

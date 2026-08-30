@@ -66,7 +66,7 @@ def _unauthorized(request: Request) -> JSONResponse | None:
     """None when the request carries a valid bearer token; the 401 otherwise."""
     token = request.app.state.token
     header = request.headers.get("authorization", "")
-    if header.startswith("Bearer ") and token_matches(token, header[len("Bearer "):]):
+    if header.startswith("Bearer ") and token_matches(token, header[len("Bearer ") :]):
         return None
     return _error(401, "unauthorized", "missing or invalid bearer token")
 
@@ -169,7 +169,8 @@ async def delete_workspace(request: Request) -> Response:
     # aborted by close_workspace, exactly as delete_session's close would.
     if supervisor.busy_sessions(ws_id):
         return _error(
-            409, "busy",
+            409,
+            "busy",
             "workspace has sessions with running turns; interrupt them first",
         )
     try:
@@ -212,12 +213,14 @@ async def list_sessions(request: Request) -> Response:
             pending = no_host_pending
         row = asdict(info)
         row["model"] = _effective_model(host, info.model)
-        sessions.append({
-            **row,
-            "status": host.status if host else "idle",
-            "pending_asks": host.pending_asks() if host else [],
-            "trust_prompt_pending": pending,
-        })
+        sessions.append(
+            {
+                **row,
+                "status": host.status if host else "idle",
+                "pending_asks": host.pending_asks() if host else [],
+                "trust_prompt_pending": pending,
+            }
+        )
     return _cached_json({"sessions": sessions}, "max-age=60")
 
 
@@ -267,13 +270,16 @@ async def create_session(request: Request) -> Response:
     store.save([], RunUsage())
     if body.mode is not None:
         _supervisor(request).set_mode(record, store.session_id, Mode(body.mode))
-    return JSONResponse({
-        "id": store.session_id,
-        "name": store.name,
-        # No host exists yet (just created) — recompute from the workspace's
-        # trust state directly.
-        "trust_prompt_pending": _trust_prompt_pending(None, Path(record.path)),
-    }, status_code=201)
+    return JSONResponse(
+        {
+            "id": store.session_id,
+            "name": store.name,
+            # No host exists yet (just created) — recompute from the workspace's
+            # trust state directly.
+            "trust_prompt_pending": _trust_prompt_pending(None, Path(record.path)),
+        },
+        status_code=201,
+    )
 
 
 async def get_trust(request: Request) -> Response:
@@ -290,12 +296,15 @@ async def get_trust(request: Request) -> Response:
         root, explicit=None, fingerprint=surface.fingerprint, surface_empty=surface.empty
     )
     fingerprint_fresh = stored is not None and stored.fingerprint == surface.fingerprint
-    return _cached_json({
-        "trusted": resolution.trusted,
-        "source": resolution.source,
-        "fingerprint_fresh": fingerprint_fresh,
-        "surface": _surface_dict(surface),
-    }, "no-cache")
+    return _cached_json(
+        {
+            "trusted": resolution.trusted,
+            "source": resolution.source,
+            "fingerprint_fresh": fingerprint_fresh,
+            "surface": _surface_dict(surface),
+        },
+        "no-cache",
+    )
 
 
 # Reported in POST /trust's response only when a revoke actually reached a
@@ -355,7 +364,9 @@ async def post_trust(request: Request) -> Response:
     persist_error: str | None = None
     try:
         record_decision(
-            root, trusted=body.trusted, fingerprint=surface.fingerprint,
+            root,
+            trusted=body.trusted,
+            fingerprint=surface.fingerprint,
             now=datetime.now(timezone.utc).isoformat(),
         )
     except OSError as exc:
@@ -369,13 +380,18 @@ async def post_trust(request: Request) -> Response:
     # already running under this daemon (spec §8).
     if persist_error is not None:
         return _error(
-            500, "trust_store_error",
+            500,
+            "trust_store_error",
             f"trust decision applied but not persisted: {persist_error}",
         )
-    return JSONResponse({
-        "trusted": body.trusted, "applied_sessions": applied, "restart_note": restart_note,
-        "failed_sessions": failed,
-    })
+    return JSONResponse(
+        {
+            "trusted": body.trusted,
+            "applied_sessions": applied,
+            "restart_note": restart_note,
+            "failed_sessions": failed,
+        }
+    )
 
 
 def _effective_model(host, info_model: str | None) -> str:
@@ -407,13 +423,16 @@ async def get_session(request: Request) -> Response:
     host = _supervisor(request).peek(record.id, session_id)
     session_dict = asdict(info)
     session_dict["model"] = _effective_model(host, info.model)
-    return _cached_json({
-        "session": session_dict,
-        "status": host.status if host else "idle",
-        "queued": host.queued if host else 0,
-        "pending_asks": host.pending_asks() if host else [],
-        "trust_prompt_pending": _trust_prompt_pending(host, Path(record.path)),
-    }, "no-cache")
+    return _cached_json(
+        {
+            "session": session_dict,
+            "status": host.status if host else "idle",
+            "queued": host.queued if host else 0,
+            "pending_asks": host.pending_asks() if host else [],
+            "trust_prompt_pending": _trust_prompt_pending(host, Path(record.path)),
+        },
+        "no-cache",
+    )
 
 
 async def delete_session(request: Request) -> Response:
@@ -452,9 +471,7 @@ async def post_message(request: Request) -> Response:
     attachments = None
     if body.attachments:
         try:
-            attachments = [
-                (base64.b64decode(a.data_b64), a.media_type) for a in body.attachments
-            ]
+            attachments = [(base64.b64decode(a.data_b64), a.media_type) for a in body.attachments]
         except ValueError:
             return _error(400, "bad_request", "invalid base64 in attachment data_b64")
     try:
@@ -462,7 +479,8 @@ async def post_message(request: Request) -> Response:
     except SessionClaimed as exc:
         who = exc.holder.describe() if exc.holder is not None else "another process"
         return _error(
-            409, "claimed",
+            409,
+            "claimed",
             f"session is owned by {who}; close it there before driving it here",
         )
     try:
@@ -471,7 +489,8 @@ async def post_message(request: Request) -> Response:
         return _error(429, "queue_full", "turn queue is full; wait for the running turn")
     except HostClosed:
         return _error(
-            404, "host_closed",
+            404,
+            "host_closed",
             "session host was torn down, retry",
         )
     return JSONResponse({"turn_id": turn_id}, status_code=202)
@@ -663,8 +682,7 @@ async def session_ws(websocket: WebSocket) -> None:
     subscription until the next publish."""
     token = websocket.app.state.token
     header = websocket.headers.get("authorization", "")
-    if not (header.startswith("Bearer ")
-            and token_matches(token, header[len("Bearer "):])):
+    if not (header.startswith("Bearer ") and token_matches(token, header[len("Bearer ") :])):
         await websocket.close(code=4401)
         return
     record = _registry(websocket).get(websocket.path_params["ws"])
@@ -733,15 +751,18 @@ async def get_history(request: Request) -> Response:
     # messages) from an in-flight tail (seq > history_seq, not yet persisted).
     bus = _supervisor(request).bus_peek(record.id, session_id)
     history_seq = bus.history_seq if bus is not None else 0
-    return _cached_json({
-        "id": data.get("id"),
-        "name": data.get("name"),
-        "model": data.get("model"),
-        "message_count": len(messages),
-        "offset": offset,
-        "history_seq": history_seq,
-        "messages": messages[offset:offset + limit],
-    }, "max-age=10")
+    return _cached_json(
+        {
+            "id": data.get("id"),
+            "name": data.get("name"),
+            "model": data.get("model"),
+            "message_count": len(messages),
+            "offset": offset,
+            "history_seq": history_seq,
+            "messages": messages[offset : offset + limit],
+        },
+        "max-age=10",
+    )
 
 
 async def get_session_image(request: Request) -> Response:
@@ -764,8 +785,7 @@ async def get_session_image(request: Request) -> Response:
         except OSError:
             continue
         return Response(
-            data, media_type=media,
-            headers={"cache-control": "public, max-age=31536000, immutable"}
+            data, media_type=media, headers={"cache-control": "public, max-age=31536000, immutable"}
         )
     return _error(404, "not_found", "unknown image")
 

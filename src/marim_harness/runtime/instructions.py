@@ -102,9 +102,7 @@ _ON_REQUEST_MEMORY_POLICY = (
 )
 
 
-def load_project_instructions(
-    workspace_root, filename: str | None = None
-) -> str | None:
+def load_project_instructions(workspace_root, filename: str | None = None) -> str | None:
     """Read project-specific agent instructions from the workspace root.
 
     When *filename* is given, try only that file.  Otherwise iterate the
@@ -189,10 +187,7 @@ def _build_memory_index(global_scope_, project_scope_) -> str:
         parts.append(f"# Project memory\n\n{project_index}")
     if not parts:
         return ""
-    return (
-        "Memory index (use recall for full entries, "
-        "remember to save):\n\n" + "\n\n".join(parts)
-    )
+    return "Memory index (use recall for full entries, remember to save):\n\n" + "\n\n".join(parts)
 
 
 def _scratchpad_block(ctx: RunContext[Deps]) -> str:
@@ -242,10 +237,7 @@ def _global_instructions(ctx: RunContext[Deps]) -> str:
     path = global_instructions_path()
     home = Path.home()
     shown = f"~/{path.relative_to(home)}" if path.is_relative_to(home) else str(path)
-    return (
-        f"Global instructions from {shown} "
-        f"(apply to every project):\n\n{text}"
-    )
+    return f"Global instructions from {shown} (apply to every project):\n\n{text}"
 
 
 def _project_instructions(ctx: RunContext[Deps]) -> str:
@@ -280,7 +272,8 @@ def _memory_indexes(ctx: RunContext[Deps]) -> str:
 
 def _skill_index(ctx: RunContext[Deps]) -> str:
     skills = discover_skills(
-        ctx.deps.workspace.root, trust_project=ctx.deps.trust.project,
+        ctx.deps.workspace.root,
+        trust_project=ctx.deps.trust.project,
         dirs=ctx.deps.workspace.skill_dirs,
     )
     text = skills_index_text(skills)
@@ -326,8 +319,12 @@ def _advisor_guidance(ctx: RunContext[Deps]) -> str:
 
 
 def register_instructions(
-    agent: HarnessAgent, mcp_manager: McpManager, proactive_memory: bool,
-    *, global_instructions: bool = True, groups: ToolGroups | None = None,
+    agent: HarnessAgent,
+    mcp_manager: McpManager,
+    proactive_memory: bool,
+    *,
+    global_instructions: bool = True,
+    groups: ToolGroups | None = None,
 ) -> None:
     """Register all dynamic instruction closures on ``agent``.
 
@@ -372,9 +369,7 @@ def register_instructions(
 
     async def _tool_catalog(ctx: RunContext[Deps]) -> str:
         ws = ctx.deps.workspace
-        return await tool_catalog_text(
-            mcp_manager, ws.tool_search, ws.tool_search_threshold
-        )
+        return await tool_catalog_text(mcp_manager, ws.tool_search, ws.tool_search_threshold)
 
     def _memory_policy(ctx: RunContext[Deps]) -> str:
         if proactive_memory:

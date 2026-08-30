@@ -48,7 +48,12 @@ def test_build_cli_argv_disallowed_tools():
     # deny headless -p honors — and it must be emitted even when the allowlist
     # maps empty and --allowedTools is omitted entirely.
     argv = build_cli_argv(
-        "claude", "task", "SYSTEM", "plan", [], None,
+        "claude",
+        "task",
+        "SYSTEM",
+        "plan",
+        [],
+        None,
         disallowed_tools=["WebFetch", "WebSearch"],
     )
     assert "--allowedTools" not in argv
@@ -69,7 +74,7 @@ def test_build_cli_argv_safe_mode():
     assert "--safe-mode" in argv
 
 
-_FAKE_STREAM = '''#!{python}
+_FAKE_STREAM = """#!{python}
 import json, sys
 for o in [
     {{"type": "system", "subtype": "init", "session_id": "sess-abc",
@@ -82,7 +87,7 @@ for o in [
       "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
 ]:
     sys.stdout.write(json.dumps(o) + "\\n")
-'''
+"""
 
 
 def _script(tmp_path: Path, body: str) -> str:
@@ -101,9 +106,15 @@ async def test_run_captures_session_id_and_checkpoints(tmp_path):
 
     runner = ClaudeCliRunner(None, None)
     result = await runner.run(
-        binary=_script(tmp_path, _FAKE_STREAM), prompt="task", system_prompt="sys",
-        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
-        stream_id="sg-cli", checkpoint=ckpt,
+        binary=_script(tmp_path, _FAKE_STREAM),
+        prompt="task",
+        system_prompt="sys",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=[],
+        model=None,
+        stream_id="sg-cli",
+        checkpoint=ckpt,
     )
     assert result.session_id == "sess-abc"
     # The transcript grew twice (two assistant messages); each growth checkpointed,
@@ -124,16 +135,22 @@ async def test_resume_session_id_threads_into_argv(tmp_path):
     )
     runner = ClaudeCliRunner(None, None)
     await runner.run(
-        binary=_script(tmp_path, body), prompt="continue", system_prompt="sys",
-        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
-        stream_id="sg-cli", resume_session_id="sess-abc",
+        binary=_script(tmp_path, body),
+        prompt="continue",
+        system_prompt="sys",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=[],
+        model=None,
+        stream_id="sg-cli",
+        resume_session_id="sess-abc",
     )
     argv = json.loads(argv_file.read_text())
     assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
     assert "--append-system-prompt" not in argv  # session already has its prompt
 
 
-_STREAM_WITH_NOISE = '''#!{python}
+_STREAM_WITH_NOISE = """#!{python}
 import sys
 sys.stdout.write("not json at all\\n")
 sys.stdout.write("{{\\n")  # a line that looks JSON-ish but fails to parse
@@ -142,7 +159,7 @@ sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
     {{"type": "text", "text": "hi"}}]}}}}) + "\\n")
 sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
     "result": "done despite noise", "num_turns": 1, "usage": {{}}}}) + "\\n")
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -152,19 +169,24 @@ async def test_run_skips_non_json_lines(tmp_path):
     # it must not crash the run or appear in the transcript/result.
     runner = ClaudeCliRunner(None, None)
     result = await runner.run(
-        binary=_script(tmp_path, _STREAM_WITH_NOISE), prompt="task", system_prompt="sys",
-        cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+        binary=_script(tmp_path, _STREAM_WITH_NOISE),
+        prompt="task",
+        system_prompt="sys",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=[],
+        model=None,
         stream_id="sg-cli",
     )
     assert result.output == "done despite noise"
 
 
-_STREAM_NO_RESULT = '''#!{python}
+_STREAM_NO_RESULT = """#!{python}
 import json, sys
 sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
     {{"type": "text", "text": "no result ever comes"}}]}}}}) + "\\n")
 sys.stderr.write("some diagnostic noise\\n")
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -176,8 +198,13 @@ async def test_run_raises_when_stream_ends_without_result(tmp_path):
     runner = ClaudeCliRunner(None, None)
     with pytest.raises(CliRunError) as exc:
         await runner.run(
-            binary=_script(tmp_path, _STREAM_NO_RESULT), prompt="task", system_prompt="sys",
-            cwd=str(tmp_path), allow_gated=False, allowed_tools=[], model=None,
+            binary=_script(tmp_path, _STREAM_NO_RESULT),
+            prompt="task",
+            system_prompt="sys",
+            cwd=str(tmp_path),
+            allow_gated=False,
+            allowed_tools=[],
+            model=None,
             stream_id="sg-cli",
         )
     assert "no result" in str(exc.value)
@@ -198,7 +225,7 @@ def test_synth_usage_rounds_micro_usd():
 # never reaches EOF even after we exit. stdout/stdin are redirected away from the
 # daemon so ONLY stderr stays held (otherwise stdout wouldn't EOF either). This
 # reproduces the `nohup … &` hang the bounded drain must survive.
-_STREAM_STDERR_HELD = '''#!{python}
+_STREAM_STDERR_HELD = """#!{python}
 import json, sys, subprocess
 subprocess.Popen(
     [{python!r}, "-c", "import time; time.sleep(30)"],
@@ -208,7 +235,7 @@ sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
     "result": "done", "num_turns": 1,
     "usage": {{"input_tokens": 1, "output_tokens": 1}}}}) + "\\n")
 sys.stdout.flush()
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -221,9 +248,14 @@ async def test_run_returns_when_stderr_never_eofs(tmp_path):
     runner = ClaudeCliRunner(None, None)
     result = await asyncio.wait_for(
         runner.run(
-            binary=_script(tmp_path, _STREAM_STDERR_HELD), prompt="task",
-            system_prompt="sys", cwd=str(tmp_path), allow_gated=False,
-            allowed_tools=[], model=None, stream_id="sg-cli",
+            binary=_script(tmp_path, _STREAM_STDERR_HELD),
+            prompt="task",
+            system_prompt="sys",
+            cwd=str(tmp_path),
+            allow_gated=False,
+            allowed_tools=[],
+            model=None,
+            stream_id="sg-cli",
         ),
         timeout=15,
     )
@@ -232,14 +264,14 @@ async def test_run_returns_when_stderr_never_eofs(tmp_path):
 
 # A fake claude emitting an NDJSON line far larger than asyncio's 64 KiB readline
 # buffer cap — the exact crash _iter_ndjson_lines was written to prevent.
-_STREAM_HUGE_LINE = '''#!{python}
+_STREAM_HUGE_LINE = """#!{python}
 import json, sys
 big = "x" * (70 * 1024)
 sys.stdout.write(json.dumps({{"type": "assistant", "message": {{"content": [
     {{"type": "text", "text": big}}]}}}}) + "\\n")
 sys.stdout.write(json.dumps({{"type": "result", "subtype": "success",
     "result": big, "num_turns": 1, "usage": {{}}}}) + "\\n")
-'''
+"""
 
 
 @pytest.mark.anyio
@@ -250,8 +282,13 @@ async def test_run_parses_ndjson_line_over_64kib(tmp_path):
     # ("chunk is longer than limit") on the real StreamReader here.
     runner = ClaudeCliRunner(None, None)
     result = await runner.run(
-        binary=_script(tmp_path, _STREAM_HUGE_LINE), prompt="task",
-        system_prompt="sys", cwd=str(tmp_path), allow_gated=False,
-        allowed_tools=[], model=None, stream_id="sg-cli",
+        binary=_script(tmp_path, _STREAM_HUGE_LINE),
+        prompt="task",
+        system_prompt="sys",
+        cwd=str(tmp_path),
+        allow_gated=False,
+        allowed_tools=[],
+        model=None,
+        stream_id="sg-cli",
     )
     assert result.output == "x" * (70 * 1024)

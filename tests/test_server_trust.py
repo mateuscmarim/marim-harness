@@ -52,12 +52,16 @@ def app(tmp_path, monkeypatch):
             workspace=WorkspaceConfig(root=workspace, mode=mode or Mode.auto),
             ui=UIHooks(),
         )
-        return Harness(model=_reply_model(), provider=BuiltinToolProvider(),
-                       deps=deps, instructions="You are a coding agent.",
-                       store=store, manager=manager)
+        return Harness(
+            model=_reply_model(),
+            provider=BuiltinToolProvider(),
+            deps=deps,
+            instructions="You are a coding agent.",
+            store=store,
+            manager=manager,
+        )
 
-    registry = WorkspaceRegistry(tmp_path / "state" / "workspaces.json",
-                                 tmp_path / "managed")
+    registry = WorkspaceRegistry(tmp_path / "state" / "workspaces.json", tmp_path / "managed")
     supervisor = SessionSupervisor(factory, idle_ttl=3600.0)
     return create_app(registry=registry, supervisor=supervisor, token=TOKEN), tmp_path
 
@@ -72,8 +76,9 @@ def _mk_project_with_skill(tmp_path, name="proj") -> Path:
 
 
 def _register_workspace(tc, project: Path, name="proj") -> str:
-    return tc.post("/v1/workspaces", headers=AUTH,
-                   json={"name": name, "path": str(project)}).json()["id"]
+    return tc.post(
+        "/v1/workspaces", headers=AUTH, json={"name": name, "path": str(project)}
+    ).json()["id"]
 
 
 def _poll_idle(tc, base, timeout=10.0):
@@ -81,7 +86,9 @@ def _poll_idle(tc, base, timeout=10.0):
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if tc.get(base, headers=AUTH).json()["status"] == "idle":
+        resp = tc.get(base, headers=AUTH)
+        assert resp.status_code == 200, f"{base} returned {resp.status_code}: {resp.text}"
+        if resp.json()["status"] == "idle":
             return
         time.sleep(0.02)
     raise AssertionError("session never reached idle")
@@ -125,12 +132,14 @@ def test_post_trust_grant_persists_and_get_reflects_store(app):
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
 
-        granted = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                          json={"trusted": True})
+        granted = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
         assert granted.status_code == 200
         body = granted.json()
         assert body == {
-            "trusted": True, "applied_sessions": 0, "restart_note": None, "failed_sessions": [],
+            "trusted": True,
+            "applied_sessions": 0,
+            "restart_note": None,
+            "failed_sessions": [],
         }
 
         from marim_harness.trust import stored_decision
@@ -150,16 +159,15 @@ def test_post_trust_grant_hot_applies_to_live_session(app):
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                      json={"name": "run1", "mode": "auto"}).json()["id"]
+        sid = tc.post(
+            f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1", "mode": "auto"}
+        ).json()["id"]
         base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
         # Mount a live host by driving one turn to completion.
-        assert tc.post(f"{base}/messages", headers=AUTH,
-                       json={"prompt": "hi"}).status_code == 202
+        assert tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
         _poll_idle(tc, base)
 
-        granted = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                          json={"trusted": True})
+        granted = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
         assert granted.status_code == 200
         assert granted.json()["applied_sessions"] == 1
         assert granted.json()["restart_note"] is None
@@ -178,17 +186,17 @@ def test_post_trust_grant_one_host_failure_does_not_strand_the_others(app, monke
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        sid1 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                       json={"name": "run1", "mode": "auto"}).json()["id"]
-        sid2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                       json={"name": "run2", "mode": "auto"}).json()["id"]
+        sid1 = tc.post(
+            f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1", "mode": "auto"}
+        ).json()["id"]
+        sid2 = tc.post(
+            f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run2", "mode": "auto"}
+        ).json()["id"]
         base1 = f"/v1/workspaces/{ws_id}/sessions/{sid1}"
         base2 = f"/v1/workspaces/{ws_id}/sessions/{sid2}"
-        assert tc.post(f"{base1}/messages", headers=AUTH,
-                       json={"prompt": "hi"}).status_code == 202
+        assert tc.post(f"{base1}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
         _poll_idle(tc, base1)
-        assert tc.post(f"{base2}/messages", headers=AUTH,
-                       json={"prompt": "hi"}).status_code == 202
+        assert tc.post(f"{base2}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
         _poll_idle(tc, base2)
 
         host1 = application.state.supervisor.peek(ws_id, sid1)
@@ -200,14 +208,11 @@ def test_post_trust_grant_one_host_failure_does_not_strand_the_others(app, monke
 
         monkeypatch.setattr(host1.harness, "apply_project_trust", _boom)
 
-        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                       json={"trusted": True})
+        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
         assert resp.status_code == 200
         body = resp.json()
         assert body["applied_sessions"] == 1
-        assert body["failed_sessions"] == [
-            {"session_id": sid1, "error": "lsp rebuild blew up"}
-        ]
+        assert body["failed_sessions"] == [{"session_id": sid1, "error": "lsp rebuild blew up"}]
 
         assert host1.harness.deps.trust.project is False
         assert host2.harness.deps.trust.project is True
@@ -225,16 +230,19 @@ def test_post_trust_grant_scoped_to_its_workspace(app):
         ws_b = _register_workspace(tc, proj_b, name="b")
         sids = {}
         for ws_id, name in ((ws_a, "run-a"), (ws_b, "run-b")):
-            sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                          json={"name": name, "mode": "auto"}).json()["id"]
+            sid = tc.post(
+                f"/v1/workspaces/{ws_id}/sessions",
+                headers=AUTH,
+                json={"name": name, "mode": "auto"},
+            ).json()["id"]
             base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
-            assert tc.post(f"{base}/messages", headers=AUTH,
-                           json={"prompt": "hi"}).status_code == 202
+            assert (
+                tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
+            )
             _poll_idle(tc, base)
             sids[ws_id] = sid
 
-        granted = tc.post(f"/v1/workspaces/{ws_a}/trust", headers=AUTH,
-                          json={"trusted": True})
+        granted = tc.post(f"/v1/workspaces/{ws_a}/trust", headers=AUTH, json={"trusted": True})
         assert granted.status_code == 200
         assert granted.json()["applied_sessions"] == 1  # A's host only
 
@@ -247,8 +255,7 @@ def test_post_trust_grant_scoped_to_its_workspace(app):
 
         assert stored_decision(proj_a).trusted is True
         assert stored_decision(proj_b) is None
-        assert tc.get(f"/v1/workspaces/{ws_b}/trust",
-                      headers=AUTH).json()["trusted"] is False
+        assert tc.get(f"/v1/workspaces/{ws_b}/trust", headers=AUTH).json()["trusted"] is False
 
 
 def test_revoke_clears_trust_prompt_pending(app):
@@ -259,13 +266,11 @@ def test_revoke_clears_trust_prompt_pending(app):
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                          json={"name": "run1"})
+        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1"})
         sid = created.json()["id"]
         assert created.json()["trust_prompt_pending"] is True
 
-        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                          json={"trusted": False})
+        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": False})
         assert revoked.status_code == 200
 
         detail = tc.get(f"/v1/workspaces/{ws_id}/sessions/{sid}", headers=AUTH).json()
@@ -273,8 +278,7 @@ def test_revoke_clears_trust_prompt_pending(app):
         rows = tc.get(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH).json()["sessions"]
         [row] = [r for r in rows if r["id"] == sid]
         assert row["trust_prompt_pending"] is False
-        created2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                           json={"name": "run2"})
+        created2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run2"})
         assert created2.json()["trust_prompt_pending"] is False
 
 
@@ -283,15 +287,15 @@ def test_post_trust_revoke_reports_restart_note_for_live_session(app):
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                      json={"name": "run1", "mode": "auto"}).json()["id"]
+        sid = tc.post(
+            f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1", "mode": "auto"}
+        ).json()["id"]
         base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
         tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"})
         _poll_idle(tc, base)
 
         tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
-        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                          json={"trusted": False})
+        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": False})
         assert revoked.status_code == 200
         body = revoked.json()
         assert body["trusted"] is False
@@ -310,8 +314,7 @@ def test_post_trust_revoke_no_live_sessions_has_no_restart_note(app):
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                          json={"trusted": False})
+        revoked = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": False})
         assert revoked.status_code == 200
         body = revoked.json()
         assert body["applied_sessions"] == 0
@@ -341,8 +344,7 @@ def test_session_payload_includes_trust_prompt_pending(app):
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
 
-        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                          json={"name": "run1"})
+        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1"})
         assert created.json()["trust_prompt_pending"] is True
         sid = created.json()["id"]
 
@@ -358,8 +360,7 @@ def test_session_payload_includes_trust_prompt_pending(app):
         # must all agree the prompt is no longer owed.
         tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
 
-        created2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                           json={"name": "run2"})
+        created2 = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run2"})
         assert created2.json()["trust_prompt_pending"] is False
         detail2 = tc.get(f"/v1/workspaces/{ws_id}/sessions/{sid}", headers=AUTH).json()
         assert detail2["trust_prompt_pending"] is False
@@ -372,8 +373,7 @@ def test_session_payload_pending_false_for_empty_surface(app):
     project.mkdir()
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project, name="plain")
-        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                          json={"name": "run1"})
+        created = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1"})
         assert created.json()["trust_prompt_pending"] is False
 
 
@@ -384,12 +384,12 @@ def test_grant_persist_failure_still_flips_state_and_500s(app, monkeypatch):
     project = _mk_project_with_skill(tmp_path)
     with TestClient(application) as tc:
         ws_id = _register_workspace(tc, project)
-        sid = tc.post(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH,
-                      json={"name": "run1", "mode": "auto"}).json()["id"]
+        sid = tc.post(
+            f"/v1/workspaces/{ws_id}/sessions", headers=AUTH, json={"name": "run1", "mode": "auto"}
+        ).json()["id"]
         base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
         # Mount a live host by driving one turn to completion.
-        assert tc.post(f"{base}/messages", headers=AUTH,
-                       json={"prompt": "hi"}).status_code == 202
+        assert tc.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
         _poll_idle(tc, base)
 
         # Monkeypatch record_decision to raise OSError.
@@ -399,8 +399,7 @@ def test_grant_persist_failure_still_flips_state_and_500s(app, monkeypatch):
         monkeypatch.setattr("marim_harness.server.http.record_decision", boom)
 
         # POST trust grant; the store write fails but the state flips live.
-        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH,
-                       json={"trusted": True})
+        resp = tc.post(f"/v1/workspaces/{ws_id}/trust", headers=AUTH, json={"trusted": True})
         assert resp.status_code == 500
         body = resp.json()
         assert body["error"]["code"] == "trust_store_error"

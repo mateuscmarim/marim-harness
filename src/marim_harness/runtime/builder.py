@@ -23,6 +23,13 @@ from .permissions import Mode
 
 logger = logging.getLogger(__name__)
 
+# The tool name pydantic-ai gives a structured output schema
+# (``pydantic_ai._output.DEFAULT_OUTPUT_TOOL_NAME``). Mirrored rather than
+# imported: it lives behind a private module, and `with_output_type` never
+# passes a `name=` override, so a structured harness always registers exactly
+# this one. See _check_custom_tools for what it guards.
+_OUTPUT_TOOL_NAME = "final_result"
+
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
@@ -40,10 +47,7 @@ class BuilderError(ValueError):
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = list(problems)
-        super().__init__(
-            "invalid harness composition:\n"
-            + "\n".join(f"  - {p}" for p in problems)
-        )
+        super().__init__("invalid harness composition:\n" + "\n".join(f"  - {p}" for p in problems))
 
 
 class HarnessBuilder:
@@ -70,7 +74,6 @@ class HarnessBuilder:
         self._lsp_registry: LspRegistry | None = None
         self._mcp_servers: list[object] = []
         self._capabilities: list[object] = []
-        self._forge_backend: object | None = None
         self._subagents: list[AgentDef] = []
         self._custom_tools: list[tuple[Callable, bool]] = []
         self._instructions_replace: str | None = None
@@ -87,6 +90,7 @@ class HarnessBuilder:
         self._combined_job_tool = False
         self._deps_override = None
         self._config_overrides: dict[str, Any] = {}
+        self._output_type: Any = None
         self._built = False
 
     # -- composition setters (chainable, no I/O) ---------------------------
@@ -119,8 +123,9 @@ class HarnessBuilder:
         self._combined_job_tool = combined
         return self
 
-    def with_lsp(self, *, enabled: bool = True, tools: bool = True,
-                 registry: LspRegistry | None = None) -> HarnessBuilder:
+    def with_lsp(
+        self, *, enabled: bool = True, tools: bool = True, registry: LspRegistry | None = None
+    ) -> HarnessBuilder:
         """Turn the LSP manager on (default) or off; ``tools`` (only meaningful
         when ``enabled``) additionally registers the six navigation tools.
         ``enabled=False`` is the escape hatch the CLI preset needs to honor its
@@ -151,10 +156,6 @@ class HarnessBuilder:
         self._capabilities.append(capability)
         return self
 
-    def with_forge(self, backend: object) -> HarnessBuilder:
-        self._forge_backend = backend
-        return self
-
     def with_subagent(self, defn: AgentDef) -> HarnessBuilder:
         self._groups["spawn"] = True  # a spec without spawn_agent is dead weight
         self._subagents.append(defn)
@@ -164,16 +165,18 @@ class HarnessBuilder:
         self._custom_tools.append((fn, requires_approval))
         return self
 
-    def with_instructions(self, *, extra: str | None = None,
-                          replace: str | None = None) -> HarnessBuilder:
+    def with_instructions(
+        self, *, extra: str | None = None, replace: str | None = None
+    ) -> HarnessBuilder:
         if replace is not None:
             self._instructions_replace = replace
         if extra is not None:
             self._instructions_extra.append(extra)
         return self
 
-    def with_sessions(self, dir: Path | None = None, *, stats: bool = True,
-                      stats_dir: Path | None = None) -> HarnessBuilder:
+    def with_sessions(
+        self, dir: Path | None = None, *, stats: bool = True, stats_dir: Path | None = None
+    ) -> HarnessBuilder:
         """Turn on persisted sessions. ``stats`` (on by default when sessions
         are on) additionally records per-turn usage into the stats ledger
         under ``stats_dir`` (default: alongside the sessions dir — see
@@ -193,8 +196,9 @@ class HarnessBuilder:
         self._hook_runner = runner
         return self
 
-    def with_advisor(self, model: str, *, max_tokens: int = 2048,
-                     max_uses: int | None = None) -> HarnessBuilder:
+    def with_advisor(
+        self, model: str, *, max_tokens: int = 2048, max_uses: int | None = None
+    ) -> HarnessBuilder:
         """Configure an advisor: a model the main agent can consult mid-task
         via the ``advisor`` tool (the full transcript is forwarded to it).
         ``model`` is a pydantic-ai model string, or a qualified
@@ -213,6 +217,15 @@ class HarnessBuilder:
         (``off`` disables it — the default). The session store's thinking level
         overrides this at runtime (harness.set_thinking_level switches it live)."""
         return self.with_config_overrides(thinking_level=level)
+
+    def with_output_type(self, schema: Any) -> HarnessBuilder:
+        """Structured output for every turn: a pydantic ``BaseModel`` subclass
+        or an object-rooted JSON Schema dict. ``run_turn`` then returns a
+        ``TurnOutcome`` whose ``structured_output`` is the validated object.
+        The schema is a property of this composition — one harness, one
+        schema."""
+        self._output_type = schema
+        return self
 
     def with_defaults(self) -> HarnessBuilder:
         """The full marim toolset: every group, LSP with tools, spawn, jobs,
@@ -280,6 +293,19 @@ class HarnessBuilder:
             name = fn.__name__
             if name in loaded_names:
                 problems.append(f"custom tool {name!r} collides with a built-in tool")
+            if self._output_type is not None and name == _OUTPUT_TOOL_NAME:
+                # A structured harness registers pydantic-ai's output tool under
+                # this name on EVERY run round (TurnController._run_output_type),
+                # so a same-named custom tool makes the combined toolset raise
+                # UserError at the first request — build() would otherwise hand
+                # back a harness whose every turn is dead on arrival. Scoped to
+                # a structured composition on purpose: a plain harness's output
+                # is text, no output tool exists, and `final_result` is then a
+                # perfectly ordinary tool name we must not reject.
+                problems.append(
+                    f"with_output_type: custom tool {name!r} collides with pydantic-ai's "
+                    "output tool — rename the tool"
+                )
             if name in seen_custom:
                 problems.append(f"custom tool {name!r} registered twice")
             seen_custom.add(name)
@@ -301,18 +327,73 @@ class HarnessBuilder:
         for defn in self._subagents:
             unknown = defn.tools - SUBAGENT_TOOLS
             if unknown:
-                problems.append(
-                    f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
+                problems.append(f"sub-agent {defn.name!r} grants unknown tools: {sorted(unknown)}")
             missing = (defn.tools & SUBAGENT_TOOLS) - grantable
             if missing:
                 lsp_missing = missing & LSP_TOOLS
                 hint = (
                     " (LSP tools are disabled — call with_lsp(tools=True))"
-                    if lsp_missing and not self._lsp_tools else ""
+                    if lsp_missing and not self._lsp_tools
+                    else ""
                 )
                 problems.append(
                     f"sub-agent {defn.name!r} grants tools from disabled groups: "
-                    f"{sorted(missing)}{hint}")
+                    f"{sorted(missing)}{hint}"
+                )
+
+    def _check_output_type(self, problems: list[str]) -> None:
+        from pydantic import BaseModel
+
+        schema = self._output_type
+        if schema is None:
+            return
+        if isinstance(schema, dict):
+            if schema.get("type") != "object":
+                problems.append(
+                    "with_output_type: JSON Schema must be object-rooted "
+                    f"(got type {schema.get('type')!r})"
+                )
+                return
+            self._check_dict_schema(schema, problems)
+        elif not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            problems.append(
+                "with_output_type: expected a pydantic BaseModel subclass or "
+                f"an object-rooted JSON Schema dict, got {schema!r}"
+            )
+
+    @staticmethod
+    def _check_dict_schema(schema: dict, problems: list[str]) -> None:
+        """Both remaining ways an object-rooted dict can still be unusable —
+        checked HERE, at build(), because the alternative is discovering them
+        mid-turn after the token spend: the schema only meets its validator in
+        _correct_dict_output, and StructuredDict is only constructed when the
+        TurnController is built inside build().
+
+        1. Not well-formed JSON Schema (a typo'd `type`, say). Same guard the
+           workflows path applies before spending a spawn
+           (workflows/schema.py's check_valid_schema) — for the same reason.
+        2. Well-formed but unsupported by pydantic-ai: a recursive `$ref`/`$defs`
+           schema makes StructuredDict raise UserError. Pre-resolving it here
+           (rather than wrapping the TurnController construction) keeps the
+           translation in the one place that already speaks BuilderError, and
+           costs only a discarded duplicate construction; every other builder
+           misconfiguration in this codebase is a BuilderError at build()."""
+        import jsonschema
+        import jsonschema.validators
+        from pydantic_ai import StructuredDict
+        from pydantic_ai.exceptions import UserError
+
+        try:
+            jsonschema.validators.validator_for(schema).check_schema(schema)
+        except jsonschema.SchemaError as exc:
+            problems.append(
+                f"with_output_type: malformed JSON Schema: {exc.message} (at {exc.json_path})"
+            )
+            return
+        try:
+            StructuredDict(schema)
+        except UserError as exc:
+            problems.append(f"with_output_type: {exc}")
 
     def _open_sessions(
         self, problems: list[str]
@@ -349,23 +430,34 @@ class HarnessBuilder:
         # Imports deferred so `import marim_harness` (lazy __getattr__) stays
         # cheap until a builder is actually built.
         from ..compaction import make_summarizer, make_titler
-        from ..tools.names import FORGE_TOOLS, LSP_TOOLS
+        from ..tools.names import LSP_TOOLS
         from ..tools.provider import ToolGroups
         from .deps import Deps, WorkspaceConfig
         from .harness import Harness, HarnessConfig
 
         if self._built:
-            raise RuntimeError("this HarnessBuilder already built a Harness; "
-                               "create a new builder for a second one")
+            raise RuntimeError(
+                "this HarnessBuilder already built a Harness; create a new builder for a second one"
+            )
 
         problems: list[str] = []
 
+        # ``with_config_overrides`` is a raw seam: the dict is merged over
+        # ``config_fields`` at the END of build(), after every check below has
+        # run. For ``output_type`` that meant a value never seen by
+        # ``_check_output_type`` (schema shape) or ``_check_custom_tools`` (the
+        # ``final_result`` collision guard) — both read ``self._output_type`` —
+        # handing back a harness whose every turn dies on the first request.
+        # Fold the effective value into the typed field up front so the checks
+        # validate exactly what build() will ship.
+        if "output_type" in self._config_overrides:
+            self._output_type = self._config_overrides["output_type"]
+
         model = self._resolve_model(problems)
 
-        groups = ToolGroups(**{
-            f.name: self._groups.get(f.name, False)
-            for f in dataclasses.fields(ToolGroups)
-        })
+        groups = ToolGroups(
+            **{f.name: self._groups.get(f.name, False) for f in dataclasses.fields(ToolGroups)}
+        )
         builtin_names = groups.enabled_tool_names()
         # The full set of names actually loaded on the main agent, for the
         # custom-tool collision check just below. builtin_names alone missed
@@ -373,11 +465,9 @@ class HarnessBuilder:
         #   - LSP navigation tools (goto_definition, hover, ...) — registered
         #     as a separate deferred toolset (provider.lsp_toolset()), gated
         #     on with_lsp(tools=True) rather than a ToolGroups field.
-        #   - forge tools (list_prs, create_pr, ...) — attached as their own
-        #     pydantic-ai toolset (build_forge_toolset), gated on with_forge().
         # A custom tool named e.g. "goto_definition" used to pass build()
-        # cleanly and then collide with the LSP toolset mid-run. Folding both
-        # sets in here (only when their gate is actually on) catches that at
+        # cleanly and then collide with the LSP toolset mid-run. Folding it
+        # in here (only when its gate is actually on) catches that at
         # build() time instead.
         #
         # MCP server tool names are NOT included: MCP servers are connected
@@ -386,8 +476,6 @@ class HarnessBuilder:
         # between a custom tool and an MCP tool name can still only surface at
         # connect/run time; that's an accepted gap, not an oversight.
         loaded_names = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
-        if self._forge_backend is not None:
-            loaded_names |= FORGE_TOOLS
         self._check_custom_tools(loaded_names, problems)
 
         # with_hooks sets self._hook_runner, but the hook runner only ever
@@ -408,6 +496,8 @@ class HarnessBuilder:
 
         manager, store, stats_ledger = self._open_sessions(problems)
 
+        self._check_output_type(problems)
+
         if problems:
             raise BuilderError(problems)
 
@@ -418,16 +508,19 @@ class HarnessBuilder:
 
         deps = self._deps_override
         if deps is None:
-            deps = Deps(workspace=WorkspaceConfig(
-                root=self._workspace,
-                mode=self._mode,
-                command_policy=self._command_policy or CommandPolicy(),
-                memory_root=self._memory_root,
-                skill_dirs=self._skill_dirs,
-            ))
+            deps = Deps(
+                workspace=WorkspaceConfig(
+                    root=self._workspace,
+                    mode=self._mode,
+                    command_policy=self._command_policy or CommandPolicy(),
+                    memory_root=self._memory_root,
+                    skill_dirs=self._skill_dirs,
+                )
+            )
             deps.hooks = self._hook_runner
 
         from .instructions import DEFAULT_INSTRUCTIONS
+
         instructions = self._instructions_replace or DEFAULT_INSTRUCTIONS
         if self._instructions_extra:
             instructions = "\n\n".join([instructions, *self._instructions_extra])
@@ -456,8 +549,6 @@ class HarnessBuilder:
         config_fields: dict[str, Any] = dict(
             lsp_enabled=self._lsp,
             lsp_registry=lsp_registry,
-            forge_enabled=self._forge_backend is not None,
-            forge_backend=self._forge_backend,
             global_instructions=self._global_instructions,
             # Threads the composed ToolGroups through to register_instructions
             # so instruction closures that advertise a tool group (spawn/
@@ -472,12 +563,12 @@ class HarnessBuilder:
             stats_ledger=stats_ledger,
             summarizer=make_summarizer(model),
             titler=make_titler(model),
+            output_type=self._output_type,
         )
         config_fields.update(self._config_overrides)
 
         self._built = True
-        return Harness(model, provider, deps, instructions,
-                       config=HarnessConfig(**config_fields))
+        return Harness(model, provider, deps, instructions, config=HarnessConfig(**config_fields))
 
 
 class _ComposedProvider(BuiltinToolProvider):
@@ -486,8 +577,9 @@ class _ComposedProvider(BuiltinToolProvider):
     the full permission model (auto runs, ask prompts, plan denies)."""
 
     def __init__(self, groups, extra_tools, *, register_lsp_tools, combined_job_tool):
-        super().__init__(groups, register_lsp_tools=register_lsp_tools,
-                         combined_job_tool=combined_job_tool)
+        super().__init__(
+            groups, register_lsp_tools=register_lsp_tools, combined_job_tool=combined_job_tool
+        )
         self._extra_tools = extra_tools
 
     def register(self, agent) -> None:

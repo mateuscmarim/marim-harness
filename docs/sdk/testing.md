@@ -64,7 +64,7 @@ async def test_custom_gated_tool_runs_in_auto_mode(tmp_path):
     )
     out = await harness.run_turn("deploy to prod")
     assert calls == ["prod"]      # gated tool executed (auto mode approved it)
-    assert out == "all done"
+    assert out.result == "all done"
 ```
 
 That test proves the whole chain: builder registration → model tool call →

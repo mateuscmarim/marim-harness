@@ -25,8 +25,10 @@ def _harness(tmp_path: Path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     return Harness(
-        TestModel(call_tools=[]), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        TestModel(call_tools=[]),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
 
@@ -170,8 +172,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
                 0: DeltaToolCall(
                     name="edit_file",
                     json_args=json.dumps(
-                        {"path": "a.txt",
-                         "edits": [{"old_string": "foo", "new_string": "bar"}]}
+                        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]}
                     ),
                     tool_call_id="tc-edit",
                 )
@@ -204,7 +205,7 @@ async def test_steer_during_approval_gap_buffers_not_stale_ctx(tmp_path):
 
     out = await harness.run_turn("change foo to bar", event_stream_handler=handler)
 
-    assert out == "done"
+    assert out.result == "done"
     assert observed["ctx"] is None  # stale ctx cleared before the approval gap
     assert observed["buffered"] == [("mid-approval steer", None)]
 
@@ -230,8 +231,10 @@ async def test_steer_flushed_into_failing_round_is_reclaimed(tmp_path):
         raise RuntimeError("round boom")
 
     harness = Harness(
-        FunctionModel(fn, stream_function=stream_fn), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        FunctionModel(fn, stream_function=stream_fn),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
     steered = {"done": False}
@@ -281,8 +284,7 @@ def _tui_app(tmp_path):
     from marim_harness.tools.provider import BuiltinToolProvider
 
     deps = _make_deps(tmp_path)
-    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps,
-                      instructions="test")
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     return HarnessApp(harness)
 
 
@@ -386,8 +388,10 @@ def _recording_streaming_harness(tmp_path, calls):
             yield "done"
 
     h = Harness(
-        FunctionModel(stream_function=stream_fn), BuiltinToolProvider(),
-        _make_deps(tmp_path), instructions="test",
+        FunctionModel(stream_function=stream_fn),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
     )
 
     @h.agent.tool_plain
@@ -419,7 +423,7 @@ async def test_steer_reaches_a_later_model_request(tmp_path):
         h.run_turn("hello", event_stream_handler=handler),
         steerer(),
     )
-    assert out == "done"
+    assert out.result == "done"
     flat = [str(c) for c in calls]
     assert any("STEER NOW" in c for c in flat), f"steer not injected: {calls}"
 

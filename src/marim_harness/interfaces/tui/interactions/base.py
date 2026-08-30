@@ -27,14 +27,22 @@ class InteractionPanel(Vertical):
     # these. While a panel is up, paging is for reading the transcript the
     # question refers to — that's the whole point of being inline.
     BINDINGS = [
-        Binding("pageup", "scroll_transcript('page_up')", "Scroll transcript",
-                priority=True, show=False),
-        Binding("pagedown", "scroll_transcript('page_down')", "Scroll transcript",
-                priority=True, show=False),
-        Binding("ctrl+up", "scroll_transcript('up')", "Scroll transcript",
-                priority=True, show=False),
-        Binding("ctrl+down", "scroll_transcript('down')", "Scroll transcript",
-                priority=True, show=False),
+        Binding(
+            "pageup", "scroll_transcript('page_up')", "Scroll transcript", priority=True, show=False
+        ),
+        Binding(
+            "pagedown",
+            "scroll_transcript('page_down')",
+            "Scroll transcript",
+            priority=True,
+            show=False,
+        ),
+        Binding(
+            "ctrl+up", "scroll_transcript('up')", "Scroll transcript", priority=True, show=False
+        ),
+        Binding(
+            "ctrl+down", "scroll_transcript('down')", "Scroll transcript", priority=True, show=False
+        ),
     ]
 
     DEFAULT_CSS = """
@@ -142,9 +150,7 @@ async def run_panel(app: App, panel: InteractionPanel) -> Any:
         # aren't focusable themselves (they focus an OptionList/SelectionList
         # descendant instead), so focusing the sibling widget would silently
         # no-op for those two panel types and leave them just as unreachable.
-        sibling = next(
-            (p for p in app.query(InteractionPanel) if p is not panel), None
-        )
+        sibling = next((p for p in app.query(InteractionPanel) if p is not panel), None)
         target = _focus_target(sibling) if sibling is not None else None
         if target is not None:
             target.focus()

@@ -1109,12 +1109,13 @@ wheels = [
 
 [[package]]
 name = "marim-harness"
-version = "0.4.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "genai-prices" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "markdownify" },
     { name = "multilspy" },
     { name = "pydantic-ai-slim", extra = ["google", "mcp", "openai"] },
@@ -1165,6 +1166,7 @@ requires-dist = [
     { name = "flatlatex", marker = "extra == 'tui'", specifier = ">=0.15" },
     { name = "genai-prices", specifier = ">=0.0.70" },
     { name = "httpx", specifier = ">=0.27" },
+    { name = "jsonschema", specifier = ">=4" },
     { name = "jsonschema", marker = "extra == 'workflows'", specifier = ">=4" },
     { name = "markdownify", specifier = ">=0.13" },
     { name = "multilspy", specifier = ">=0.0.10" },

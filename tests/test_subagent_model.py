@@ -16,16 +16,23 @@ from tests.conftest import _make_deps, _make_harness, _text_model
 
 def _spawn_with_model_model() -> FunctionModel:
     """Main agent: spawn explore with an explicit model override, then echo."""
+
     def fn(messages, info):
         for m in messages:
             for p in getattr(m, "parts", []):
-                if type(p).__name__ == "ToolReturnPart" and \
-                        getattr(p, "tool_name", "") == "spawn_agent":
+                if (
+                    type(p).__name__ == "ToolReturnPart"
+                    and getattr(p, "tool_name", "") == "spawn_agent"
+                ):
                     return ModelResponse(parts=[TextPart(content=f"done: {p.content}")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent",
-            args={"type": "explore", "task": "find X", "model": "cheap"},
-        )])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "explore", "task": "find X", "model": "cheap"},
+                )
+            ]
+        )
 
     return FunctionModel(fn)
 
@@ -83,9 +90,18 @@ async def test_run_forwards_model_to_build(tmp_path: Path):
     seen: dict = {}
 
     def fake_build(
-        type, max_output_chars=None, model=None, workspace_root=None, *,
-        defn=None, depth=0, mask_trigger=None, checkpoint=None, output_schema=None,
-        tier=None, thinking=None,
+        type,
+        max_output_chars=None,
+        model=None,
+        workspace_root=None,
+        *,
+        defn=None,
+        depth=0,
+        mask_trigger=None,
+        checkpoint=None,
+        output_schema=None,
+        tier=None,
+        thinking=None,
     ):
         seen["model"] = model
         return None, "stop here"
@@ -101,10 +117,19 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
     runner, so the model's choice of model reaches the sub-agent build."""
     captured: dict = {}
 
-    async def fake_run(type, task, stream_id, mcp_names=None,
-                       max_output_chars=None, model=None, isolation=None,
-                       caller_depth: int = 0, tier=None, output_schema=None,
-                       thinking=None):
+    async def fake_run(
+        type,
+        task,
+        stream_id,
+        mcp_names=None,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
+        thinking=None,
+    ):
         captured["model"] = model
         return "REPORT"
 
@@ -112,7 +137,7 @@ async def test_spawn_agent_tool_forwards_model(tmp_path: Path):
     h = _make_harness(_spawn_with_model_model(), deps)
     h.deps.services.run_subagent = fake_run
     out = await h.run_turn("investigate")
-    assert "REPORT" in out
+    assert "REPORT" in out.result
     assert captured["model"] == "cheap"
 
 

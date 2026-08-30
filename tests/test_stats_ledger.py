@@ -1,4 +1,5 @@
 """Stats JSONL ledger I/O."""
+
 from __future__ import annotations
 
 import json
@@ -76,6 +77,7 @@ def test_iter_skips_corrupt_and_unknown_v(tmp_path: Path):
     path = tmp_path / "turns.jsonl"
     good = _event()
     from marim_harness.stats.ledger import event_to_dict
+
     lines = [
         "not-json",
         json.dumps({**event_to_dict(good), "v": 99}),
@@ -90,21 +92,25 @@ def test_iter_skips_corrupt_and_unknown_v(tmp_path: Path):
 
 def test_append_does_not_raise_on_readonly(tmp_path: Path, monkeypatch):
     ledger = StatsLedger(tmp_path / "nope", "ws")
+
     # Force open to fail
     def boom(*a, **k):
         raise OSError("read-only")
+
     monkeypatch.setattr("builtins.open", boom)
     ledger.append(_event())  # must not raise
 
 
 def test_event_from_dict_defaults():
-    ev = event_from_dict({
-        "v": 1,
-        "ts": "t",
-        "day": "2026-07-28",
-        "session_id": "s",
-        "workspace": "w",
-    })
+    ev = event_from_dict(
+        {
+            "v": 1,
+            "ts": "t",
+            "day": "2026-07-28",
+            "session_id": "s",
+            "workspace": "w",
+        }
+    )
     assert ev is not None
     assert ev.input_tokens == 0
     assert ev.model is None
@@ -125,11 +131,15 @@ def test_ledger_recorder_skips_zero_and_writes_nonzero(tmp_path: Path):
     )
     rec.record(RunUsage())  # zero
     assert not ledger.workspace_path.exists()
-    rec.record(RunUsage(
-        input_tokens=100, output_tokens=20,
-        cache_read_tokens=10, cache_write_tokens=5,
-        details={COST_DETAIL_KEY: 1_000_000},  # $1.00 exact
-    ))
+    rec.record(
+        RunUsage(
+            input_tokens=100,
+            output_tokens=20,
+            cache_read_tokens=10,
+            cache_write_tokens=5,
+            details={COST_DETAIL_KEY: 1_000_000},  # $1.00 exact
+        )
+    )
     events = list(ledger.iter_workspace())
     assert len(events) == 1
     e = events[0]
@@ -202,9 +212,14 @@ def test_stats_package_cold_import():
     import sys
 
     r = subprocess.run(
-        [sys.executable, "-c",
-         "from marim_harness.stats import load_overview, overview, StatsLedger"],
-        capture_output=True, text=True, check=False,
+        [
+            sys.executable,
+            "-c",
+            "from marim_harness.stats import load_overview, overview, StatsLedger",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
 
@@ -216,9 +231,10 @@ def test_session_package_cold_import():
     import sys
 
     r = subprocess.run(
-        [sys.executable, "-c",
-         "import marim_harness.session; import marim_harness.stats"],
-        capture_output=True, text=True, check=False,
+        [sys.executable, "-c", "import marim_harness.session; import marim_harness.stats"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert r.returncode == 0, r.stderr
 
@@ -233,7 +249,8 @@ def test_iter_turns_skips_undecodable_and_corrupt_lines(tmp_path: Path):
         b"\xff\xfe not utf-8 at all\n"
         + b'{"v":1,"session_id":"torn","day":"2026-07-2\n'  # truncated json
         + b"\n"
-        + good.encode("utf-8") + b"\n"
+        + good.encode("utf-8")
+        + b"\n"
     )
 
     events = list(iter_turns(path))
@@ -244,10 +261,14 @@ def test_iter_turns_skips_undecodable_and_corrupt_lines(tmp_path: Path):
 def test_iter_turns_skips_bad_day_and_wrong_types(tmp_path: Path):
     path = tmp_path / "turns.jsonl"
     path.write_text(
-        json.dumps({"v": 1, "session_id": "s", "day": "not-a-date"}) + "\n"
-        + json.dumps({"v": 1, "session_id": 123, "day": "2026-07-28"}) + "\n"
-        + json.dumps({"v": 2, "session_id": "s", "day": "2026-07-28"}) + "\n"
-        + json.dumps({"v": 1, "session_id": "ok", "day": "2026-07-28"}) + "\n",
+        json.dumps({"v": 1, "session_id": "s", "day": "not-a-date"})
+        + "\n"
+        + json.dumps({"v": 1, "session_id": 123, "day": "2026-07-28"})
+        + "\n"
+        + json.dumps({"v": 2, "session_id": "s", "day": "2026-07-28"})
+        + "\n"
+        + json.dumps({"v": 1, "session_id": "ok", "day": "2026-07-28"})
+        + "\n",
         encoding="utf-8",
     )
     events = list(iter_turns(path))
@@ -255,26 +276,30 @@ def test_iter_turns_skips_bad_day_and_wrong_types(tmp_path: Path):
 
 
 def test_event_from_dict_coerces_numeric_fields():
-    e = event_from_dict({
-        "v": 1,
-        "session_id": "s",
-        "day": "2026-07-28",
-        "input_tokens": "120",       # numeric string
-        "output_tokens": 30.0,       # float
-        "cache_read_tokens": None,   # missing/null
-        "cache_write_tokens": "nope",  # uncoercible
-        "cost_usd": "0.25",
-        "session_duration_seconds": "12",
-        "model": 7,                  # not a string
-    })
+    e = event_from_dict(
+        {
+            "v": 1,
+            "session_id": "s",
+            "day": "2026-07-28",
+            "input_tokens": "120",  # numeric string
+            "output_tokens": 30.0,  # float
+            "cache_read_tokens": None,  # missing/null
+            "cache_write_tokens": "nope",  # uncoercible
+            "cost_usd": "0.25",
+            "session_duration_seconds": "12",
+            "model": 7,  # not a string
+        }
+    )
     assert e is not None
     assert (e.input_tokens, e.output_tokens) == (120, 30)
     assert (e.cache_read_tokens, e.cache_write_tokens) == (0, 0)
     assert e.cost_usd == 0.25
     assert e.session_duration_seconds == 12.0
     assert e.model is None
-    assert all(isinstance(v, int) for v in
-               (e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_write_tokens))
+    assert all(
+        isinstance(v, int)
+        for v in (e.input_tokens, e.output_tokens, e.cache_read_tokens, e.cache_write_tokens)
+    )
 
 
 def test_event_from_dict_rejects_non_dict():

@@ -143,15 +143,13 @@ async def test_assistant_message_streaming_self_corrects_split_math():
     app = _App()
     async with app.run_test() as pilot:
         msg = app.query_one(AssistantMessage)
-        msg.append("value \\(x^2")   # opener only — renders literally for now
+        msg.append("value \\(x^2")  # opener only — renders literally for now
         msg.flush()
         await pilot.pause()
-        msg.append("\\) end")        # closer arrives in a later delta
-        for _ in range(20):          # drain like the permanent flush interval
+        msg.append("\\) end")  # closer arrives in a later delta
+        for _ in range(20):  # drain like the permanent flush interval
             msg.flush()
             await pilot.pause()
-        rendered = " ".join(
-            block._content.plain for block in msg.query(MarkdownBlock)
-        )
+        rendered = " ".join(block._content.plain for block in msg.query(MarkdownBlock))
         assert "x²" in rendered
         assert "\\(" not in rendered

@@ -58,7 +58,10 @@ def test_create_reuses_existing_branch(repo: Path):
     # HEAD of the worktree is the `existing` branch
     out = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=path, capture_output=True, text=True, check=True,
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
     assert out == "existing"
 
@@ -93,7 +96,9 @@ def test_remove_resolves_reused_external_worktree(repo: Path, tmp_path: Path):
     external = tmp_path.with_name(tmp_path.name + "_ext")
     subprocess.run(
         ["git", "worktree", "add", str(external), "-b", "feat/ext"],
-        cwd=repo, check=True, capture_output=True,
+        cwd=repo,
+        check=True,
+        capture_output=True,
     )
     # git won't allow a second checkout of the branch, so create reuses it.
     path = wt.create_or_reuse_worktree(repo, "feat/ext")
@@ -113,11 +118,27 @@ def test_remove_refuses_dirty_worktree(repo: Path):
 @pytest.mark.parametrize(
     "bad",
     [
-        "", "-x", "../escape", "/abs", "feat/", "a/../b",
+        "",
+        "-x",
+        "../escape",
+        "/abs",
+        "feat/",
+        "a/../b",
         # Refs that would shadow important git refs, and git-forbidden syntax.
-        "HEAD", "refs/heads/main", "@", "feat@{0}", "a..b",
-        "feat~1", "feat^1", "feat:x", "feat?", "feat*", "feat[x",
-        "feat bar", "branch.lock", "feat/x.lock",
+        "HEAD",
+        "refs/heads/main",
+        "@",
+        "feat@{0}",
+        "a..b",
+        "feat~1",
+        "feat^1",
+        "feat:x",
+        "feat?",
+        "feat*",
+        "feat[x",
+        "feat bar",
+        "branch.lock",
+        "feat/x.lock",
     ],
 )
 def test_validate_rejects_bad_branches(repo: Path, bad: str):
@@ -144,8 +165,9 @@ def test_commit_worktree_commits_changes_and_returns_summary(repo: Path):
     assert summary is not None
     assert "new.txt" in summary
     # The change is committed on the branch and the worktree is now clean.
-    status = subprocess.run(["git", "status", "--porcelain"], cwd=path,
-                            capture_output=True, text=True).stdout
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=path, capture_output=True, text=True
+    ).stdout
     assert status.strip() == ""
 
 
@@ -172,8 +194,8 @@ def test_remove_worktree_force_removes_dirty(repo: Path):
     path = wt.create_or_reuse_worktree(repo, "feat/dirty")
     (path / "scratch.txt").write_text("uncommitted\n")
     with pytest.raises(wt.WorktreeError):
-        wt.remove_worktree(repo, "feat/dirty")          # refuses while dirty
-    wt.remove_worktree(repo, "feat/dirty", force=True)   # force succeeds
+        wt.remove_worktree(repo, "feat/dirty")  # refuses while dirty
+    wt.remove_worktree(repo, "feat/dirty", force=True)  # force succeeds
     assert not path.exists()
 
 
@@ -181,6 +203,7 @@ def test_delete_branch_removes_branch(repo: Path):
     wt.create_or_reuse_worktree(repo, "feat/gone")
     wt.remove_worktree(repo, "feat/gone")  # branch can't be deleted while checked out
     wt.delete_branch(repo, "feat/gone")
-    listed = subprocess.run(["git", "branch", "--list", "feat/gone"], cwd=repo,
-                            capture_output=True, text=True).stdout
+    listed = subprocess.run(
+        ["git", "branch", "--list", "feat/gone"], cwd=repo, capture_output=True, text=True
+    ).stdout
     assert listed.strip() == ""

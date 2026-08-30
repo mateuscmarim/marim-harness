@@ -238,8 +238,7 @@ async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
     level = parse_thinking_level(arg)
     if level is None:
         await app.post_system(
-            f"Unknown thinking level {arg!r}. Choose one of: "
-            f"{', '.join(THINKING_LEVELS)}."
+            f"Unknown thinking level {arg!r}. Choose one of: {', '.join(THINKING_LEVELS)}."
         )
         return
     app.harness.set_thinking_level(level)
@@ -259,9 +258,7 @@ async def _cmd_theme(app: HarnessApp, arg: str) -> None:
         await app.post_system("\n".join(lines))
         return
     if name not in THEME_NAMES:
-        await app.post_system(
-            f"Unknown theme: `{name}`. Available: {', '.join(THEME_NAMES)}."
-        )
+        await app.post_system(f"Unknown theme: `{name}`. Available: {', '.join(THEME_NAMES)}.")
         return
     app.theme = name  # the app's watch_theme persists the choice
 
@@ -477,9 +474,7 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
     elif sub == "remove":
         await _worktree_remove(app, root, rest)
     else:
-        await app.post_system(
-            "Usage: /worktree [list | create <branch> | remove <branch>]"
-        )
+        await app.post_system("Usage: /worktree [list | create <branch> | remove <branch>]")
 
 
 async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
@@ -513,9 +508,7 @@ async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
         else:
             await app.post_system("Usage: /jobs wake [on|off]")
     else:
-        await app.post_system(
-            "Usage: /jobs [list | output <id> | cancel <id> | wake [on|off]]"
-        )
+        await app.post_system("Usage: /jobs [list | output <id> | cancel <id> | wake [on|off]]")
 
 
 async def _cmd_plugin(app: HarnessApp, arg: str) -> None:
@@ -598,7 +591,9 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
     # trust_flow.prompt_project_trust's handling of the same call).
     try:
         record_decision(
-            root, trusted=trusted, fingerprint=surface.fingerprint,
+            root,
+            trusted=trusted,
+            fingerprint=surface.fingerprint,
             now=datetime.now(timezone.utc).isoformat(),
         )
     except OSError as exc:

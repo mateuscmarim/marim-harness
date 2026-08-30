@@ -38,4 +38,5 @@ def test_questions_capped_at_four():
 def test_answers_to_json_preserves_single_and_multi_shapes():
     out = answers_to_json({"DB": "Postgres", "Features": ["auth", "cache"]})
     import json
+
     assert json.loads(out) == {"DB": "Postgres", "Features": ["auth", "cache"]}

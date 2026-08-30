@@ -9,9 +9,7 @@ def _imports_pydantic_ai(module: str) -> bool:
     suite imports pydantic_ai, so an in-process check would always see it loaded.
     """
     code = (
-        f"import {module}\n"
-        "import sys\n"
-        "raise SystemExit(1 if 'pydantic_ai' in sys.modules else 0)"
+        f"import {module}\nimport sys\nraise SystemExit(1 if 'pydantic_ai' in sys.modules else 0)"
     )
     return subprocess.run([sys.executable, "-c", code]).returncode == 1
 

@@ -350,8 +350,16 @@ async def test_spawn_agent_forwards_mcp_foreground(tmp_path):
     calls = {}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["args"] = (type, task, tool_call_id, mcp_names, max_output_chars)
@@ -378,8 +386,16 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
     calls = {}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["task"] = task
@@ -390,8 +406,12 @@ async def test_spawn_agent_composes_structured_task(tmp_path):
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc1")
 
     await spawn_agent(
-        ctx, "explore", "map the auth flow",
-        constraints="read-only", context="refactored last week", returns="3 bullets",
+        ctx,
+        "explore",
+        "map the auth flow",
+        constraints="read-only",
+        context="refactored last week",
+        returns="3 bullets",
     )
     t = calls["task"]
     assert "map the auth flow" in t
@@ -409,8 +429,16 @@ async def test_spawn_agent_without_structured_fields_passes_task_verbatim(tmp_pa
     calls = {}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["task"] = task
@@ -432,19 +460,29 @@ async def test_spawn_agent_forwards_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
-                stream_id: str = "", caller_depth: int = 0, tier=None, thinking=None):
+    def fake_bg(
+        type,
+        task,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        stream_id: str = "",
+        caller_depth: int = 0,
+        tier=None,
+        thinking=None,
+    ):
         captured["args"] = (type, task, mcp_names)
+
         async def _coro():
             return "bg-report"
+
         return _coro()
 
     deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
     # Close the coroutine in the stub to prevent "coroutine was never awaited" warning.
-    deps.jobs = SimpleNamespace(
-        register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1]
-    )
+    deps.jobs = SimpleNamespace(register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1])
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc2")
 
     out = await spawn_agent(ctx, "general", "do it", background=True, mcp=["sentry"])
@@ -461,8 +499,16 @@ async def test_spawn_agent_default_mcp_is_none(tmp_path):
     calls = {}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["mcp_names"] = mcp_names
@@ -510,8 +556,16 @@ async def test_spawn_agent_coerces_stringified_mcp(tmp_path):
     calls = {}
 
     async def fake_runner(
-        type, task, tool_call_id, mcp_names, max_output_chars=None, model=None,
-        isolation=None, caller_depth: int = 0, tier=None, output_schema=None,
+        type,
+        task,
+        tool_call_id,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        caller_depth: int = 0,
+        tier=None,
+        output_schema=None,
         thinking=None,
     ):
         calls["mcp_names"] = mcp_names
@@ -533,8 +587,18 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
     captured = {}
 
-    def fake_bg(type, task, mcp_names, max_output_chars=None, model=None, isolation=None,
-                stream_id: str = "", caller_depth: int = 0, tier=None, thinking=None):
+    def fake_bg(
+        type,
+        task,
+        mcp_names,
+        max_output_chars=None,
+        model=None,
+        isolation=None,
+        stream_id: str = "",
+        caller_depth: int = 0,
+        tier=None,
+        thinking=None,
+    ):
         captured["mcp_names"] = mcp_names
 
         async def _coro():
@@ -544,9 +608,7 @@ async def test_spawn_agent_coerces_comma_separated_mcp_background(tmp_path):
 
     deps = _make_deps(tmp_path)
     deps.services.run_background_agent = fake_bg
-    deps.jobs = SimpleNamespace(
-        register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1]
-    )
+    deps.jobs = SimpleNamespace(register=lambda kind, label, coro, **kw: (coro.close(), "job-1")[1])
     ctx = SimpleNamespace(deps=deps, tool_call_id="tc5")
 
     await spawn_agent(ctx, "general", "do it", background=True, mcp="mddocs, sentry")
@@ -565,9 +627,7 @@ async def test_bash_blocks_denylisted_command(tmp_path: Path):
 
     sentinel = tmp_path / "ran.txt"
     deps = Deps(
-        workspace=WorkspaceConfig(
-            root=tmp_path, command_policy=CommandPolicy(denylist=["touch"])
-        ),
+        workspace=WorkspaceConfig(root=tmp_path, command_policy=CommandPolicy(denylist=["touch"])),
     )
     ctx = SimpleNamespace(deps=deps)
     out = await edit_tools.bash(ctx, f"touch {sentinel}")
@@ -1011,12 +1071,26 @@ def test_all_groups_on_matches_legacy_registration():
 def test_bare_groups_register_only_file_tools():
     from marim_harness.tools.provider import ToolGroups
 
-    groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
-                        tasks=False, jobs=False, spawn=False, workflow=False)
+    groups = ToolGroups(
+        bash=False,
+        net=False,
+        memory=False,
+        skills=False,
+        tasks=False,
+        jobs=False,
+        spawn=False,
+        workflow=False,
+    )
     agent = Agent(TestModel(), deps_type=Deps)
     BuiltinToolProvider(groups=groups).register(agent)
     assert _tool_names(agent) == {
-        "read_file", "glob", "tree", "grep", "write_file", "edit_file", "advisor",
+        "read_file",
+        "glob",
+        "tree",
+        "grep",
+        "write_file",
+        "edit_file",
+        "advisor",
     }
 
 
@@ -1042,8 +1116,16 @@ def test_each_group_toggles_exactly_its_tools():
 def test_enabled_tool_names_unions_active_groups():
     from marim_harness.tools.provider import ToolGroups
 
-    groups = ToolGroups(bash=False, net=False, memory=False, skills=False,
-                        tasks=False, jobs=False, spawn=False, workflow=False)
+    groups = ToolGroups(
+        bash=False,
+        net=False,
+        memory=False,
+        skills=False,
+        tasks=False,
+        jobs=False,
+        spawn=False,
+        workflow=False,
+    )
     assert groups.enabled_tool_names() == frozenset(
         {"read_file", "glob", "tree", "grep", "write_file", "edit_file"}
     )

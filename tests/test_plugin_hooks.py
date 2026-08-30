@@ -13,9 +13,7 @@ def _install_plugin_with_hooks(plugins_dir: Path, plugin: str, trusted: bool):
     )
     (pdir / "hooks").mkdir(parents=True, exist_ok=True)
     (pdir / "hooks" / "hooks.json").write_text(
-        json.dumps(
-            {"hooks": {"Stop": [{"type": "command", "command": "echo hi"}]}}
-        ),
+        json.dumps({"hooks": {"Stop": [{"type": "command", "command": "echo hi"}]}}),
         encoding="utf-8",
     )
     save_state(
@@ -65,9 +63,7 @@ def test_global_and_plugin_hooks_concatenated(tmp_path, monkeypatch):
     global_hooks_dir = tmp_path / "cfg" / "marim"
     global_hooks_dir.mkdir(parents=True, exist_ok=True)
     (global_hooks_dir / "hooks.json").write_text(
-        json.dumps(
-            {"hooks": {"Stop": [{"type": "command", "command": "echo global"}]}}
-        ),
+        json.dumps({"hooks": {"Stop": [{"type": "command", "command": "echo global"}]}}),
         encoding="utf-8",
     )
     # Install a trusted plugin that also contributes a Stop hook
@@ -94,9 +90,7 @@ def test_plugin_trust_flip_includes_hooks(tmp_path, monkeypatch):
 
     # Before trust — hooks excluded.
     cfg = load_hooks_config(ws, trust_project=False)
-    assert "Stop" not in cfg or all(
-        e.get("command") != "echo hi" for e in cfg["Stop"]
-    )
+    assert "Stop" not in cfg or all(e.get("command") != "echo hi" for e in cfg["Stop"])
 
     # Grant trust on disk, re-read, hooks must now appear.
     state = load_state(gdir)

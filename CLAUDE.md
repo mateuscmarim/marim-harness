@@ -20,14 +20,23 @@ uv run pytest --no-cov tests/test_x.py       # skip coverage for a fast single r
 uv run pytest -n 0 ...                       # serial (for --pdb/-x or cross-test interactions)
 uv run ruff check src tests      # lint
 uv run ruff check --fix src tests
+uv run ruff format src tests     # format (enforced by CI via --check)
 uv run pyright                   # type-check (standard mode, src only)
 uv run marim serve --port 8642   # HTTP daemon (REST + WebSocket); needs the [serve] extra
 ```
 
-CI (`.gitea/workflows/ci.yml`) runs ruff → pyright → pytest on Python 3.10, 3.12,
-and 3.14 (plus a `uv build` packaging check on the 3.12 leg). Match that order
-locally before claiming work is done. `requires-python` is `>=3.10`, so avoid
-3.11+ only syntax.
+CI (`.gitea/workflows/ci.yml`) runs ruff check → ruff format --check → pyright →
+pytest on Python 3.10, 3.12, and 3.14 (plus a `uv build` packaging check on the
+3.12 leg). Match that order locally before claiming work is done.
+`requires-python` is `>=3.10`, so avoid 3.11+ only syntax.
+
+A second workflow (`.gitea/workflows/quality-gate.yml`) runs the **ratchet
+quality gate**: it scores coverage, complexity beyond `C901`, bandit, pip-audit
+and secrets against `quality-baseline.json` and fails if any number moved the
+wrong way. It does not duplicate `ci.yml` — that enforces the absolutes (lint,
+format, types at zero); the gate watches the numbers nothing else does. Adding
+an argument to an already-wide function or dropping coverage will turn it red
+without breaking `ci.yml`. See `docs/quality-gate.md` to run it locally.
 
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
 (see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
@@ -72,7 +81,10 @@ encoded there (read the docstrings before touching):
 - **Approval rounds.** The agent's `output_type` is `[str, DeferredToolRequests]`.
   Gated tools (`write_file`, `edit_file`, `bash`) defer; `_run_with_approval` loops,
   resolving each deferred batch via `resolve_approvals` against the current `Mode`
-  (`auto`/`ask`/`plan`), then continues the run with the results.
+  (`auto`/`ask`/`plan`), then continues the run with the results. A structured
+  harness (`HarnessBuilder.with_output_type`) overrides that union per run round,
+  continuations included; either way `run_turn` returns a `TurnOutcome`
+  (`runtime/outcome.py`), not a bare string.
 - **Resumability.** A persisted history must never end with a `ToolCallPart` lacking
   its `ToolReturnPart` — every provider rejects that on the next request.
   `_repair_unanswered_tool_calls` self-heals such histories; an aborted turn is
@@ -141,12 +153,6 @@ to avoid import cycles.
   `lsp_enabled` (manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six nav
   tools). marim never downloads server binaries — it probes PATH and surfaces the
   provider's install hint.
-- `forge/` — Gitea/GitHub integration via a `ForgeBackend` seam. `TeaBackend`
-  shells out to the `tea` CLI (`--output json`); five forge-agnostic tools
-  (`tools/forge_tools.py`) list/view PRs, check CI, and open/check out PRs, with
-  create/checkout gated for approval. Attached at build time only when
-  `MARIM_FORGE` is on (default) and a backend is available (`tea` on PATH + a
-  configured login). A `gh` backend is a future drop-in behind the same protocol.
 - `hooks/` — Claude-Code-compatible lifecycle hook engine (session/prompt/tool/
   compaction events). Observe-only except SessionStart/UserPromptSubmit (inject
   context) and PreCompact (may block a *manual* /compact via exit 2 or
@@ -217,7 +223,11 @@ to avoid import cycles.
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.
 - Ruff line length is 100; lint set is `E,F,I,UP,B,SIM,C901` (import sorting
-  enforced; pyupgrade, bugbear, and flake8-simplify also on).
+  enforced; pyupgrade, bugbear, and flake8-simplify also on). `ruff format` is
+  the formatter and CI enforces it with `--check` — run it before pushing.
+  Note it does not split long lambda signatures, so a reformat can leave E501
+  behind; and it can detach a trailing `# pyright: ignore[...]` from the
+  argument it suppressed when it splits a call across lines.
 - Cyclomatic complexity is capped at 10 (`C901`, mccabe). CI rejects any function
   above it. When a function trips the ceiling, extract cohesive branch-clusters into
   named helpers (or a small state value-object where locals mutate across the region)

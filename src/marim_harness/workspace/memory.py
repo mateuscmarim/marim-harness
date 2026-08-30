@@ -148,9 +148,7 @@ class SlugAllocation:
     title_owner: str | None
 
 
-def allocate_slug(
-    entries: Sequence[tuple[str, str]], *, name: str, title: str
-) -> SlugAllocation:
+def allocate_slug(entries: Sequence[tuple[str, str]], *, name: str, title: str) -> SlugAllocation:
     """The slug ``title`` should be saved under, disambiguating collisions,
     decided against ``entries`` (``(title, slug)`` index lines in file order).
 
@@ -222,14 +220,7 @@ def read_memory(scope: MemoryScope, name: str) -> str:
 
 def _render_frontmatter(*, slug: str, description: str, mem_type: str) -> str:
     mem_type = mem_type if mem_type in _VALID_TYPES else "project"
-    return (
-        "---\n"
-        f"name: {slug}\n"
-        f"description: {description}\n"
-        "metadata:\n"
-        f"  type: {mem_type}\n"
-        "---\n"
-    )
+    return f"---\nname: {slug}\ndescription: {description}\nmetadata:\n  type: {mem_type}\n---\n"
 
 
 def _upsert_index_line(scope: MemoryScope, *, slug: str, title: str, hook: str) -> None:

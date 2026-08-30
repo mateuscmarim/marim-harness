@@ -1,4 +1,3 @@
-
 import pytest
 from pydantic_ai.messages import (
     ModelRequest,
@@ -91,17 +90,11 @@ def test_flatten_history_renders_tool_calls_and_returns():
         ModelResponse(
             parts=[
                 TextPart(content="Let me read it."),
-                ToolCallPart(
-                    tool_name="read_file", args={"path": "config.py"}, tool_call_id="t1"
-                ),
+                ToolCallPart(tool_name="read_file", args={"path": "config.py"}, tool_call_id="t1"),
             ]
         ),
         ModelRequest(
-            parts=[
-                ToolReturnPart(
-                    tool_name="read_file", content="PORT = 8080", tool_call_id="t1"
-                )
-            ]
+            parts=[ToolReturnPart(tool_name="read_file", content="PORT = 8080", tool_call_id="t1")]
         ),
         ModelResponse(parts=[TextPart(content="It sets PORT to 8080.")]),
     ]
@@ -152,6 +145,7 @@ async def test_ephemeral_model_does_not_store_session_id():
                 "session_id": "S9",
                 "usage": {"input_tokens": 1, "output_tokens": 2},
             }
+
         return gen()
 
     model.spawn = _spawn
@@ -183,9 +177,7 @@ def test_fold_chunk_text_separates_segments():
     )
 
     first = fold_chunk_text(TextChunk("Surveying."), leading=True)
-    tool = fold_chunk_text(
-        ToolUseChunk("Bash", {"command": "ls | head -50"}, "t1"), leading=False
-    )
+    tool = fold_chunk_text(ToolUseChunk("Bash", {"command": "ls | head -50"}, "t1"), leading=False)
     after = fold_chunk_text(TextChunk("Now sizes."), leading=False)
     text = first + tool + after
     # The old bug ran "head -50Now sizes." together; segments are blank-line separated.
@@ -227,9 +219,7 @@ def test_request_usage_cost_rounds_not_truncates():
     u = request_usage_from_cli({"input_tokens": 1, "output_tokens": 1}, total_cost_usd=0.0000007)
     # 0.0000007 * 1_000_000 == 0.7 -> round() == 1 (int() truncation would give 0).
     assert u.details[COST_DETAIL_KEY] == 1
-    u2 = request_usage_from_cli(
-        {"input_tokens": 1, "output_tokens": 1}, total_cost_usd=0.123456789
-    )
+    u2 = request_usage_from_cli({"input_tokens": 1, "output_tokens": 1}, total_cost_usd=0.123456789)
     assert u2.details[COST_DETAIL_KEY] == 123457  # 123456.789 rounded
 
 
@@ -311,9 +301,7 @@ async def test_request_closes_child_on_consumer_cancel():
     model.spawn = _spawn
     from pydantic_ai.models import ModelRequestParameters
 
-    task = asyncio.ensure_future(
-        model.request(_user("hi"), None, ModelRequestParameters())
-    )
+    task = asyncio.ensure_future(model.request(_user("hi"), None, ModelRequestParameters()))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -396,12 +384,20 @@ async def test_consume_surfaces_tool_results():
     from marim_harness.config.claude_cli_model import ToolResultChunk
 
     objs = [
-        {"type": "assistant", "message": {"content": [
-            {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.py"}}
-        ]}},
-        {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "PORT = 8080"}
-        ]}},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.py"}}
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "PORT = 8080"}]
+            },
+        },
         {"type": "result", "session_id": "s", "usage": {"input_tokens": 1, "output_tokens": 1}},
     ]
     chunks = await _collect(objs)
@@ -478,12 +474,27 @@ async def test_request_stream_pushes_tool_cards_and_keeps_response_text_only():
         [
             _INIT,
             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Reading."}]}},
-            {"type": "assistant", "message": {"content": [
-                {"type": "tool_use", "id": "t1", "name": "Read", "input": {"file_path": "x.py"}}
-            ]}},
-            {"type": "user", "message": {"content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "PORT=8080"}
-            ]}},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Read",
+                            "input": {"file_path": "x.py"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "PORT=8080"}
+                    ]
+                },
+            },
             {"type": "assistant", "message": {"content": [{"type": "text", "text": "Found it."}]}},
             _result("Found it."),
         ]
@@ -563,8 +574,12 @@ async def test_consume_success_result_has_no_error_detail():
     # A normal success result stays clean: complete, no error annotation.
     objs = [
         {"type": "assistant", "message": {"content": [{"type": "text", "text": "ok"}]}},
-        {"type": "result", "subtype": "success", "session_id": "S1",
-         "usage": {"input_tokens": 1, "output_tokens": 1}},
+        {
+            "type": "result",
+            "subtype": "success",
+            "session_id": "S1",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        },
     ]
     done = (await _collect(objs))[-1]
     assert done.complete is True
@@ -573,31 +588,57 @@ async def test_consume_success_result_has_no_error_detail():
 
 @pytest.mark.anyio
 async def test_consume_skips_subagent_child_traffic():
-    chunks = await _collect([
-        {"type": "assistant", "parent_tool_use_id": "t1",
-         "message": {"content": [{"type": "text", "text": "CHILD TEXT"}]}},
-        {"type": "system", "subtype": "task_started", "tool_use_id": "t1"},
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "t1",
-         "status": "completed", "summary": "4"},
-        {"type": "result", "subtype": "success", "result": "ok", "num_turns": 1,
-         "usage": {"input_tokens": 1, "output_tokens": 1}},
-    ])
+    chunks = await _collect(
+        [
+            {
+                "type": "assistant",
+                "parent_tool_use_id": "t1",
+                "message": {"content": [{"type": "text", "text": "CHILD TEXT"}]},
+            },
+            {"type": "system", "subtype": "task_started", "tool_use_id": "t1"},
+            {
+                "type": "system",
+                "subtype": "task_notification",
+                "tool_use_id": "t1",
+                "status": "completed",
+                "summary": "4",
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "ok",
+                "num_turns": 1,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ]
+    )
     texts = [c.delta for c in chunks if isinstance(c, TextChunk)]
     assert texts == []  # a child's text never leaks into the main response
 
 
 @pytest.mark.anyio
 async def test_consume_survives_multiple_results_and_folds_usage():
-    chunks = await _collect([
-        {"type": "result", "subtype": "success", "result": "waiting",
-         "num_turns": 2, "total_cost_usd": 0.04,
-         "usage": {"input_tokens": 18, "output_tokens": 1083}},
-        {"type": "assistant", "message": {"content": [
-            {"type": "text", "text": "Four."}]}},
-        {"type": "result", "subtype": "success", "result": "Four.",
-         "num_turns": 1, "total_cost_usd": 0.05,
-         "usage": {"input_tokens": 10, "output_tokens": 48}},
-    ])
+    chunks = await _collect(
+        [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "waiting",
+                "num_turns": 2,
+                "total_cost_usd": 0.04,
+                "usage": {"input_tokens": 18, "output_tokens": 1083},
+            },
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "Four."}]}},
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "Four.",
+                "num_turns": 1,
+                "total_cost_usd": 0.05,
+                "usage": {"input_tokens": 10, "output_tokens": 48},
+            },
+        ]
+    )
     # text AFTER the first result still streams (the generator no longer
     # returns early, which used to kill the CLI mid-async-sub-agent)
     assert any(isinstance(c, TextChunk) and c.delta == "Four." for c in chunks)
@@ -605,13 +646,15 @@ async def test_consume_survives_multiple_results_and_folds_usage():
     assert len(dones) == 2 and all(d.complete for d in dones)
     assert dones[-1].usage.output_tokens == 1083 + 48
     from marim_harness.usage import COST_DETAIL_KEY
+
     assert dones[-1].usage.details[COST_DETAIL_KEY] == 50_000
 
 
 def test_activity_line_names_agent_spawns():
-    assert format_activity_line(
-        "Agent", {"description": "Answer 2+2", "subagent_type": "Explore"}
-    ) == "▸ Agent Answer 2+2"
+    assert (
+        format_activity_line("Agent", {"description": "Answer 2+2", "subagent_type": "Explore"})
+        == "▸ Agent Answer 2+2"
+    )
 
 
 def _fake_objs(objs):
@@ -675,33 +718,74 @@ async def test_request_stream_routes_claude_subagents_to_side_channels():
     model.on_activity = on_activity
     model.on_subagent = on_subagent
     model.on_subagent_model = on_subagent_model
-    model.spawn = _fake_objs([
-        {"type": "assistant", "message": {"id": "m1", "content": [
-            {"type": "tool_use", "id": "tsub", "name": "Agent",
-             "input": {"description": "d", "subagent_type": "Explore",
-                       "prompt": "p"}},
-        ]}},
-        {"type": "system", "subtype": "task_started", "tool_use_id": "tsub"},
-        {"type": "user", "message": {"content": [
-            {"type": "tool_result", "tool_use_id": "tsub",
-             "content": "Async agent launched..."}]}},
-        {"type": "assistant", "parent_tool_use_id": "tsub",
-         "message": {"id": "m2", "model": "claude-haiku-4-5",
-                     "usage": {"input_tokens": 3, "output_tokens": 2},
-                     "content": [{"type": "text", "text": "4"}]}},
-        {"type": "system", "subtype": "task_notification", "tool_use_id": "tsub",
-         "status": "completed", "summary": "4"},
-        {"type": "assistant", "message": {"id": "m3", "content": [
-            {"type": "text", "text": "Four."}]}},
-        {"type": "result", "subtype": "success", "result": "Four.", "num_turns": 1,
-         "session_id": "sess-1", "usage": {"input_tokens": 1, "output_tokens": 1}},
-    ])
+    model.spawn = _fake_objs(
+        [
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "m1",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "tsub",
+                            "name": "Agent",
+                            "input": {
+                                "description": "d",
+                                "subagent_type": "Explore",
+                                "prompt": "p",
+                            },
+                        },
+                    ],
+                },
+            },
+            {"type": "system", "subtype": "task_started", "tool_use_id": "tsub"},
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "tsub",
+                            "content": "Async agent launched...",
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "assistant",
+                "parent_tool_use_id": "tsub",
+                "message": {
+                    "id": "m2",
+                    "model": "claude-haiku-4-5",
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                    "content": [{"type": "text", "text": "4"}],
+                },
+            },
+            {
+                "type": "system",
+                "subtype": "task_notification",
+                "tool_use_id": "tsub",
+                "status": "completed",
+                "summary": "4",
+            },
+            {
+                "type": "assistant",
+                "message": {"id": "m3", "content": [{"type": "text", "text": "Four."}]},
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": "Four.",
+                "num_turns": 1,
+                "session_id": "sess-1",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ]
+    )
     text = await _stream_text(model)  # see note below
 
     # spawn call + spawn return went to the MAIN transcript side-channel
-    spawn_names = [
-        e.part.tool_name for e in activity if hasattr(e, "part")
-    ]
+    spawn_names = [e.part.tool_name for e in activity if hasattr(e, "part")]
     assert spawn_names.count("spawn_agent") == 2
     # child events went to the sub-agent channel, tagged with usage + model
     assert sub_events and all(sid == "tsub" for sid, _, _ in sub_events)
@@ -892,9 +976,7 @@ async def test_request_surfaces_real_cli_stderr_on_nonzero_exit(monkeypatch, tmp
     from pydantic_ai.models import ModelRequestParameters
 
     script = tmp_path / "claude"
-    script.write_text(
-        "#!/bin/sh\necho 'Invalid API key - please run /login' >&2\nexit 1\n"
-    )
+    script.write_text("#!/bin/sh\necho 'Invalid API key - please run /login' >&2\nexit 1\n")
     script.chmod(0o755)
     monkeypatch.setattr(
         "marim_harness.subagents.cli_backend.resolve_cli_binary", lambda: str(script)

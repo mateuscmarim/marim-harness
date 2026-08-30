@@ -78,9 +78,7 @@ def _stub_launch_paths(monkeypatch, tmp_path, *, tui, headless):
 
     session_path = tmp_path / "sessions" / "s.json"
     harness = _harness_with_session(session_path)
-    monkeypatch.setattr(
-        bootstrap, "build_harness", lambda *a, **kw: harness, raising=True
-    )
+    monkeypatch.setattr(bootstrap, "build_harness", lambda *a, **kw: harness, raising=True)
     monkeypatch.setattr(default_cmd, "_tui_available", lambda: True)
     monkeypatch.setattr(router, "route_logging_to_file", lambda *a, **kw: None)
     monkeypatch.setattr(default_cmd, "_launch_tui", tui)
@@ -113,9 +111,7 @@ def test_run_default_refuses_a_claimed_session_without_launching(tmp_path, monke
         assert "already open" in err.getvalue()
 
         err = io.StringIO()
-        code = run_default(
-            ["-p", "hello"], stdin=_TtyStdin(), out=io.StringIO(), err=err
-        )
+        code = run_default(["-p", "hello"], stdin=_TtyStdin(), out=io.StringIO(), err=err)
         assert code == 2
         assert "already open" in err.getvalue()
     finally:

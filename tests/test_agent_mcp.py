@@ -55,6 +55,7 @@ class _FakeSource:
 def _named_model(model_id: str) -> FunctionModel:
     """A model whose every reply names the id it was built for, so a test can
     tell which model actually ran a turn."""
+
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content=f"from {model_id}")])
 
@@ -68,12 +69,17 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     return Harness(
-        model=_named_model("startup"), provider=BuiltinToolProvider(), deps=deps,
+        model=_named_model("startup"),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="x",
         config=HarnessConfig(
-            store=manager.create(), manager=manager,
-            model_source=source, model_id="startup",
-            summarizer=summarizer, titler=titler,
+            store=manager.create(),
+            manager=manager,
+            model_source=source,
+            model_id="startup",
+            summarizer=summarizer,
+            titler=titler,
         ),
     )
 
@@ -83,8 +89,13 @@ async def test_connect_degrades_past_failing_server(tmp_path: Path):
     bad = _FakeServer("bad", fail=True)
     good = _FakeServer("good")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[bad, good])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[bad, good],
+    )
 
     status = await h.connect()
     # The good server is live; the bad one is reported, not fatal.
@@ -126,13 +137,11 @@ async def test_run_turn_forwards_live_toolsets(tmp_path: Path):
 
     async def fake_run(user_prompt, **kwargs):
         captured["toolsets"] = kwargs.get("toolsets")
-        return SimpleNamespace(
-            all_messages=lambda: [], usage=RunUsage(), output="ok"
-        )
+        return SimpleNamespace(all_messages=lambda: [], usage=RunUsage(), output="ok")
 
     h.agent.run = fake_run
     out = await h.run_turn("hi")
-    assert out == "ok"
+    assert out.result == "ok"
     # Live servers reach agent.run, prefixed with the server name at compose time.
     (forwarded,) = captured["toolsets"]
     assert isinstance(forwarded, PrefixedToolset)
@@ -144,8 +153,14 @@ async def test_connect_skips_disabled_servers(tmp_path: Path):
     off = _FakeServer("off")
     on = _FakeServer("on")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[off, on], mcp_disabled=["off"])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[off, on],
+        mcp_disabled=["off"],
+    )
 
     status = await h.connect()
     assert status["connected"] == ["on"]
@@ -185,8 +200,13 @@ async def test_run_turn_omits_disabled_from_toolsets(tmp_path: Path):
 async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
     srv = _FakeServer("demo")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[srv],
+    )
     await h.connect()
     assert srv.entered is True
 
@@ -200,8 +220,14 @@ async def test_disable_server_keeps_connection_but_mutes(tmp_path: Path):
 async def test_enable_server_connects_on_demand(tmp_path: Path):
     srv = _FakeServer("demo")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[srv],
+        mcp_disabled=["demo"],
+    )
     await h.connect()
     assert srv.entered is False  # started disabled, so not launched
 
@@ -221,8 +247,13 @@ async def test_enable_after_close_does_not_double_list_connected(tmp_path: Path)
     duplicate entry."""
     srv = _FakeServer("demo")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[srv],
+    )
     await h.connect()
     assert h.mcp.mcp_status.connected == ["demo"]
     await h.aclose()
@@ -251,13 +282,17 @@ async def test_toggle_persists_to_config_across_the_session(
 
     ppath = tmp_path / ".marim" / "mcp.json"
     ppath.parent.mkdir(parents=True)
-    ppath.write_text(
-        _json.dumps({"mcpServers": {"demo": {"command": "x"}}}), encoding="utf-8"
-    )
+    ppath.write_text(_json.dumps({"mcpServers": {"demo": {"command": "x"}}}), encoding="utf-8")
     srv = _FakeServer("demo")
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv], mcp_trust_project=True)
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[srv],
+        mcp_trust_project=True,
+    )
     await h.connect()
 
     await h.disable_server("demo")
@@ -272,8 +307,14 @@ async def test_toggle_persists_to_config_across_the_session(
 async def test_enable_server_reports_connection_failure(tmp_path: Path):
     srv = _FakeServer("demo", fail=True)
     deps = _make_deps(tmp_path)
-    h = Harness(model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-                instructions="x", mcp_servers=[srv], mcp_disabled=["demo"])
+    h = Harness(
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        mcp_servers=[srv],
+        mcp_disabled=["demo"],
+    )
     await h.connect()
 
     err = await h.enable_server("demo")
@@ -288,14 +329,28 @@ def test_resume_restores_saved_model(tmp_path: Path):
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create()
-    first = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
-                    deps=deps, instructions="x", store=store, manager=manager,
-                    model_source=_FakeSource(), model_id="startup")
+    first = Harness(
+        model=_named_model("startup"),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
+        manager=manager,
+        model_source=_FakeSource(),
+        model_id="startup",
+    )
     first.set_model("openai/gpt-5.2")
 
-    second = Harness(model=_named_model("startup"), provider=BuiltinToolProvider(),
-                     deps=deps, instructions="x", store=manager.store(store.session_id),
-                     manager=manager, model_source=_FakeSource(), model_id="startup")
+    second = Harness(
+        model=_named_model("startup"),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=manager.store(store.session_id),
+        manager=manager,
+        model_source=_FakeSource(),
+        model_id="startup",
+    )
     second.resume()
     assert second.model_id == "openai/gpt-5.2"
 

@@ -37,6 +37,7 @@ def _grantable_server(name: str):
 def _spawn_then_done_model() -> FunctionModel:
     """Main agent: spawn an explore sub-agent, then echo its report. The same
     model backs the sub-agent, so it's told apart by its instructions."""
+
     def fn(messages, info):
         instr = _last_instructions(messages)
         # Discriminate by the sub-agent prompt's workspace line, which the main
@@ -47,14 +48,18 @@ def _spawn_then_done_model() -> FunctionModel:
         ret = None
         for m in messages:
             for p in getattr(m, "parts", []):
-                if type(p).__name__ == "ToolReturnPart" and \
-                        getattr(p, "tool_name", "") == "spawn_agent":
+                if (
+                    type(p).__name__ == "ToolReturnPart"
+                    and getattr(p, "tool_name", "") == "spawn_agent"
+                ):
                     ret = str(p.content)
         if ret is not None:
             return ModelResponse(parts=[TextPart(content=f"done: {ret}")])
-        return ModelResponse(parts=[ToolCallPart(
-            tool_name="spawn_agent", args={"type": "explore", "task": "find X"}
-        )])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="spawn_agent", args={"type": "explore", "task": "find X"})
+            ]
+        )
 
     return FunctionModel(fn)
 
@@ -227,8 +232,12 @@ async def test_agent_index_injected(tmp_path: Path, monkeypatch):
         return ModelResponse(parts=[TextPart(content="ok")])
 
     deps = _make_deps(tmp_path)
-    h = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
-                instructions="BASE PROMPT")
+    h = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="BASE PROMPT",
+    )
     await h.run_turn("hi")
     instr = captured["instructions"]
     assert "spawn_agent" in instr
@@ -300,7 +309,10 @@ async def test_run_background_subagent_counts_and_persists_usage(tmp_path: Path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     h = Harness(
         model=TestModel(call_tools=[], custom_output_text="BG"),
-        provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     assert h.session.total_tokens == 0
     await h.subagents.run_background("explore", "scan the repo")
@@ -326,7 +338,10 @@ async def test_bg_spawn_skips_force_persist_during_approval_round(tmp_path: Path
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     h = Harness(
         model=TestModel(call_tools=[], custom_output_text="BG"),
-        provider=BuiltinToolProvider(), deps=deps, instructions="x", store=store,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     persists = {"n": 0}
     real_persist = h.session.persist
@@ -438,7 +453,7 @@ async def test_spawn_agent_tool_runs_subagent_end_to_end(tmp_path: Path):
     deps = _make_deps(tmp_path)
     h = _make_harness(_spawn_then_done_model(), deps)
     out = await h.run_turn("investigate")
-    assert out == "done: SUBREPORT"
+    assert out.result == "done: SUBREPORT"
 
 
 def test_parallel_tool_calls_enabled_on_main_agent(tmp_path):
@@ -611,7 +626,9 @@ def test_harness_takes_wake_flags_from_config(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     h = Harness(
-        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="x",
         config=HarnessConfig(autonomous_wake=False, wake_depth_cap=7),
     )

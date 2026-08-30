@@ -63,9 +63,7 @@ def test_holder_identity_is_readable_by_the_refused_caller(session_file: Path) -
     try:
         assert try_acquire(session_file, kind="tui") is None
         holder = read_holder(session_file)
-        assert holder == Holder(
-            pid=os.getpid(), kind="daemon", endpoint="http://127.0.0.1:8642"
-        )
+        assert holder == Holder(pid=os.getpid(), kind="daemon", endpoint="http://127.0.0.1:8642")
         assert "daemon" in holder.describe()
         assert "8642" in holder.describe()
     finally:

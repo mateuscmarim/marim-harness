@@ -63,9 +63,7 @@ def _persisted_mode(workspace: Path, session_id: str) -> Mode | None:
         return None
 
 
-async def default_harness_factory(
-    workspace: Path, session_id: str, mode: Mode | None
-) -> Harness:
+async def default_harness_factory(workspace: Path, session_id: str, mode: Mode | None) -> Harness:
     """Build a full production harness for one session: the same wiring as the
     TUI/headless (models, MCP, LSP, hooks) via build_harness, plus the connect
     + session_start lifecycle headless performs around a run."""
@@ -199,10 +197,7 @@ class SessionSupervisor:
         """Session ids in this workspace whose host is mid-turn right now.
         Used by workspace DELETE to refuse (409) rather than yank a harness
         out from under a running turn."""
-        return sorted(
-            sid for (wid, sid), host in self._hosts.items()
-            if wid == ws_id and host.busy
-        )
+        return sorted(sid for (wid, sid), host in self._hosts.items() if wid == ws_id and host.busy)
 
     async def close_workspace(self, ws_id: str) -> None:
         """Tear down every host and reclaim all per-session state (buses,

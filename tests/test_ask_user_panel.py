@@ -211,8 +211,7 @@ async def test_option_list_shows_three_options_and_scrolls():
     """Long option lists cap at three visible options (each 2 rows here: label
     + description) and scroll internally — the scrollbar belongs to the list,
     and the question and free-text input stay pinned inside the panel."""
-    qs = [Question("Pick one", "Pick",
-                   [Choice(f"opt {i}", "a description") for i in range(8)])]
+    qs = [Question("Pick one", "Pick", [Choice(f"opt {i}", "a description") for i in range(8)])]
     app = _Harness(qs)
     async with app.run_test(size=(80, 50)) as pilot:
         await pilot.pause()
@@ -244,8 +243,7 @@ async def test_short_option_list_is_not_padded():
 @pytest.mark.anyio
 async def test_selection_list_caps_at_three_visible_options():
     """The 3-option cap applies to multi-select too."""
-    qs = [Question("Pick many", "Feat",
-                   [Choice(f"o{i}") for i in range(6)], multi=True)]
+    qs = [Question("Pick many", "Feat", [Choice(f"o{i}") for i in range(6)], multi=True)]
     app = _Harness(qs)
     async with app.run_test(size=(80, 50)) as pilot:
         await pilot.pause()
@@ -297,9 +295,11 @@ async def test_selection_list_cap_with_descriptions():
     (nowrap), so the cap must count 1 row each — not 2 like OptionList.
     Before this was widget-aware, described multi-selects showed ~6 options
     while the overflow hint claimed only 3 were visible."""
-    qs = [Question("Pick many", "Feat",
-                   [Choice(f"o{i}", "a description") for i in range(6)],
-                   multi=True)]
+    qs = [
+        Question(
+            "Pick many", "Feat", [Choice(f"o{i}", "a description") for i in range(6)], multi=True
+        )
+    ]
     app = _Harness(qs)
     async with app.run_test(size=(80, 50)) as pilot:
         await pilot.pause()

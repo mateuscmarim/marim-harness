@@ -54,9 +54,15 @@ def _strip_bg(style):
     if not isinstance(style, Style) or style.bgcolor is None:
         return style
     return Style(
-        color=style.color, bold=style.bold, dim=style.dim, italic=style.italic,
-        underline=style.underline, blink=style.blink, reverse=style.reverse,
-        conceal=style.conceal, strike=style.strike,
+        color=style.color,
+        bold=style.bold,
+        dim=style.dim,
+        italic=style.italic,
+        underline=style.underline,
+        blink=style.blink,
+        reverse=style.reverse,
+        conceal=style.conceal,
+        strike=style.strike,
     )
 
 

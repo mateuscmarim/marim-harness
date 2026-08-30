@@ -54,8 +54,14 @@ TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 _UI_HOOK_FIELDS = {
-    "request_approval", "ask_user", "on_subagent_event", "on_subagent_notice",
-    "on_subagent_model", "on_subagent_usage", "detach_fanout", "interactive",
+    "request_approval",
+    "ask_user",
+    "on_subagent_event",
+    "on_subagent_notice",
+    "on_subagent_model",
+    "on_subagent_usage",
+    "detach_fanout",
+    "interactive",
     "notifier",
 }
 
@@ -70,8 +76,13 @@ def _make_deps(root: Path, mode: Mode = Mode.auto, **kw) -> Deps:
 
 
 def _make_harness(model, deps, **config_kwargs) -> Harness:
-    return Harness(model=model, provider=BuiltinToolProvider(), deps=deps,
-                   instructions="You are a coding agent.", **config_kwargs)
+    return Harness(
+        model=model,
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="You are a coding agent.",
+        **config_kwargs,
+    )
 
 
 def _edit_model() -> FunctionModel:
@@ -84,11 +95,17 @@ def _edit_model() -> FunctionModel:
                 parts=[ToolCallPart(tool_name="read_file", args={"path": "a.txt"})]
             )
         if state["n"] == 2:
-            return ModelResponse(parts=[ToolCallPart(
-                tool_name="edit_file",
-                args={"path": "a.txt",
-                      "edits": [{"old_string": "foo", "new_string": "bar"}]},
-            )])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="edit_file",
+                        args={
+                            "path": "a.txt",
+                            "edits": [{"old_string": "foo", "new_string": "bar"}],
+                        },
+                    )
+                ]
+            )
         return ModelResponse(parts=[TextPart(content="done")])
 
     stream_state = {"n": 0}
@@ -96,16 +113,23 @@ def _edit_model() -> FunctionModel:
     async def stream_fn(messages, info):
         stream_state["n"] += 1
         if stream_state["n"] == 1:
-            yield {0: DeltaToolCall(name="read_file",
-                                    json_args=_json.dumps({"path": "a.txt"}),
-                                    tool_call_id="tc-read-1")}
+            yield {
+                0: DeltaToolCall(
+                    name="read_file",
+                    json_args=_json.dumps({"path": "a.txt"}),
+                    tool_call_id="tc-read-1",
+                )
+            }
         elif stream_state["n"] == 2:
-            yield {0: DeltaToolCall(
-                name="edit_file",
-                json_args=_json.dumps({"path": "a.txt",
-                                       "edits": [{"old_string": "foo",
-                                                  "new_string": "bar"}]}),
-                tool_call_id="tc-edit-1")}
+            yield {
+                0: DeltaToolCall(
+                    name="edit_file",
+                    json_args=_json.dumps(
+                        {"path": "a.txt", "edits": [{"old_string": "foo", "new_string": "bar"}]}
+                    ),
+                    tool_call_id="tc-edit-1",
+                )
+            }
         else:
             yield "done"
 
@@ -192,10 +216,12 @@ def _setup_workspace_and_session(client, tmp_path, mode="ask"):
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
     (project / "a.txt").write_text("foo\n")
-    ws = client.post("/v1/workspaces", headers=AUTH,
-                     json={"name": "proj", "path": str(project)}).json()
-    sid = client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
-                      json={"name": "run1", "mode": mode}).json()["id"]
+    ws = client.post(
+        "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+    ).json()
+    sid = client.post(
+        f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH, json={"name": "run1", "mode": mode}
+    ).json()["id"]
     return ws["id"], sid, project
 
 
@@ -217,16 +243,19 @@ def test_health_needs_no_auth(client):
 def test_everything_else_requires_token(client):
     test_client, _ = client
     assert test_client.get("/v1/workspaces").status_code == 401
-    assert test_client.get("/v1/workspaces", headers={
-        "Authorization": "Bearer wrong"}).status_code == 401
+    assert (
+        test_client.get("/v1/workspaces", headers={"Authorization": "Bearer wrong"}).status_code
+        == 401
+    )
 
 
 def test_workspace_crud(client):
     test_client, tmp_path = client
     project = tmp_path / "proj"
     project.mkdir()
-    created = test_client.post("/v1/workspaces", headers=AUTH,
-                               json={"name": "proj", "path": str(project)})
+    created = test_client.post(
+        "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+    )
     assert created.status_code == 201
     ws_id = created.json()["id"]
     listed = test_client.get("/v1/workspaces", headers=AUTH).json()
@@ -268,9 +297,9 @@ def test_session_list_includes_status_and_pending_asks(client):
     accepted = test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
     assert accepted.status_code == 202
     listed = _poll(
-        test_client, f"/v1/workspaces/{ws_id}/sessions",
-        lambda body: any(s["id"] == sid and s["status"] == "waiting_ask"
-                         for s in body["sessions"]),
+        test_client,
+        f"/v1/workspaces/{ws_id}/sessions",
+        lambda body: any(s["id"] == sid and s["status"] == "waiting_ask" for s in body["sessions"]),
     )
     [row] = [s for s in listed["sessions"] if s["id"] == sid]
     [ask] = row["pending_asks"]
@@ -289,8 +318,7 @@ def test_full_turn_with_parked_approval(client):
     state = _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
     [ask] = state["pending_asks"]
     assert ask["payload"]["tool_name"] == "edit_file"
-    answered = test_client.post(f"{base}/asks/{ask['id']}", headers=AUTH,
-                                json={"approve": True})
+    answered = test_client.post(f"{base}/asks/{ask['id']}", headers=AUTH, json={"approve": True})
     assert answered.status_code == 200
 
     _poll(test_client, base, lambda s: s["status"] == "idle")
@@ -327,8 +355,7 @@ def test_steer_requires_running_turn(client):
     assert refused.status_code == 409
     test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
     _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
-    assert test_client.post(f"{base}/steer", headers=AUTH,
-                            json={"text": "hey"}).status_code == 200
+    assert test_client.post(f"{base}/steer", headers=AUTH, json={"text": "hey"}).status_code == 200
     test_client.post(f"{base}/interrupt", headers=AUTH)
 
 
@@ -388,8 +415,12 @@ def test_set_mode_rejects_unknown_value(client):
 def test_unknown_workspace_and_session_404(client):
     test_client, _ = client
     assert test_client.get("/v1/workspaces/nope/sessions", headers=AUTH).status_code == 404
-    assert test_client.post("/v1/workspaces/nope/sessions/x/messages", headers=AUTH,
-                            json={"prompt": "hi"}).status_code == 404
+    assert (
+        test_client.post(
+            "/v1/workspaces/nope/sessions/x/messages", headers=AUTH, json={"prompt": "hi"}
+        ).status_code
+        == 404
+    )
 
 
 def test_malformed_base64_attachment_returns_400(client):
@@ -398,12 +429,14 @@ def test_malformed_base64_attachment_returns_400(client):
     base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
 
     # POST a message with an attachment containing malformed base64
-    response = test_client.post(f"{base}/messages", headers=AUTH, json={
-        "prompt": "process this",
-        "attachments": [
-            {"data_b64": "not-valid-base64!!!", "media_type": "image/png"}
-        ]
-    })
+    response = test_client.post(
+        f"{base}/messages",
+        headers=AUTH,
+        json={
+            "prompt": "process this",
+            "attachments": [{"data_b64": "not-valid-base64!!!", "media_type": "image/png"}],
+        },
+    )
     assert response.status_code == 400
     error_body = response.json()
     assert error_body["error"]["code"] == "bad_request"
@@ -414,9 +447,7 @@ def test_session_image_requires_auth(client):
     test_client, _ = client
     # Auth is checked before workspace/session lookup, so placeholder ids
     # are enough to exercise the 401 path.
-    response = test_client.get(
-        "/v1/workspaces/nope/sessions/nope/images/" + "0" * 64
-    )
+    response = test_client.get("/v1/workspaces/nope/sessions/nope/images/" + "0" * 64)
     assert response.status_code == 401
 
 
@@ -470,9 +501,11 @@ def test_session_image_unknown_session(client):
     test_client, tmp_path = client
     project = tmp_path / "proj-image-unknown-session"
     project.mkdir()
-    ws_id = test_client.post("/v1/workspaces", headers=AUTH,
-                             json={"name": "proj-image-unknown-session",
-                                   "path": str(project)}).json()["id"]
+    ws_id = test_client.post(
+        "/v1/workspaces",
+        headers=AUTH,
+        json={"name": "proj-image-unknown-session", "path": str(project)},
+    ).json()["id"]
     valid_shape_sha = "b" * 64
     response = test_client.get(
         f"/v1/workspaces/{ws_id}/sessions/nope/images/{valid_shape_sha}", headers=AUTH
@@ -531,8 +564,11 @@ def test_list_models_returns_qualified_entries(client, monkeypatch):
     class _FakeSource:
         async def list_models(self):
             return [
-                ModelEntry(id="anthropic/claude-sonnet-4-6", name="Claude Sonnet 4.6",
-                           provider="openrouter"),
+                ModelEntry(
+                    id="anthropic/claude-sonnet-4-6",
+                    name="Claude Sonnet 4.6",
+                    provider="openrouter",
+                ),
                 ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
             ]
 
@@ -555,10 +591,14 @@ def test_create_session_with_model_persists(client):
     test_client, tmp_path = client
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
-    ws = test_client.post("/v1/workspaces", headers=AUTH,
-                          json={"name": "proj", "path": str(project)}).json()
-    created = test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
-                               json={"name": "run1", "model": "claude-cli:opus"})
+    ws = test_client.post(
+        "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+    ).json()
+    created = test_client.post(
+        f"/v1/workspaces/{ws['id']}/sessions",
+        headers=AUTH,
+        json={"name": "run1", "model": "claude-cli:opus"},
+    )
     assert created.status_code == 201
     sid = created.json()["id"]
     detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}", headers=AUTH).json()
@@ -630,13 +670,14 @@ def test_get_session_reports_default_when_header_null(client, monkeypatch):
     test_client, tmp_path = client
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
-    ws = test_client.post("/v1/workspaces", headers=AUTH,
-                          json={"name": "proj", "path": str(project)}).json()
-    created = test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
-                               json={"name": "run1"})
+    ws = test_client.post(
+        "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+    ).json()
+    created = test_client.post(
+        f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH, json={"name": "run1"}
+    )
     sid = created.json()["id"]
-    detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}",
-                             headers=AUTH).json()
+    detail = test_client.get(f"/v1/workspaces/{ws['id']}/sessions/{sid}", headers=AUTH).json()
     assert detail["session"]["model"] == "claude-cli:sonnet"
 
 
@@ -651,12 +692,11 @@ def test_list_sessions_reports_effective_model(client, monkeypatch):
     test_client, tmp_path = client
     project = tmp_path / "proj"
     project.mkdir(exist_ok=True)
-    ws = test_client.post("/v1/workspaces", headers=AUTH,
-                          json={"name": "proj", "path": str(project)}).json()
-    test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH,
-                     json={"name": "run1"})
-    rows = test_client.get(f"/v1/workspaces/{ws['id']}/sessions",
-                           headers=AUTH).json()["sessions"]
+    ws = test_client.post(
+        "/v1/workspaces", headers=AUTH, json={"name": "proj", "path": str(project)}
+    ).json()
+    test_client.post(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH, json={"name": "run1"})
+    rows = test_client.get(f"/v1/workspaces/{ws['id']}/sessions", headers=AUTH).json()["sessions"]
     assert rows[0]["model"] == "claude-cli:sonnet"
 
 
@@ -665,10 +705,8 @@ def test_session_mode_persisted_and_listed(client):
     (so it survives daemon restarts — see the supervisor tests for the
     read-back path) and surfaces in list responses."""
     test_client, tmp_path = client
-    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path,
-                                                       mode="plan")
-    rows = test_client.get(f"/v1/workspaces/{ws_id}/sessions",
-                           headers=AUTH).json()["sessions"]
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path, mode="plan")
+    rows = test_client.get(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH).json()["sessions"]
     assert {r["id"]: r["mode"] for r in rows}[sid] == "plan"
 
     from marim_harness.session.store import SessionManager
@@ -692,10 +730,8 @@ def test_delete_workspace_refuses_while_running_then_cleans_up(client):
 
     test_client.post(f"{base}/interrupt", headers=AUTH)
     _poll(test_client, base, lambda s: s["status"] == "idle")
-    assert test_client.delete(f"/v1/workspaces/{ws_id}",
-                              headers=AUTH).json()["deleted"] is True
-    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions",
-                           headers=AUTH).status_code == 404
+    assert test_client.delete(f"/v1/workspaces/{ws_id}", headers=AUTH).json()["deleted"] is True
+    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions", headers=AUTH).status_code == 404
 
 
 def test_jobs_empty_for_idle_session(client):
@@ -710,10 +746,13 @@ def test_jobs_requires_auth_and_valid_session(client):
     test_client, tmp_path = client
     ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)
     assert test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs").status_code == 401
-    assert test_client.get(f"/v1/workspaces/nope/sessions/{sid}/jobs",
-                           headers=AUTH).status_code == 404
-    assert test_client.get(f"/v1/workspaces/{ws_id}/sessions/nope/jobs",
-                           headers=AUTH).status_code == 404
+    assert (
+        test_client.get(f"/v1/workspaces/nope/sessions/{sid}/jobs", headers=AUTH).status_code == 404
+    )
+    assert (
+        test_client.get(f"/v1/workspaces/{ws_id}/sessions/nope/jobs", headers=AUTH).status_code
+        == 404
+    )
 
 
 def test_job_detail_404_for_unknown_id(client):
@@ -741,16 +780,19 @@ async def _register_and_settle_two_jobs(registry):
         return value
 
     bash_id = registry.register(
-        "bash", "run the test suite",
+        "bash",
+        "run the test suite",
         _const("full bash output line one\nfull bash output line two\n"),
         prompt="echo hi",
     )
     await registry.wait(bash_id)
     await asyncio.sleep(0.01)
     agent_id = registry.register(
-        "agent", "explore: investigate the widget",
+        "agent",
+        "explore: investigate the widget",
         _const("the agent's full synthesized result"),
-        stream_id="tc-1", prompt="do the thing",
+        stream_id="tc-1",
+        prompt="do the thing",
     )
     await registry.wait(agent_id)
     return bash_id, agent_id
@@ -800,10 +842,17 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     store = SessionManager(project).store(sid)
     transcripts = TranscriptStore(store.path, store.session_id)
     transcripts.write(
-        "tc-1", [ModelRequest(parts=[UserPromptPart(content="investigate the widget")])],
+        "tc-1",
+        [ModelRequest(parts=[UserPromptPart(content="investigate the widget")])],
         cap=2000,
-        meta={"usage": {"input": 111, "output": 222}, "tool_count": 4, "duration": 7.5,
-              "type": "explore", "task": "investigate the widget", "status": "done"},
+        meta={
+            "usage": {"input": 111, "output": 222},
+            "tool_count": 4,
+            "duration": 7.5,
+            "type": "explore",
+            "task": "investigate the widget",
+            "status": "done",
+        },
     )
 
     # --- GET .../jobs (list): both jobs, settled-desc ordered, meta only on

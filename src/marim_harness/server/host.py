@@ -57,8 +57,7 @@ class PendingAsk:
     future: "asyncio.Future[dict]" = field(repr=False)
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "kind": self.kind, "payload": self.payload,
-                "created": self.created}
+        return {"id": self.id, "kind": self.kind, "payload": self.payload, "created": self.created}
 
 
 class SessionHost:
@@ -106,9 +105,7 @@ class SessionHost:
             on_subagent_event=self._on_subagent_event,
             on_tasks_changed=lambda: self._publish("tasks.changed", {}),
             on_jobs_changed=self._on_jobs_changed,
-            on_rename=lambda old, new: self._publish(
-                "session.renamed", {"from": old, "to": new}
-            ),
+            on_rename=lambda old, new: self._publish("session.renamed", {"from": old, "to": new}),
             on_compact_start=lambda: self._publish("compaction.started", {}),
             on_compact=lambda before, after: self._publish(
                 "compaction.finished", {"before": before, "after": after}
@@ -190,7 +187,10 @@ class SessionHost:
     # ---------------------------------------------------- bind_ui bridge --
     def _park(self, kind: str, payload: dict) -> PendingAsk:
         ask = PendingAsk(
-            id=secrets.token_hex(8), kind=kind, payload=payload, created=_now(),
+            id=secrets.token_hex(8),
+            kind=kind,
+            payload=payload,
+            created=_now(),
             future=asyncio.get_running_loop().create_future(),
         )
         self._pending[ask.id] = ask
@@ -301,9 +301,7 @@ class SessionHost:
     async def _run_one_turn(
         self, turn_id: str, prompt: str, attachments, trigger: str = "user"
     ) -> None:
-        self.bus.publish(
-            "turn.started", {"turn_id": turn_id, "prompt": prompt, "trigger": trigger}
-        )
+        self.bus.publish("turn.started", {"turn_id": turn_id, "prompt": prompt, "trigger": trigger})
         self._publish_status()
 
         async def handler(ctx, events):
@@ -316,9 +314,13 @@ class SessionHost:
                     self.bus.publish(wire_type, obj)
 
         try:
-            output = await self.harness.run_turn(
+            outcome = await self.harness.run_turn(
                 prompt, event_stream_handler=handler, attachments=attachments
             )
+            # `turn.finished.output` is a wire string: the daemon serves the CLI
+            # preset, which never configures structured output, so result is
+            # always the turn's text. Coalesce anyway rather than emit a null.
+            output = outcome.result or ""
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # surface, don't crash the worker
@@ -362,9 +364,7 @@ class SessionHost:
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception as exc:  # noqa: BLE001 - teardown is best-effort
-                    logger.warning(
-                        "host teardown step %s failed: %s", label, exc, exc_info=True
-                    )
+                    logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
             for label, coro_fn in (
                 ("session_end", lambda: self.harness.session_end("exit")),
                 ("aclose", self.harness.aclose),
@@ -372,9 +372,7 @@ class SessionHost:
                 try:
                     await coro_fn()
                 except Exception as exc:  # noqa: BLE001 - teardown is best-effort
-                    logger.warning(
-                        "host teardown step %s failed: %s", label, exc, exc_info=True
-                    )
+                    logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
         finally:
             # Last, so ownership outlives every write above: the final persist
             # must complete while we still hold the session. Nothing is

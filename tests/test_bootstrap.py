@@ -40,9 +40,7 @@ def _stub_model_source_build(monkeypatch):
     keep it off provider packages by returning a TestModel that reports the id."""
     from marim_harness.runtime import bootstrap as _b
 
-    monkeypatch.setattr(
-        _b.ModelSource, "build", lambda self, model_id: TestModel()
-    )
+    monkeypatch.setattr(_b.ModelSource, "build", lambda self, model_id: TestModel())
 
 
 def _history() -> list:
@@ -335,7 +333,8 @@ def test_build_harness_wires_claude_cli_mode_getter(tmp_path, monkeypatch):
     assert harness.current_model.mode_getter() == harness.mode.value
     # No UI yet → the tool-card side-channel is unbound (headless folds to ▸ text).
     assert harness.current_model.on_activity is None
-    assert harness.current_model.on_subagent is None          # before bind_ui
+    assert harness.current_model.on_subagent is None  # before bind_ui
+
     # bind_ui wires the side-channel onto the model so Claude's tool activity
     # renders as native cards in the main transcript.
     async def _on_cli_activity(events):
@@ -353,7 +352,7 @@ def test_build_harness_wires_claude_cli_mode_getter(tmp_path, monkeypatch):
         on_subagent_model=_on_subagent_model,
     )
     assert harness.current_model.on_activity is _on_cli_activity
-    assert harness.current_model.on_subagent is _on_subagent_event   # after
+    assert harness.current_model.on_subagent is _on_subagent_event  # after
     assert harness.current_model.on_subagent_model is _on_subagent_model
 
 
@@ -452,7 +451,8 @@ def test_lsp_tools_stay_on_with_workspace_coverage(tmp_path: Path, monkeypatch):
     ws.mkdir()
     (ws / "mod.py").write_text("x = 1")
     monkeypatch.setattr(
-        registry.shutil, "which",
+        registry.shutil,
+        "which",
         lambda b: "/usr/bin/jedi-language-server" if b == "jedi-language-server" else None,
     )
     harness = bootstrap.build_harness(ws, mode=Mode.ask)

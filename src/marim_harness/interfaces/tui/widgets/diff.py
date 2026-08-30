@@ -134,9 +134,7 @@ class EditDiff:
             yield from self._render_row(console, row, width)
             yield Segment("\n")
         if self.hidden:
-            yield Segment(
-                f"… +{self.hidden} more lines (ctrl+o)", Style(dim=True)
-            )
+            yield Segment(f"… +{self.hidden} more lines (ctrl+o)", Style(dim=True))
             yield Segment("\n")
 
     def _render_row(self, console, row: _DiffRow, width: int):
@@ -154,7 +152,7 @@ class EditDiff:
         used = self._gw + 3  # gutter + space + marker + space
 
         src = self.old_hl if row.kind == "remove" else self.new_hl
-        idx = (row.old_no if row.kind == "remove" else row.new_no)
+        idx = row.old_no if row.kind == "remove" else row.new_no
         line = src[idx - 1].copy() if idx and idx - 1 < len(src) else Text(row.text)
         avail = max(0, width - used)
         line.truncate(avail, overflow="ellipsis")
@@ -182,8 +180,9 @@ def render_file_diff(
         shown, hidden = rows[:cap], len(rows) - cap
     else:
         shown, hidden = rows, 0
-    diff = EditDiff(shown, hidden, _highlight_lines(old_text, lexer),
-                    _highlight_lines(new_text, lexer))
+    diff = EditDiff(
+        shown, hidden, _highlight_lines(old_text, lexer), _highlight_lines(new_text, lexer)
+    )
     return diff, added, removed
 
 

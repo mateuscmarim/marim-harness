@@ -19,24 +19,20 @@ SUBAGENT_MAX_DEPTH = 3
 #                 (where they run un-prompted).
 # Memory, skill, task, and spawn tools are main-agent only — a sub-agent's job is
 # its task, not the session's bookkeeping.
-LSP_TOOLS = frozenset({
-    "goto_definition", "find_references", "hover",
-    "document_symbols", "workspace_symbols", "diagnostics",
-})
+LSP_TOOLS = frozenset(
+    {
+        "goto_definition",
+        "find_references",
+        "hover",
+        "document_symbols",
+        "workspace_symbols",
+        "diagnostics",
+    }
+)
 READ_TOOLS = frozenset({"read_file", "glob", "tree", "grep"}) | LSP_TOOLS
 NET_TOOLS = frozenset({"web_search", "fetch_url"})
 GATED_TOOLS = frozenset({"write_file", "edit_file", "bash"})
 SUBAGENT_TOOLS = READ_TOOLS | NET_TOOLS | GATED_TOOLS
-
-# The five forge (Gitea/GitHub) tool names built by
-# tools.forge_tools.build_forge_toolset. Forge tools are main-agent only (not
-# in SUBAGENT_TOOLS) and are attached as a separate pydantic-ai toolset rather
-# than through BuiltinToolProvider, so they don't live in TOOL_GROUPS above —
-# but HarnessBuilder.build() still needs this set to catch a custom-tool name
-# collision with a forge name at build() time (see builder.py's collision
-# check) instead of failing silently mid-run when with_forge() attaches its
-# toolset.
-FORGE_TOOLS = frozenset({"list_prs", "view_pr", "ci_status", "create_pr", "checkout_pr"})
 
 # Composition groups for the embeddable builder (see runtime/builder.py). Keys
 # MUST mirror provider.ToolGroups' field names — test_provider asserts this.

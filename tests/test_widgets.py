@@ -33,8 +33,10 @@ def test_format_cost_uses_more_precision_for_sub_cent_amounts():
 def test_format_token_split_uses_compact_symbols():
     # ↑ uncached input, ⚡ cached (read + write), ↓ output.
     u = RunUsage(
-        input_tokens=56000, output_tokens=2000,
-        cache_read_tokens=50000, cache_write_tokens=5000,
+        input_tokens=56000,
+        output_tokens=2000,
+        cache_read_tokens=50000,
+        cache_write_tokens=5000,
     )
     assert format_token_split(u) == "1k↑ 55k⚡ 2k↓"
 
@@ -44,13 +46,14 @@ def test_format_token_split_keeps_all_buckets_even_when_zero():
     u = RunUsage(input_tokens=12, output_tokens=8)
     assert format_token_split(u) == "12↑ 0⚡ 8↓"
 
+
 # An unclosed, expression-style bracket sequence. Unlike a balanced ``[/]``,
 # ``rich``/``textual`` ``escape()`` will NOT neutralise this — its regex only
 # escapes brackets that look like a complete ``[tag]`` — yet Textual's markup
 # parser still treats ``[edit(`` as an opening tag and crashes on the dangling
 # quote with "Expected markup value". Untrusted text must therefore bypass
 # markup parsing entirely (literal Content), not merely be escaped.
-MARKUP_BOMB = "[/] and [edit(old_string=\"unterminated"
+MARKUP_BOMB = '[/] and [edit(old_string="unterminated'
 
 
 class _Harness(App):
@@ -179,10 +182,12 @@ class _TaskHarness(App):
     def compose(self) -> ComposeResult:
         yield ToolCallWidget(
             "update_tasks",
-            {"todos": [
-                {"text": "Run static analysis", "status": "done"},
-                {"text": "Map project structure", "status": "in_progress"},
-            ]},
+            {
+                "todos": [
+                    {"text": "Run static analysis", "status": "done"},
+                    {"text": "Map project structure", "status": "in_progress"},
+                ]
+            },
         )
 
 
@@ -484,9 +489,11 @@ async def test_sudo_modal_survives_markup_like_command():
 def _panel_item(kind):
     """A duck-typed task or job item the panel renderers accept."""
     if kind == "task":
+
         class _Task:
             status = "pending"
             text = "build the thing"
+
         return _Task()
 
     class _Job:
@@ -494,6 +501,7 @@ def _panel_item(kind):
         kind = "agent"
         status = "running"
         label = "build the thing"
+
     return _Job()
 
 
@@ -933,9 +941,10 @@ def test_derive_subagent_title_takes_first_clause():
     instead of inlining the whole prompt."""
     from marim_harness.interfaces.tui.subagents.card import derive_title
 
-    assert derive_title(
-        "Provide a structural overview of the codebase. Include: a tree."
-    ) == "Provide a structural overview of the codebase"
+    assert (
+        derive_title("Provide a structural overview of the codebase. Include: a tree.")
+        == "Provide a structural overview of the codebase"
+    )
     # No boundary → the whole (whitespace-collapsed) task; multi-line is flattened.
     assert derive_title("short\n  task") == "short task"
     # Over-long single clause is clipped with an ellipsis.
@@ -1258,8 +1267,9 @@ def test_render_file_diff_context_lines_have_no_background():
 
     from rich.console import Console
 
-    diff, _, _ = render_file_diff("a = 1\nb = 2\nc = 3\n", "a = 1\nb = 9\nc = 3\n",
-                                  cap=None, lexer="python")
+    diff, _, _ = render_file_diff(
+        "a = 1\nb = 2\nc = 3\n", "a = 1\nb = 9\nc = 3\n", cap=None, lexer="python"
+    )
     con = Console(width=40, color_system="truecolor", file=io.StringIO())
     opts = con.options.update_width(40)
     rows = con.render_lines(diff, opts)
@@ -1313,9 +1323,7 @@ class _EditHarness(App):
         super().__init__()
 
     def compose(self) -> ComposeResult:
-        yield ToolCallWidget(
-            "edit_file", self._args, workspace_root=self._workspace_root
-        )
+        yield ToolCallWidget("edit_file", self._args, workspace_root=self._workspace_root)
 
 
 @pytest.mark.anyio
@@ -1504,8 +1512,9 @@ def test_read_file_highlight_has_no_baked_background():
     w.finish("1\tdef f(x):\n2\t    return x + 1\n")
     con = Console(width=60, color_system="truecolor", file=io.StringIO())
     lines = con.render_lines(w._render_body(), con.options.update_width(60))
-    bgs = [s.style.bgcolor for line in lines for s in line
-           if s.style and s.style.bgcolor is not None]
+    bgs = [
+        s.style.bgcolor for line in lines for s in line if s.style and s.style.bgcolor is not None
+    ]
     assert bgs == [], f"highlighted code should have no background, got {bgs}"
     text = "\n".join("".join(s.text for s in line) for line in lines)
     assert "def f" in text  # still rendered (and highlighted)
@@ -1590,8 +1599,12 @@ def test_bash_failure_output_renders_red():
     w.finish("exit 1\nboom error here")
     con = Console(width=60, color_system="truecolor", file=io.StringIO())
     lines = con.render_lines(w._render_body(), con.options.update_width(60))
-    reds = [s.text for line in lines for s in line
-            if s.style and s.style.color and "d9544f" in str(s.style.color).lower()]
+    reds = [
+        s.text
+        for line in lines
+        for s in line
+        if s.style and s.style.color and "d9544f" in str(s.style.color).lower()
+    ]
     assert any("boom" in t for t in reds)  # the output is colored red
 
 
@@ -1647,8 +1660,12 @@ def test_toolcall_pending_glyph_is_spinner_done_is_check():
 
 _ASK_ARGS = {
     "questions": [
-        {"question": "Which approach?", "header": "approach",
-         "options": [{"label": "Option A"}, {"label": "Option B"}], "multi": False}
+        {
+            "question": "Which approach?",
+            "header": "approach",
+            "options": [{"label": "Option A"}, {"label": "Option B"}],
+            "multi": False,
+        }
     ]
 }
 
@@ -1688,7 +1705,7 @@ def test_ask_user_widget_cancelled_title():
 _STREAM_DOC = (
     "Intro prose about the claim under test here.\n\n"
     "## Verification Report\n\n"
-    "### Claim 4: Aider uses a separate \"weak model\" for summarization.\n\n"
+    '### Claim 4: Aider uses a separate "weak model" for summarization.\n\n'
     "**CONFIRMED** ✓\n\n"
     "Evidence: plain prose that should never be doubled.\n\n"
     "### Claim 5: A second styled heading to splice on.\n\n"
@@ -1708,6 +1725,7 @@ class _TwoMessages(App):
 
 def _block_count(msg) -> int:
     from textual.widgets._markdown import MarkdownBlock
+
     return len(list(msg.query(MarkdownBlock)))
 
 
@@ -1744,7 +1762,7 @@ async def test_assistant_message_streaming_never_duplicates_blocks():
         # occasionally, so appends are still in flight when later flushes fire — the
         # overlap condition that used to mount blocks twice.
         for idx, i in enumerate(range(0, len(_STREAM_DOC), 5)):
-            streamed.append(_STREAM_DOC[i:i + 5])
+            streamed.append(_STREAM_DOC[i : i + 5])
             dirty.add(streamed)
             flush_tick()
             if idx % 4 == 0:
@@ -1779,7 +1797,7 @@ async def test_assistant_message_finalize_is_idempotent_and_skips_unrendered():
         expected = _block_count(reference)
 
         streamed.append(_STREAM_DOC)  # buffered, never flushed (still off-screen)
-        streamed.finalize()           # _rendered_len == 0 → leaves it for the flush
+        streamed.finalize()  # _rendered_len == 0 → leaves it for the flush
         for _ in range(10):
             await pilot.pause()
         assert _block_count(streamed) == 0  # nothing rendered yet
@@ -1844,7 +1862,7 @@ async def test_large_assistant_message_render_is_capped():
     m.text = big
     bounded = m._bounded_source()
     assert bounded.startswith("*[") and "elided" in bounded  # marker present
-    assert len(bounded) <= cap + 64                          # bounded to the tail
+    assert len(bounded) <= cap + 64  # bounded to the tail
 
     class H(App):
         def compose(self) -> ComposeResult:

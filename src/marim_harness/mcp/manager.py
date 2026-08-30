@@ -86,16 +86,10 @@ class McpManager:
         return [self.server_name(s) for s in self.mcp_servers]
 
     def enabled_names(self) -> list[str]:
-        return [
-            n for s in self._live_servers
-            if (n := self.server_name(s)) not in self.disabled
-        ]
+        return [n for s in self._live_servers if (n := self.server_name(s)) not in self.disabled]
 
     def live_toolsets(self) -> list:
-        return [
-            s for s in self._live_servers
-            if self.server_name(s) not in self.disabled
-        ]
+        return [s for s in self._live_servers if self.server_name(s) not in self.disabled]
 
     async def _safe_list_tools(self, server) -> list | None:
         """One server's raw tool list, best-effort. ``None`` when the server has
@@ -142,9 +136,7 @@ class McpManager:
                 groups[name] = tool_names
         return groups
 
-    def discovered_server_instructions(
-        self, discovered: set[str]
-    ) -> list[tuple[str, str]]:
+    def discovered_server_instructions(self, discovered: set[str]) -> list[tuple[str, str]]:
         """For each non-disabled live server whose tools appear in ``discovered``,
         return ``(server_name, instructions)`` — the server's init-time usage guide.
         ``discovered`` holds the composed (prefixed) tool names, and the prefix is
@@ -170,8 +162,7 @@ class McpManager:
             return ""
         return (
             "MCP servers you can grant to a sub-agent via spawn_agent's `mcp` "
-            "argument (e.g. mcp=[" + repr(names[0]) + "]): "
-            + ", ".join(names)
+            "argument (e.g. mcp=[" + repr(names[0]) + "]): " + ", ".join(names)
         )
 
     def granted_servers(self, names: list[str] | None) -> tuple[list, list[str]]:
@@ -343,9 +334,7 @@ class McpManager:
         persist_server_enabled(workspace_root, name, True, trust_project=self.trust_project)
         if any(self.server_name(s) == name for s in self._live_servers):
             return None
-        server = next(
-            (s for s in self.mcp_servers if self.server_name(s) == name), None
-        )
+        server = next((s for s in self.mcp_servers if self.server_name(s) == name), None)
         if server is None:
             return f"no such server {name!r}"
         err = await self._connect_one(server)

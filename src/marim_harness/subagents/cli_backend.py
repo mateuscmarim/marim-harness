@@ -95,6 +95,7 @@ def _kill_process_group(proc) -> None:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
 
+
 # Harness tool name → Claude Code tool name. Names with no Claude Code equivalent
 # (tree, the LSP navigation tools) are absent on purpose: the CLI has its own
 # navigation, so we don't fabricate a mapping. The result feeds --allowedTools.
@@ -134,11 +135,13 @@ def normalize_cc_tool(name: str, args: dict) -> tuple[str, dict]:
     if name == "Edit":
         return harness, {
             "path": args.get("file_path", ""),
-            "edits": [{
-                "old_string": args.get("old_string", ""),
-                "new_string": args.get("new_string", ""),
-                "replace_all": bool(args.get("replace_all", False)),
-            }],
+            "edits": [
+                {
+                    "old_string": args.get("old_string", ""),
+                    "new_string": args.get("new_string", ""),
+                    "replace_all": bool(args.get("replace_all", False)),
+                }
+            ],
         }
     if name in ("Read", "Write") and "file_path" in args:
         out = {k: v for k, v in args.items() if k != "file_path"}
@@ -229,9 +232,14 @@ def build_cli_argv(
     cross-session observations into the turn and derails Claude); auth, model, and
     built-in tools still work normally."""
     argv = [
-        binary, "-p", prompt,
-        "--output-format", "stream-json", "--verbose",
-        "--permission-mode", permission_mode,
+        binary,
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        permission_mode,
     ]
     if safe_mode:
         argv.append("--safe-mode")
@@ -356,33 +364,41 @@ class CliStreamTranslator:
                 idx = self._index
                 self._index += 1
                 events.append(PartStartEvent(index=idx, part=TextPart(content="")))
-                events.append(PartDeltaEvent(
-                    index=idx,
-                    delta=TextPartDelta(content_delta=block.get("text", "")),
-                ))
+                events.append(
+                    PartDeltaEvent(
+                        index=idx,
+                        delta=TextPartDelta(content_delta=block.get("text", "")),
+                    )
+                )
                 resp_parts.append(TextPart(content=block.get("text", "")))
             elif btype == "thinking":
                 idx = self._index
                 self._index += 1
                 events.append(PartStartEvent(index=idx, part=ThinkingPart(content="")))
-                events.append(PartDeltaEvent(
-                    index=idx,
-                    delta=ThinkingPartDelta(content_delta=block.get("thinking", "")),
-                ))
+                events.append(
+                    PartDeltaEvent(
+                        index=idx,
+                        delta=ThinkingPartDelta(content_delta=block.get("thinking", "")),
+                    )
+                )
                 resp_parts.append(ThinkingPart(content=block.get("thinking", "")))
             elif btype == "tool_use":
                 call_id = block.get("id", "")
                 name, args = normalize_cc_tool(
-                    block.get("name", "tool"), block.get("input", {}) or {},
+                    block.get("name", "tool"),
+                    block.get("input", {}) or {},
                 )
                 self._call_names[call_id] = name  # the matching result reuses it
-                events.append(FunctionToolCallEvent(part=ToolCallPart(
-                    tool_name=name,
-                    args=args,
-                    tool_call_id=call_id,
-                )))
-                resp_parts.append(ToolCallPart(
-                    tool_name=name, args=args, tool_call_id=call_id))
+                events.append(
+                    FunctionToolCallEvent(
+                        part=ToolCallPart(
+                            tool_name=name,
+                            args=args,
+                            tool_call_id=call_id,
+                        )
+                    )
+                )
+                resp_parts.append(ToolCallPart(tool_name=name, args=args, tool_call_id=call_id))
         if resp_parts:
             self._messages.append(ModelResponse(parts=resp_parts))
         return events
@@ -432,9 +448,7 @@ def _flatten_tool_result(content) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
     return "" if content is None else str(content)
 
@@ -477,7 +491,7 @@ async def _iter_ndjson_lines(stream, chunk_size: int = _READ_CHUNK):
             nl = buffer.find(b"\n")
             if nl < 0:
                 break
-            line, buffer = buffer[:nl], buffer[nl + 1:]
+            line, buffer = buffer[:nl], buffer[nl + 1 :]
             yield line.decode("utf-8", "replace")
     if buffer:  # a final line with no trailing newline
         yield buffer.decode("utf-8", "replace")
@@ -502,9 +516,7 @@ class _RunState:
     last_ckpt_len: int = 0
 
 
-async def _read_next_line(
-    line_iter, deadline: float, proc, timeout_msg: str
-) -> str | None:
+async def _read_next_line(line_iter, deadline: float, proc, timeout_msg: str) -> str | None:
     """Read one NDJSON line off `line_iter`, bounded by the shared wall-clock
     `deadline` rather than a per-read idle gap: a chatty spawn keeps resetting a
     per-read window and could run unbounded, so each read is shrunk to the time
@@ -538,25 +550,36 @@ class ClaudeCliRunner:
     """
 
     def __init__(self, on_event, on_notice, on_model=None) -> None:
-        self._on_event = on_event      # Deps.on_subagent_event | None
+        self._on_event = on_event  # Deps.on_subagent_event | None
         # Reserved for the spec's low-fidelity on_subagent_notice fallback; not
         # wired in v1 — full-fidelity event translation via _on_event is always used.
-        self._on_notice = on_notice    # Deps.on_subagent_notice | None
+        self._on_notice = on_notice  # Deps.on_subagent_notice | None
         # Surfaces the model the CLI reports (system/init) to the spawn card, which
         # otherwise shows the harness's own model as a fallback. None when no UI.
-        self._on_model = on_model      # Deps.on_subagent_model | None
+        self._on_model = on_model  # Deps.on_subagent_model | None
 
     async def run(
-        self, *, binary: str, prompt: str, system_prompt: str, cwd: str,
-        allow_gated: bool, allowed_tools, model: str | None, stream_id: str,
+        self,
+        *,
+        binary: str,
+        prompt: str,
+        system_prompt: str,
+        cwd: str,
+        allow_gated: bool,
+        allowed_tools,
+        model: str | None,
+        stream_id: str,
         disallowed_tools: list[str] | None = None,
         checkpoint: Callable[[list, str | None], None] | None = None,
         resume_session_id: str | None = None,
     ) -> CliResult:
         argv = build_cli_argv(
-            binary, prompt, system_prompt,
+            binary,
+            prompt,
+            system_prompt,
             cli_permission_mode(allow_gated),
-            map_tools_to_cc(allowed_tools), model,
+            map_tools_to_cc(allowed_tools),
+            model,
             disallowed_tools=disallowed_tools,
             resume_session_id=resume_session_id,
             # A resumed session already carries its system prompt from creation;
@@ -568,7 +591,8 @@ class ClaudeCliRunner:
         # then SIGKILL the whole group (Claude + any tool subprocesses it spawned),
         # not just the top process — see _kill_process_group.
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=cwd,
+            *argv,
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
@@ -600,8 +624,12 @@ class ClaudeCliRunner:
                 if raw is None:
                     break
                 outcome = await self._process_line(
-                    raw, state, translator=translator, demux=demux,
-                    checkpoint=checkpoint, stream_id=stream_id,
+                    raw,
+                    state,
+                    translator=translator,
+                    demux=demux,
+                    checkpoint=checkpoint,
+                    stream_id=stream_id,
                 )
                 if outcome == "break":
                     break
@@ -634,9 +662,14 @@ class ClaudeCliRunner:
                     await proc.wait()
 
     async def _process_line(
-        self, raw: str, state: _RunState, *,
-        translator: CliStreamTranslator, demux: CliSubagentDemux,
-        checkpoint: Callable[[list, str | None], None] | None, stream_id: str,
+        self,
+        raw: str,
+        state: _RunState,
+        *,
+        translator: CliStreamTranslator,
+        demux: CliSubagentDemux,
+        checkpoint: Callable[[list, str | None], None] | None,
+        stream_id: str,
     ) -> str | None:
         """Handle one NDJSON line from the CLI's stdout, mutating `state` in
         place. Returns ``"break"`` when the caller's read loop should stop
@@ -678,8 +711,11 @@ class ClaudeCliRunner:
         return None
 
     async def _dispatch_remainder(
-        self, obj: dict, state: _RunState,
-        translator: CliStreamTranslator, stream_id: str,
+        self,
+        obj: dict,
+        state: _RunState,
+        translator: CliStreamTranslator,
+        stream_id: str,
     ) -> None:
         """Handle the portion of one line's event left after demux routing:
         first-seen model detection, then result-vs-translate dispatch. Split
@@ -691,9 +727,7 @@ class ClaudeCliRunner:
             # first one seen so the card shows the CLI's real model. Guard
             # message against a non-dict (malformed/future stream shape).
             msg = obj.get("message")
-            found = obj.get("model") or (
-                msg.get("model") if isinstance(msg, dict) else None
-            )
+            found = obj.get("model") or (msg.get("model") if isinstance(msg, dict) else None)
             if found:
                 state.model_sent = True
                 if self._on_model is not None and stream_id:
@@ -742,8 +776,12 @@ class ClaudeCliRunner:
         return None
 
     async def _finalize(
-        self, state: _RunState, stderr_bytes: bytes, proc,
-        translator: CliStreamTranslator, demux: CliSubagentDemux,
+        self,
+        state: _RunState,
+        stderr_bytes: bytes,
+        proc,
+        translator: CliStreamTranslator,
+        demux: CliSubagentDemux,
     ) -> CliResult:
         """The post-loop drain: wait (bounded) for the process's exit code, raise
         CliRunError when the stream never produced a result event, else build

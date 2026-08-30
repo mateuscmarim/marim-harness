@@ -16,9 +16,7 @@ def _consult_once_main():
     """A main model that calls the advisor tool once, then finishes."""
 
     def fn(messages, info):
-        returns = [
-            p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
-        ]
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
         if not returns:
             return ModelResponse(parts=[ToolCallPart("advisor", {})])
         return ModelResponse(parts=[TextPart("done")])
@@ -73,9 +71,7 @@ def _consult_twice_main():
     """A main model that calls the advisor tool until it has two returns."""
 
     def fn(messages, info):
-        returns = [
-            p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)
-        ]
+        returns = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
         if len(returns) < 2:
             return ModelResponse(parts=[ToolCallPart("advisor", {})])
         return ModelResponse(parts=[TextPart("done")])
@@ -142,9 +138,7 @@ async def test_defer_loading_marks_the_tool_deferred_until_loaded():
 
     agent = Agent(
         FunctionModel(capture),
-        capabilities=[
-            Advisor(model=_advisor_returns("x"), id="advisor", defer_loading=True)
-        ],
+        capabilities=[Advisor(model=_advisor_returns("x"), id="advisor", defer_loading=True)],
     )
     await agent.run("hi")
     # defer_loading=True withholds the advisor tool from the request entirely —

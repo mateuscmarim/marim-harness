@@ -87,8 +87,10 @@ def build_harness(
     # disagree about what "trusted" means for this run.
     surface = scan_project_surface(workspace)
     resolution = resolve_project_trust(
-        workspace, explicit=cfg.trust_project_hooks,
-        fingerprint=surface.fingerprint, surface_empty=surface.empty,
+        workspace,
+        explicit=cfg.trust_project_hooks,
+        fingerprint=surface.fingerprint,
+        surface_empty=surface.empty,
     )
     trusted = resolution.trusted
     if mode is None:
@@ -102,9 +104,7 @@ def build_harness(
     # `claude --model None`. `parse_qualified` turns "claude-cli:" into bare "".
     model_id = f"{default_provider}:{configs[default_provider].model or ''}"
     model = model_source.build(model_id)
-    command_policy = CommandPolicy(
-        denylist=cfg.command_denylist, allowlist=cfg.command_allowlist
-    )
+    command_policy = CommandPolicy(denylist=cfg.command_denylist, allowlist=cfg.command_allowlist)
     hooks_cfg = load_hooks_config(workspace, trust_project=trusted)
     hook_runner = HookRunner(hooks_cfg) if hooks_cfg else None
     notifier = Notifier(cfg.notifications)
@@ -169,8 +169,7 @@ def build_harness(
         if not any(lsp_reg.availability(lang).available for lang in found):
             register_lsp_tools = False
             logger.info(
-                "LSP tools disabled: no language server available for "
-                "workspace languages %s",
+                "LSP tools disabled: no language server available for workspace languages %s",
                 sorted(found) if found else "(none detected)",
             )
 
@@ -187,8 +186,8 @@ def build_harness(
 
     builder = (
         HarnessBuilder(workspace=workspace, model=model)
-        .with_defaults()                      # full CLI toolset
-        .with_deps(deps)                       # CLI-built Deps: notifier, tool-search knobs
+        .with_defaults()  # full CLI toolset
+        .with_deps(deps)  # CLI-built Deps: notifier, tool-search knobs
         .with_jobs(combined=cfg.job_tool_combined)
         # with_defaults() turned LSP fully on; re-derive it from the CLI's
         # two-switch config (manager vs. navigation tools) rather than reach
@@ -196,10 +195,6 @@ def build_harness(
         # off too, matching register_lsp_tools's own "both must be true" rule.
         .with_lsp(enabled=cfg.lsp_enabled, tools=register_lsp_tools, registry=lsp_reg)
         .with_config_overrides(
-            # The builder derives forge_enabled from an explicit backend (None
-            # here), which would turn CLI forge OFF. Pin the config-driven value
-            # so tea auto-detection keeps working — this override must stay.
-            forge_enabled=cfg.forge_enabled,
             scratchpad_enabled=cfg.scratchpad_enabled,
             workflows_enabled=cfg.workflows_enabled,
             workflow_timeout_secs=cfg.workflow_timeout_secs,

@@ -57,6 +57,7 @@ def _unanswered_tool_calls(messages) -> set:
 
 def _capture_prompt_model(captured: dict) -> FunctionModel:
     """Records the first user-prompt text it sees, then answers 'ok'."""
+
     def fn(messages, info):
         for m in messages:
             for p in getattr(m, "parts", []):
@@ -75,7 +76,9 @@ def _autoname_harness(tmp_path, titler, *, name=None):
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create(name)
     return Harness(
-        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="x",
         config=HarnessConfig(store=store, manager=manager, titler=titler),
     )
@@ -123,8 +126,11 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
     store = manager.create("first")
     first_id = store.session_id
     harness = Harness(
-        model=_text_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", config=HarnessConfig(store=store, manager=manager),
+        model=_text_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        config=HarnessConfig(store=store, manager=manager),
     )
 
     async def _quick():
@@ -162,7 +168,7 @@ async def test_auto_mode_applies_edit(tmp_path: Path):
     deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
-    assert output == "done"
+    assert output.result == "done"
     assert (tmp_path / "a.txt").read_text() == "bar"
 
 
@@ -172,7 +178,7 @@ async def test_plan_mode_denies_edit(tmp_path: Path):
     deps = _make_deps(tmp_path, mode=Mode.plan)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
-    assert output == "done"
+    assert output.result == "done"
     assert (tmp_path / "a.txt").read_text() == "foo"  # unchanged
 
 
@@ -198,8 +204,11 @@ async def test_run_turn_persists_to_store(tmp_path: Path):
     deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     await harness.run_turn("change foo to bar")
     messages, usage, _, _, _ = store.load()
@@ -216,8 +225,11 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
     deps = _make_deps(tmp_path)
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     first = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     await first.run_turn("change foo to bar")
     saved_count = len(first.session.history)
@@ -225,8 +237,11 @@ async def test_resume_restores_history_and_tokens(tmp_path: Path):
 
     # A brand-new harness on the same store resumes the prior conversation.
     second = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     assert second.session.history == []  # nothing until we resume
     restored = second.resume()
@@ -245,8 +260,12 @@ async def test_session_switch_preserves_each_conversation(tmp_path: Path):
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=manager.create("alpha"), manager=manager,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=manager.create("alpha"),
+        manager=manager,
     )
     harness.session.history = [ModelRequest(parts=[UserPromptPart(content="in alpha")])]
     harness.session.persist()
@@ -279,8 +298,12 @@ async def test_tasks_persist_and_restore_across_sessions(tmp_path: Path):
     deps = _make_deps(tmp_path)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     harness = Harness(
-        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=manager.create("alpha"), manager=manager,
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=manager.create("alpha"),
+        manager=manager,
     )
     deps.tasks.replace([{"text": "ship it", "status": "in_progress"}])
     await harness.run_turn("go")  # persists tasks alongside history
@@ -311,8 +334,12 @@ async def test_run_turn_compacts_when_over_budget(tmp_path: Path):
     deps = _make_deps(tmp_path)
     # Tiny budget forces compaction; keep_last small so a tail survives.
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", max_context_tokens=1, keep_last_messages=4,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        max_context_tokens=1,
+        keep_last_messages=4,
     )
     notices = []
     harness.session.on_compact = lambda before, after: notices.append((before, after))
@@ -352,8 +379,12 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
         return "CONDENSED RECAP"
 
     harness = Harness(
-        model=TestModel(call_tools=[]), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", max_context_tokens=1, keep_last_messages=4,
+        model=TestModel(call_tools=[]),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        max_context_tokens=1,
+        keep_last_messages=4,
         summarizer=summarizer,
     )
     for i in range(30):
@@ -392,8 +423,11 @@ async def test_run_turn_does_not_compact_under_budget(tmp_path: Path):
     (tmp_path / "a.txt").write_text("foo")
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", max_context_tokens=1_000_000,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        max_context_tokens=1_000_000,
     )
     notices = []
     harness.session.on_compact = lambda before, after: notices.append((before, after))
@@ -414,12 +448,17 @@ async def test_cancel_during_approval_keeps_session_resumable(tmp_path: Path):
     async def cancel_at_approval(call):
         raise asyncio.CancelledError()
 
-    deps = Deps(workspace=WorkspaceConfig(root=tmp_path, mode=Mode.ask),
-                ui=UIHooks(request_approval=cancel_at_approval))
+    deps = Deps(
+        workspace=WorkspaceConfig(root=tmp_path, mode=Mode.ask),
+        ui=UIHooks(request_approval=cancel_at_approval),
+    )
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
     with pytest.raises(asyncio.CancelledError):
         await harness.run_turn("change foo to bar")
@@ -460,8 +499,9 @@ async def test_memory_policy_flips_with_toggle(tmp_path: Path):
     deps = _make_deps(tmp_path)
 
     # Off (default): a restraint block that forbids proactive saves.
-    off = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(),
-                  deps=deps, instructions="BASE")
+    off = Harness(
+        model=FunctionModel(fn), provider=BuiltinToolProvider(), deps=deps, instructions="BASE"
+    )
     await off.run_turn("hi")
     off_instr = captured["instructions"].lower()
     assert "proactive memory is on" not in off_instr
@@ -469,8 +509,13 @@ async def test_memory_policy_flips_with_toggle(tmp_path: Path):
     assert "BASE" in captured["instructions"]
 
     # On: the encouragement block, present even with no memories saved yet.
-    on = Harness(model=FunctionModel(fn), provider=BuiltinToolProvider(),
-                 deps=deps, instructions="BASE", proactive_memory=True)
+    on = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="BASE",
+        proactive_memory=True,
+    )
     await on.run_turn("hi")
     on_instr = captured["instructions"].lower()
     assert "proactive memory is on" in on_instr
@@ -553,7 +598,9 @@ def test_lsp_disabled_builds_no_manager(tmp_path: Path):
 
     deps = _make_deps(tmp_path)
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
         instructions="You are a coding agent.",
         config=HarnessConfig(lsp_enabled=False),
     )
@@ -575,8 +622,11 @@ async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
     store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
 
     harness = Harness(
-        model=_edit_then_done_model(), provider=BuiltinToolProvider(), deps=deps,
-        instructions="x", store=store,
+        model=_edit_then_done_model(),
+        provider=BuiltinToolProvider(),
+        deps=deps,
+        instructions="x",
+        store=store,
     )
 
     # Write the baseline session file first, so the start-of-turn baseline
@@ -587,6 +637,7 @@ async def test_cancel_does_not_block_on_slow_persist(tmp_path: Path):
     # Replace persist() with a sleeper to expose the absence of a deadline.
     def slow_persist(*, force: bool = False):
         time.sleep(5.0)
+
     harness.session.persist = slow_persist
 
     # Force the cancel path by raising CancelledError out of agent.run.

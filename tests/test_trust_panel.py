@@ -130,7 +130,10 @@ async def test_decline_key_persists_and_notices(tmp_path):
 
 
 def _app_for_trust_cmd(
-    tmp_path: Path, *, trusted: bool = False, source: str = "default",
+    tmp_path: Path,
+    *,
+    trusted: bool = False,
+    source: str = "default",
     surface: ProjectSurface | None = None,
 ) -> HarnessApp:
     """Build a real HarnessApp/Harness for exercising the `/trust` command

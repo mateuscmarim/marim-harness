@@ -82,9 +82,7 @@ def parse_budget_overrides(raw: str) -> list[tuple[str, int | None]]:
 # The provider names a colon prefix can qualify. Mirrors KNOWN_PROVIDERS in
 # config/model.py (not imported: that module pulls in catalog/notification
 # machinery and this one must stay light).
-_PROVIDER_PREFIXES = frozenset(
-    {"openrouter", "local", "google", "claude-cli", "zen", "zen-go"}
-)
+_PROVIDER_PREFIXES = frozenset({"openrouter", "local", "google", "claude-cli", "zen", "zen-go"})
 
 
 def _bare_id(model_id: str) -> str:
@@ -231,6 +229,7 @@ class ContextLimits:
 
 def _catalog_windows(fetch_catalog: CatalogFetch) -> WindowFetch:
     """Normalize a catalog fetch (ModelEntry-likes) into a window fetch."""
+
     async def _windows() -> dict[str, int]:
         windows: dict[str, int] = {}
         for entry in await fetch_catalog():
@@ -238,6 +237,7 @@ def _catalog_windows(fetch_catalog: CatalogFetch) -> WindowFetch:
             if isinstance(window, int) and window > 0:
                 windows[entry.id] = window
         return windows
+
     return _windows
 
 
@@ -264,6 +264,7 @@ def _catalog_fetcher(provider: str, fetch: _KeyedCatalogFetch, api_key: str | No
     ``api_key``). Hoisted to module scope (was nested in
     ``build_context_limits``) to keep that factory's McCabe count low; it
     captures only its explicit arguments, so the relocation is pure."""
+
     async def _windows() -> dict[str, int]:
         windows: dict[str, int] = {}
         for entry in await fetch(api_key):
@@ -271,6 +272,7 @@ def _catalog_fetcher(provider: str, fetch: _KeyedCatalogFetch, api_key: str | No
             if isinstance(window, int) and window > 0:
                 windows[entry.id] = window
         return _qualified(provider, windows)
+
     return _windows
 
 
@@ -280,8 +282,10 @@ def _local_fetcher(
     """A local-probe-backed :data:`WindowFetch` (LM Studio) for one active
     provider. Hoisted to module scope alongside :func:`_catalog_fetcher` for
     the same C901 reason; captures only its explicit arguments."""
+
     async def _windows() -> dict[str, int]:
         return _qualified(provider, await fetch_local(base_url, api_key))
+
     return _windows
 
 

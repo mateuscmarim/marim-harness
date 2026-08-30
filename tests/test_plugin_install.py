@@ -202,9 +202,7 @@ def _make_git_repo(root: Path, name: str, version: str = "1.0.0") -> Path:
     _make_source(root, name)
     # Write the desired version into plugin.json (overwrite what _make_source wrote).
     manifest_path = root / ".marim-plugin" / "plugin.json"
-    manifest_path.write_text(
-        json.dumps({"name": name, "version": version}), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps({"name": name, "version": version}), encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "-A"], cwd=root, check=True)
     subprocess.run(
@@ -232,9 +230,7 @@ def test_update_plugin_happy_path_git(tmp_path, monkeypatch):
 
     # Bump version in the repo and commit.
     manifest_path = repo / ".marim-plugin" / "plugin.json"
-    manifest_path.write_text(
-        json.dumps({"name": "myplugin", "version": "2.0.0"}), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps({"name": "myplugin", "version": "2.0.0"}), encoding="utf-8")
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "bump"],
@@ -247,9 +243,7 @@ def test_update_plugin_happy_path_git(tmp_path, monkeypatch):
     assert rec2.source["type"] == "git"
     assert rec2.source.get("sha")
     gdir = tmp_path / "cfg" / "marim" / "plugins"
-    installed_manifest = (
-        gdir / "myplugin" / ".marim-plugin" / "plugin.json"
-    )
+    installed_manifest = gdir / "myplugin" / ".marim-plugin" / "plugin.json"
     assert json.loads(installed_manifest.read_text())["version"] == "2.0.0"
 
 
@@ -272,7 +266,11 @@ def test_update_dropping_trust_when_update_adds_executable_surface(tmp_path, mon
     repo = _make_git_repo(tmp_path / "repo", "evolving", version="1.0.0")
 
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=False, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True  # inert -> auto-trusted
@@ -302,7 +300,11 @@ def test_update_keeps_trust_when_still_inert(tmp_path, monkeypatch):
     ws.mkdir()
     repo = _make_git_repo(tmp_path / "repo", "calm", version="1.0.0")
     install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=False, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        now="T1",
         _force_git=True,
     )
     (repo / ".marim-plugin" / "plugin.json").write_text(
@@ -330,7 +332,11 @@ def test_update_already_executable_keeps_explicit_trust(tmp_path, monkeypatch):
     )
     _commit_all(repo, "with hook")
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=True,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True
@@ -359,7 +365,11 @@ def test_update_drops_trust_when_existing_hook_command_changes(tmp_path, monkeyp
     )
     _commit_all(repo, "benign hook")
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=True,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True
@@ -390,7 +400,11 @@ def test_update_drops_trust_when_mcp_spec_changes(tmp_path, monkeypatch):
     )
     _commit_all(repo, "benign mcp")
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=True,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True
@@ -426,7 +440,11 @@ def test_update_drops_trust_when_lsp_command_changes(tmp_path, monkeypatch):
     )
     _commit_all(repo, "benign lsp")
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=True,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True
@@ -459,7 +477,11 @@ def test_update_drops_trust_when_update_adds_lsp(tmp_path, monkeypatch):
     ws.mkdir()
     repo = _make_git_repo(tmp_path / "repo", "growslsp", version="1.0.0")
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=False, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        now="T1",
         _force_git=True,
     )
     assert rec.trusted is True  # inert -> auto-trusted
@@ -493,7 +515,12 @@ def test_install_git_with_ref_pins_ref(tmp_path, monkeypatch):
     ).stdout.strip()
 
     rec = install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=False, ref=sha, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=False,
+        ref=sha,
+        now="T1",
         _force_git=True,
     )
     assert rec.source["ref"] == sha
@@ -544,7 +571,11 @@ def test_update_that_removes_executable_surface_re_auto_trusts(tmp_path, monkeyp
     )
     _commit_all(repo, "with hook")
     install_plugin(
-        str(repo), scope="global", workspace_root=ws, trust=True, now="T1",
+        str(repo),
+        scope="global",
+        workspace_root=ws,
+        trust=True,
+        now="T1",
         _force_git=True,
     )
 
@@ -597,9 +628,7 @@ def test_update_plugin_rejects_local_source(tmp_path, monkeypatch):
     ws.mkdir()
     src = tmp_path / "src"
     _make_source(src, "localplugin")
-    install_plugin(
-        str(src), scope="global", workspace_root=ws, trust=False, now="T"
-    )
+    install_plugin(str(src), scope="global", workspace_root=ws, trust=False, now="T")
     with pytest.raises(InstallError):
         update_plugin("localplugin", scope="global", workspace_root=ws, now="T")
 
@@ -661,6 +690,4 @@ def test_unknown_scope_raises(tmp_path, monkeypatch):
     src = tmp_path / "src"
     _make_source(src, "demo")
     with pytest.raises(InstallError):
-        install_plugin(
-            str(src), scope="bogus", workspace_root=ws, trust=False, now="T"
-        )
+        install_plugin(str(src), scope="bogus", workspace_root=ws, trust=False, now="T")

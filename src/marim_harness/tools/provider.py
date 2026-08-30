@@ -106,14 +106,11 @@ class ToolProvider(Protocol):
     """Registers a set of tools onto an Agent. The swap point for future
     pydantic-ai-harness FileSystem/Shell capabilities."""
 
-    def register(self, agent: HarnessAgent) -> None:
-        ...
+    def register(self, agent: HarnessAgent) -> None: ...
 
-    def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None:
-        ...
+    def register_subagent(self, agent: SubAgent, tool_names: Iterable[str]) -> None: ...
 
-    def lsp_toolset(self) -> "FunctionToolset[Deps] | None":
-        ...
+    def lsp_toolset(self) -> "FunctionToolset[Deps] | None": ...
 
 
 def _register_read_tools(agent: HarnessAgent, g: ToolGroups) -> None:
@@ -173,9 +170,13 @@ def _register_action_tools(agent: HarnessAgent, g: ToolGroups) -> None:
 class BuiltinToolProvider:
     """Hand-written fs + shell tools backed by the pure functions in this package."""
 
-    def __init__(self, groups: ToolGroups | None = None, *,
-                 register_lsp_tools: bool = True,
-                 combined_job_tool: bool = False) -> None:
+    def __init__(
+        self,
+        groups: ToolGroups | None = None,
+        *,
+        register_lsp_tools: bool = True,
+        combined_job_tool: bool = False,
+    ) -> None:
         """``groups`` selects which built-in tool groups register() installs; None
         means all — the CLI's historical behavior.
 

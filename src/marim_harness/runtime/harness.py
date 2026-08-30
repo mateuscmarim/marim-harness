@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
@@ -18,9 +18,9 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
-    from ..forge.backend import ForgeBackend
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
+    from .outcome import TurnOutcome
 
 from ..compaction import (
     Summarizer,
@@ -38,7 +38,6 @@ from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
-from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolGroups, ToolProvider
@@ -130,8 +129,8 @@ class HarnessConfig:
     # Extra pydantic-ai capabilities (AbstractCapability instances — e.g. from
     # pydantic-ai-harness, or your own) appended to the Agent AFTER marim's
     # built-ins, so the built-in history sanitizers always run first. Typed
-    # `object` like forge_backend/mcp_servers to keep this dataclass's imports
-    # light; build_collaborators casts at the single use site.
+    # `object` like mcp_servers to keep this dataclass's imports light;
+    # build_collaborators casts at the single use site.
     capabilities: list[object] = field(default_factory=list)
     # The project-trust decision McpManager threads into every disable_server/
     # enable_server persist call (mcp.manager.McpManager.trust_project). It
@@ -153,14 +152,12 @@ class HarnessConfig:
     # a HarnessConfig built by hand without a registry gets no LSP, matching
     # "opt-in, nothing implicit" for direct HarnessConfig construction.
     lsp_registry: LspRegistry | None = None
-    # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
-    # and no forge tools are attached to the Agent, regardless of backend
-    # availability (tea on PATH + a configured login).
-    forge_enabled: bool = True
-    # Explicit forge backend (HarnessBuilder.with_forge). When set it bypasses
-    # select_backend's tea-on-PATH auto-detection; forge_enabled must still be
-    # True for it to attach.
-    forge_backend: object | None = None
+    # Structured output for embedder turns (HarnessBuilder.with_output_type).
+    # A pydantic BaseModel subclass or an object-rooted JSON Schema dict;
+    # None ⇒ turns return plain text. Left loosely typed (`object | None`
+    # equivalent) to keep this dataclass's imports light; TurnController
+    # resolves it into the per-run output_type override.
+    output_type: Any = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
@@ -324,21 +321,10 @@ def build_collaborators(
     to "no inherited level" for the embedding builder path.
     """
     mcp = McpManager(
-        cfg.mcp_servers or [], set(cfg.mcp_disabled or []),
+        cfg.mcp_servers or [],
+        set(cfg.mcp_disabled or []),
         trust_project=cfg.mcp_trust_project,
     )
-    # Forge (Gitea/GitHub) tools: an explicit backend (embedders) attaches
-    # directly; otherwise attach only when enabled AND a backend is available
-    # (tea on PATH + a configured login); forge_toolsets returns [] otherwise,
-    # making toolsets=[] a no-op on the Agent below.
-    if cfg.forge_backend is not None and cfg.forge_enabled:
-        # forge_backend is typed `object` on HarnessConfig (it's a dataclass
-        # field, not a Protocol-typed one — see the field's docstring); the
-        # cast asserts what forge_backend's caller contract already requires:
-        # an object satisfying ForgeBackend's five async methods.
-        forge_ts = [build_forge_toolset(cast("ForgeBackend", cfg.forge_backend))]
-    else:
-        forge_ts = forge_toolsets(cfg.forge_enabled, deps.workspace.root)
     agent = Agent(
         model,
         deps_type=Deps,
@@ -355,7 +341,6 @@ def build_collaborators(
         # already produced its answer.
         end_strategy="early",
         model_settings=_DEFAULT_MODEL_SETTINGS,
-        toolsets=forge_ts,
         # History processors run before EVERY model request (including mid-turn
         # tool-loop continuations and retries), so they catch malformations the
         # turn-start sanitizer in run_turn can't see:
@@ -381,8 +366,11 @@ def build_collaborators(
     )
     provider.register(agent)
     register_instructions(
-        agent, mcp, cfg.proactive_memory,
-        global_instructions=cfg.global_instructions, groups=cfg.groups,
+        agent,
+        mcp,
+        cfg.proactive_memory,
+        global_instructions=cfg.global_instructions,
+        groups=cfg.groups,
     )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
     # tools through deps. Subagents share this deps object, so they get LSP too.
@@ -428,9 +416,13 @@ def build_collaborators(
             ),
         )
     session = SessionController(
-        cfg.store, cfg.manager, deps,
-        cfg.max_context_tokens, cfg.keep_last_messages,
-        cfg.summarizer, cfg.titler,
+        cfg.store,
+        cfg.manager,
+        deps,
+        cfg.max_context_tokens,
+        cfg.keep_last_messages,
+        cfg.summarizer,
+        cfg.titler,
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
         mask_min_chars=cfg.mask_min_chars,
@@ -447,7 +439,11 @@ def build_collaborators(
     # other tools reach shared state. The runner reads the current model via
     # the closure, so a runtime /model switch is tracked without rewiring.
     subagents = SubagentRunner(
-        provider, mcp, deps, hooks, session,
+        provider,
+        mcp,
+        deps,
+        hooks,
+        session,
         get_model=get_model,
         model_settings=_DEFAULT_MODEL_SETTINGS,
         retry=RetryPolicy(
@@ -477,7 +473,8 @@ def build_collaborators(
             # deferred closure keeps it typed; ``cfg.model_source`` alone
             # wouldn't narrow inside a lambda called later.
             (lambda mid, _src=cfg.model_source: _src.build(mid))
-            if cfg.model_source is not None else None
+            if cfg.model_source is not None
+            else None
         ),
     )
     # Live like get_session_id below: a session switch swaps session.store,
@@ -486,11 +483,13 @@ def build_collaborators(
     # transparently recreated.
     get_scratchpad = None
     if cfg.scratchpad_enabled:
+
         def _get_scratchpad() -> Path | None:
             sid = session.store.session_id if session.store is not None else None
             if sid is None:
                 return None
             return ensure_scratchpad(deps.workspace.root, sid)
+
         get_scratchpad = _get_scratchpad
     # The run_workflow tool's engine. Guarded build: disabled by config, or
     # pydantic-monty simply not installed (the [workflows] extra).
@@ -499,9 +498,7 @@ def build_collaborators(
     # source is composed (CLI path), None for explicit-model embedders
     # (HarnessBuilder) — where unknown capability sends images optimistically.
     supports_images = (
-        make_supports_images(cfg.model_source.list_models)
-        if cfg.model_source is not None
-        else None
+        make_supports_images(cfg.model_source.list_models) if cfg.model_source is not None else None
     )
     # One cohesive late binding for the collaborator cycle: TurnHooks and the
     # sub-agent runners hold this deps object, and tools reach them back
@@ -519,8 +516,13 @@ def build_collaborators(
         supports_images=supports_images,
     )
     return Collaborators(
-        agent=agent, mcp=mcp, lsp=lsp, session=session,
-        checkpoints=checkpoints, hooks=hooks, subagents=subagents,
+        agent=agent,
+        mcp=mcp,
+        lsp=lsp,
+        session=session,
+        checkpoints=checkpoints,
+        hooks=hooks,
+        subagents=subagents,
     )
 
 
@@ -528,8 +530,16 @@ class Harness:
     """Owns the Pydantic AI agent and drives one user turn to completion,
     resolving deferred tool approvals by the current mode."""
 
-    def __init__(self, model: Model, provider: ToolProvider, deps: Deps, instructions: str,
-                 *, config: HarnessConfig | None = None, **kwargs):
+    def __init__(
+        self,
+        model: Model,
+        provider: ToolProvider,
+        deps: Deps,
+        instructions: str,
+        *,
+        config: HarnessConfig | None = None,
+        **kwargs,
+    ):
         """Create a Harness.
 
         ``config`` bundles the optional knobs (session store, model identity,
@@ -572,7 +582,11 @@ class Harness:
         # Build the collaborator graph in one named, testable place. get_model
         # closes over self so a runtime /model switch (set_model) is tracked.
         collab = build_collaborators(
-            model, provider, deps, instructions, cfg,
+            model,
+            provider,
+            deps,
+            instructions,
+            cfg,
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
         )
@@ -601,6 +615,7 @@ class Harness:
             lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
+            output_type=cfg.output_type,
         )
         # Advisor: build ONE advise callable for the harness lifetime; which
         # model it consults is re-resolved PER CALL through the closure over
@@ -850,9 +865,7 @@ class Harness:
         (breaking the prompt cache once — inherent to a client-side advisor)."""
         self.advisor_model_id = model_id
         if self.deps.services is not None:
-            self.deps.services.advise = (
-                self._advise_fn if model_id is not None else None
-            )
+            self.deps.services.advise = self._advise_fn if model_id is not None else None
         if persist:
             self.session.set_advisor(model_id if model_id is not None else ADVISOR_OFF)
 
@@ -1019,8 +1032,7 @@ class Harness:
         """Fire the SessionEnd hook on teardown. Observe-only."""
         await self.hooks.session_end(reason)
 
-    def steer(self, text: str,
-              attachments: list[tuple[bytes, str]] | None = None) -> None:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Delegate to ``turn_controller.steer``."""
         self.turn_controller.steer(text, attachments)
 
@@ -1036,12 +1048,19 @@ class Harness:
         return self.turn_controller.take_buffered_steers()
 
     async def run_turn(
-        self, prompt: str,
+        self,
+        prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
-    ) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
+    ) -> TurnOutcome:
+        """Run the agent until it produces a final answer, looping through
+        any approval rounds.
+
+        Returns:
+            The terminal TurnOutcome: subtype, final text (result), validated
+            structured data (structured_output, when built with_output_type),
+            and failure detail.
+        """
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
 
     async def manual_compact(self, instructions: str | None = None) -> bool:

@@ -198,16 +198,12 @@ def test_no_actionable_note_for_provider_5xx():
 
 
 def test_is_context_overflow_detects_openai_code():
-    err = _api_error(
-        {"error": {"code": "context_length_exceeded", "message": "too long"}}
-    )
+    err = _api_error({"error": {"code": "context_length_exceeded", "message": "too long"}})
     assert is_context_overflow_error(err) is True
 
 
 def test_is_context_overflow_detects_message_phrase():
-    err = _api_error(
-        {"error": {"message": "This model's maximum context length is 8192 tokens"}}
-    )
+    err = _api_error({"error": {"message": "This model's maximum context length is 8192 tokens"}})
     assert is_context_overflow_error(err) is True
 
 
@@ -220,7 +216,8 @@ def test_is_context_overflow_detects_lmstudio_context_size_wording():
     firing: 'context size' was missing from the overflow marker set."""
     req = httpx.Request("POST", "http://localhost:1234/v1/chat/completions")
     err = APIError(
-        "Context size has been exceeded.", req,
+        "Context size has been exceeded.",
+        req,
         body={"message": "Context size has been exceeded."},
     )
     assert is_context_overflow_error(err) is True
@@ -247,13 +244,17 @@ def test_is_context_overflow_ignores_marker_prose_on_transient_statuses():
     branch's status gate. LM Studio's status-less shape (tested above) still
     matches — only a positively-identified transient status is excluded."""
     rate_limited = _api_error(
-        {"error": {"message": "rate limited — retry with a smaller context window",
-                   "code": 429}}
+        {"error": {"message": "rate limited — retry with a smaller context window", "code": 429}}
     )
     assert is_context_overflow_error(rate_limited) is False
     upstream_5xx = _api_error(
-        {"error": {"message": "Provider returned error", "code": 502,
-                   "metadata": {"raw": "upstream timeout at maximum context"}}}
+        {
+            "error": {
+                "message": "Provider returned error",
+                "code": 502,
+                "metadata": {"raw": "upstream timeout at maximum context"},
+            }
+        }
     )
     assert is_context_overflow_error(upstream_5xx) is False
 
@@ -269,8 +270,12 @@ async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path)
         calls["n"] += 1
         if calls["n"] == 1:
             raise _api_error(
-                {"error": {"code": "context_length_exceeded",
-                           "message": "maximum context length exceeded"}}
+                {
+                    "error": {
+                        "code": "context_length_exceeded",
+                        "message": "maximum context length exceeded",
+                    }
+                }
             )
         return ModelResponse(parts=[TextPart(content="ok after compaction")])
 
@@ -291,7 +296,7 @@ async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path)
         ModelResponse(parts=[TextPart(content="a3")]),
     ]
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert calls["n"] == 2  # failed once on overflow, retried once after compaction
 
 
@@ -304,9 +309,7 @@ async def test_run_turn_overflow_retries_only_once(tmp_path):
 
     def fn(messages, info):
         calls["n"] += 1
-        raise _api_error(
-            {"error": {"code": "context_length_exceeded", "message": "too long"}}
-        )
+        raise _api_error({"error": {"code": "context_length_exceeded", "message": "too long"}})
 
     harness = Harness(
         model=FunctionModel(fn),
@@ -340,9 +343,7 @@ async def test_first_turn_overflow_with_nothing_to_compact_raises_diagnostic(tmp
 
     def fn(messages, info):
         calls["n"] += 1
-        raise _api_error(
-            {"error": {"message": "Context size has been exceeded."}}
-        )
+        raise _api_error({"error": {"message": "Context size has been exceeded."}})
 
     harness = Harness(
         model=FunctionModel(fn),
@@ -374,8 +375,7 @@ def test_format_provider_error_prefers_overflow_diagnostic_over_chained_api_erro
 
 
 _OVERFLOW_BODY = {
-    "error": {"code": "context_length_exceeded",
-              "message": "maximum context length exceeded"}
+    "error": {"code": "context_length_exceeded", "message": "maximum context length exceeded"}
 }
 
 _SIX_TURN_HISTORY = [
@@ -414,7 +414,7 @@ async def test_overflow_forced_compaction_invalidates_checkpoints(tmp_path):
     # A rewind point from an earlier turn, indexed into the pre-compaction history.
     harness.checkpoints.snapshot("an earlier turn")
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert harness.checkpoints.list() == []
 
 
@@ -433,11 +433,15 @@ async def test_overflow_in_continuation_round_does_not_retry(tmp_path):
         if calls["n"] == 1:
             # A gated tool: the round returns DeferredToolRequests, auto mode
             # approves it, and the continuation round carries the tool result.
-            return ModelResponse(parts=[
-                ToolCallPart(tool_name="write_file",
-                             args={"path": "o.txt", "content": "hi"},
-                             tool_call_id="tc-w"),
-            ])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="write_file",
+                        args={"path": "o.txt", "content": "hi"},
+                        tool_call_id="tc-w",
+                    ),
+                ]
+            )
         if calls["n"] == 2:
             raise _api_error(_OVERFLOW_BODY)
         # Only reachable if the overflow retry (wrongly) fires on the
@@ -517,7 +521,8 @@ def test_is_context_overflow_detects_model_http_error_body():
     ModelHTTPError (no openai.APIError in the chain). The detector must classify
     it, or the runner's shed-and-resume backstop never fires."""
     err = ModelHTTPError(
-        400, "m",
+        400,
+        "m",
         body={"message": "This model's maximum context length is 8192 tokens."},
     )
     assert is_context_overflow_error(err) is True
@@ -526,9 +531,7 @@ def test_is_context_overflow_detects_model_http_error_body():
 def test_is_context_overflow_model_http_error_plain_400_is_false():
     """A genuine bad request must NOT read as an overflow — the backstop would
     mask-and-resume a request that will fail identically."""
-    err = ModelHTTPError(
-        400, "m", body={"message": "invalid request: unsupported parameter"}
-    )
+    err = ModelHTTPError(400, "m", body={"message": "invalid request: unsupported parameter"})
     assert is_context_overflow_error(err) is False
 
 
@@ -539,9 +542,9 @@ def test_marker_phrase_on_a_transient_status_is_not_an_overflow():
     match would shed a sub-agent's context on a hiccup that a plain backoff
     retry would fix — the error must classify transient, not overflow."""
     err = ModelHTTPError(
-        503, "m",
-        body={"message": "The context window service is temporarily overloaded; "
-                         "please try again."},
+        503,
+        "m",
+        body={"message": "The context window service is temporarily overloaded; please try again."},
     )
     assert is_context_overflow_error(err) is False
     assert is_transient_model_error(err) is True
@@ -625,7 +628,7 @@ async def test_run_turn_retries_contention_overflow_without_compacting(tmp_path)
     harness, backoffs = _contention_harness(tmp_path, fn)
     harness.session.history = list(_SIX_TURN_HISTORY)
     out = await harness.run_turn("now do it")
-    assert out == "ok after retry"
+    assert out.result == "ok after retry"
     assert calls["n"] == 2
     assert backoffs == [1]  # backed off once before the in-place retry
     # NOT compacted: the oldest turn is still in the history verbatim.
@@ -682,7 +685,7 @@ async def test_overflow_with_unknown_window_still_takes_the_compaction_path(tmp_
     harness.session.history = list(_SIX_TURN_HISTORY)
     harness.session.last_input_tokens = 16_118  # meaningless without a window
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert calls["n"] == 2
     # Compaction DID run: the middle turn was dropped (the head anchor u1 and
     # the recent tail survive — that's compact_history's shape).
