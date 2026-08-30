@@ -871,3 +871,26 @@ def test_get_cache_control_headers(client):
         response = test_client.get(path, headers=headers or {})
         assert response.status_code == 200, path
         assert response.headers.get("cache-control") == expected, path
+
+
+def test_post_message_409s_when_another_process_claims_the_session(client):
+    """A session open in the TUI must be refused, not silently co-hosted."""
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    test_client, tmp_path = client
+    ws_id, session_id, project = _setup_workspace_and_session(test_client, tmp_path)
+    session_path = SessionManager(project).session_path(session_id)
+    outsider = try_acquire(session_path, kind="tui")
+    assert outsider is not None
+    try:
+        response = test_client.post(
+            f"/v1/workspaces/{ws_id}/sessions/{session_id}/messages",
+            json={"prompt": "hi"},
+            headers=AUTH,
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "claimed"
+        assert "tui" in response.json()["error"]["message"]
+    finally:
+        outsider.release()

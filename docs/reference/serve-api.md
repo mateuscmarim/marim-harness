@@ -161,8 +161,8 @@ This includes the WebSocket upgrade request. Failures:
 ```
 
 Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
-`busy` (409), `not_running` (409), `queue_full` (429), `host_closed` (404),
-`unreadable` (500), `trust_store_error` (500).
+`busy` (409), `claimed` (409), `not_running` (409), `queue_full` (429),
+`host_closed` (404), `unreadable` (500), `trust_store_error` (500).
 
 ## Endpoint summary
 
@@ -500,6 +500,10 @@ progress on the WebSocket stream. Errors:
 
 - `429 queue_full` — the per-session turn queue is at capacity.
 - `404 host_closed` — the host was torn down mid-submit; retry.
+- `409 claimed` — another live process (a local TUI or headless run) owns this
+  session. A claim is held for its holder's lifetime, so unlike `busy` this is
+  not transient and retrying will not clear it; the message names the holder.
+  Close the session there first.
 
 ### POST /v1/workspaces/{ws}/sessions/{sid}/interrupt
 
