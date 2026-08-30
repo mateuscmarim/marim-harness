@@ -36,9 +36,10 @@ model calls write_file ──► deferred ──► resolve_approvals(mode)
       └────────── run continues with results ┘
 ```
 
-This loop is invisible to `run_turn`'s caller — you just get the final text —
-but it is the mechanism that makes `Mode` meaningful, and it works headless
-with no UI attached.
+This loop is invisible to `run_turn`'s caller — the turn just ends in one
+`TurnOutcome` whose `.result` carries the final text — but it is the
+mechanism that makes `Mode` meaningful, and it works headless with no UI
+attached.
 
 ## Mode semantics
 
@@ -114,7 +115,8 @@ agent run.
   [Sessions & state](sessions-and-state.md#the-marim-spill).
 - **The model not doing what you asked** (e.g. never calling the tool you
   expected, writing to the wrong path) is not an error the harness can see —
-  `run_turn` returns whatever text the model settled on. Verify contracts
+  `run_turn` returns a `TurnOutcome` carrying whatever text the model settled
+  on (`.result`). Verify contracts
   yourself after the turn (the [tutorial](tutorial-daily-report.md) checks
   that the report file actually exists and exits non-zero when it doesn't).
 
