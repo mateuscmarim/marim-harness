@@ -37,6 +37,12 @@ The state dir is `$XDG_DATA_HOME/marim-harness/server` (default
 workspace registry (`workspaces.json`), and by default the managed-workspaces
 root.
 
+While the daemon is running it also holds `runtime.json` —
+`{"host": ..., "port": ..., "pid": ..., "started": ...}` — written at startup
+and removed on clean exit, so a client on the same machine can find the daemon
+without being told the port. A killed daemon leaves the file behind, so treat
+it as a hint and let the connection attempt be the authoritative answer.
+
 The daemon binds loopback by default; to reach it remotely, front it with a
 reverse proxy or a tailnet.
 
