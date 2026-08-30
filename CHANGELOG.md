@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-29
+
 ### Removed
 
 - The `forge` subsystem (Gitea/GitHub PR tools) — `list_prs`, `view_pr`,
