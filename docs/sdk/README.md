@@ -18,7 +18,7 @@ async def main() -> None:
         workspace=Path("."),
         model="anthropic:claude-sonnet-4-6",
     ).build()
-    print(await harness.run_turn("list the files in this directory"))
+    print((await harness.run_turn("list the files in this directory")).result)
 
 
 asyncio.run(main())

@@ -168,7 +168,7 @@ async def test_auto_mode_applies_edit(tmp_path: Path):
     deps = _make_deps(tmp_path)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
-    assert output == "done"
+    assert output.result == "done"
     assert (tmp_path / "a.txt").read_text() == "bar"
 
 
@@ -178,7 +178,7 @@ async def test_plan_mode_denies_edit(tmp_path: Path):
     deps = _make_deps(tmp_path, mode=Mode.plan)
     harness = _make_harness(_edit_then_done_model(), deps)
     output = await harness.run_turn("change foo to bar")
-    assert output == "done"
+    assert output.result == "done"
     assert (tmp_path / "a.txt").read_text() == "foo"  # unchanged
 
 

@@ -296,7 +296,7 @@ async def test_run_turn_force_compacts_and_retries_on_context_overflow(tmp_path)
         ModelResponse(parts=[TextPart(content="a3")]),
     ]
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert calls["n"] == 2  # failed once on overflow, retried once after compaction
 
 
@@ -414,7 +414,7 @@ async def test_overflow_forced_compaction_invalidates_checkpoints(tmp_path):
     # A rewind point from an earlier turn, indexed into the pre-compaction history.
     harness.checkpoints.snapshot("an earlier turn")
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert harness.checkpoints.list() == []
 
 
@@ -628,7 +628,7 @@ async def test_run_turn_retries_contention_overflow_without_compacting(tmp_path)
     harness, backoffs = _contention_harness(tmp_path, fn)
     harness.session.history = list(_SIX_TURN_HISTORY)
     out = await harness.run_turn("now do it")
-    assert out == "ok after retry"
+    assert out.result == "ok after retry"
     assert calls["n"] == 2
     assert backoffs == [1]  # backed off once before the in-place retry
     # NOT compacted: the oldest turn is still in the history verbatim.
@@ -685,7 +685,7 @@ async def test_overflow_with_unknown_window_still_takes_the_compaction_path(tmp_
     harness.session.history = list(_SIX_TURN_HISTORY)
     harness.session.last_input_tokens = 16_118  # meaningless without a window
     out = await harness.run_turn("now do it")
-    assert out == "ok after compaction"
+    assert out.result == "ok after compaction"
     assert calls["n"] == 2
     # Compaction DID run: the middle turn was dropped (the head anchor u1 and
     # the recent tail survive — that's compact_history's shape).

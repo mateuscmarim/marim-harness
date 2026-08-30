@@ -107,9 +107,14 @@ async def run_agent_turn(prompt: str, workspace: Path, *, model=None) -> str:
 
     Keeping this a module-level function (not inlined in ``main``) is the seam a
     test drives with a scripted model.
+
+    ``run_turn`` returns a ``TurnOutcome``; this assistant is a plain harness
+    (no ``with_output_type``), so the reply text is always in ``result`` —
+    ``structured_output`` is the field to read when a schema IS configured.
     """
     harness = build_assistant(workspace, model=model)
-    return await harness.run_turn(prompt)
+    outcome = await harness.run_turn(prompt)
+    return outcome.result or ""
 
 
 def main() -> None:

@@ -47,7 +47,7 @@ async def test_custom_gated_tool_runs_in_auto_mode(tmp_path: Path):
     )
     out = await harness.run_turn("deploy to prod")
     assert calls == ["prod"]  # gated tool executed (auto mode approves)
-    assert out == "all done"
+    assert out.result == "all done"
 
 
 async def test_bare_build_reads_files(tmp_path: Path):
@@ -57,7 +57,7 @@ async def test_bare_build_reads_files(tmp_path: Path):
         model=_scripted(("read_file", {"path": "hello.txt"})),
     ).build()
     out = await harness.run_turn("read hello.txt")
-    assert out == "all done"
+    assert out.result == "all done"
 
 
 async def test_in_memory_session_round_trips(tmp_path: Path):
@@ -67,7 +67,7 @@ async def test_in_memory_session_round_trips(tmp_path: Path):
     harness = HarnessBuilder(workspace=tmp_path, model=FunctionModel(echo)).build()
     first = await harness.run_turn("one")
     second = await harness.run_turn("two")
-    assert first != second  # second turn saw a longer history
+    assert first.result != second.result  # second turn saw a longer history
 
 
 async def test_with_capability_attaches_after_builtins(tmp_path: Path):
@@ -90,6 +90,6 @@ async def test_with_capability_attaches_after_builtins(tmp_path: Path):
         .build()
     )
     out = await harness.run_turn("what's here?")
-    assert out == "all done"
+    assert out.result == "all done"
     # Once for the initial request, once for the tool-return continuation.
     assert len(seen) == 2

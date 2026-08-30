@@ -301,9 +301,13 @@ class SessionHost:
                     self.bus.publish(wire_type, obj)
 
         try:
-            output = await self.harness.run_turn(
+            outcome = await self.harness.run_turn(
                 prompt, event_stream_handler=handler, attachments=attachments
             )
+            # `turn.finished.output` is a wire string: the daemon serves the CLI
+            # preset, which never configures structured output, so result is
+            # always the turn's text. Coalesce anyway rather than emit a null.
+            output = outcome.result or ""
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # surface, don't crash the worker

@@ -23,6 +23,13 @@ from .permissions import Mode
 
 logger = logging.getLogger(__name__)
 
+# The tool name pydantic-ai gives a structured output schema
+# (``pydantic_ai._output.DEFAULT_OUTPUT_TOOL_NAME``). Mirrored rather than
+# imported: it lives behind a private module, and `with_output_type` never
+# passes a `name=` override, so a structured harness always registers exactly
+# this one. See _check_custom_tools for what it guards.
+_OUTPUT_TOOL_NAME = "final_result"
+
 if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
@@ -84,6 +91,7 @@ class HarnessBuilder:
         self._combined_job_tool = False
         self._deps_override = None
         self._config_overrides: dict[str, Any] = {}
+        self._output_type: Any = None
         self._built = False
 
     # -- composition setters (chainable, no I/O) ---------------------------
@@ -215,6 +223,15 @@ class HarnessBuilder:
         overrides this at runtime (harness.set_thinking_level switches it live)."""
         return self.with_config_overrides(thinking_level=level)
 
+    def with_output_type(self, schema: Any) -> HarnessBuilder:
+        """Structured output for every turn: a pydantic ``BaseModel`` subclass
+        or an object-rooted JSON Schema dict. ``run_turn`` then returns a
+        ``TurnOutcome`` whose ``structured_output`` is the validated object.
+        The schema is a property of this composition — one harness, one
+        schema."""
+        self._output_type = schema
+        return self
+
     def with_defaults(self) -> HarnessBuilder:
         """The full marim toolset: every group, LSP with tools, spawn, jobs,
         and the user-level global instructions. Workspace *scanning* (project
@@ -281,6 +298,19 @@ class HarnessBuilder:
             name = fn.__name__
             if name in loaded_names:
                 problems.append(f"custom tool {name!r} collides with a built-in tool")
+            if self._output_type is not None and name == _OUTPUT_TOOL_NAME:
+                # A structured harness registers pydantic-ai's output tool under
+                # this name on EVERY run round (TurnController._run_output_type),
+                # so a same-named custom tool makes the combined toolset raise
+                # UserError at the first request — build() would otherwise hand
+                # back a harness whose every turn is dead on arrival. Scoped to
+                # a structured composition on purpose: a plain harness's output
+                # is text, no output tool exists, and `final_result` is then a
+                # perfectly ordinary tool name we must not reject.
+                problems.append(
+                    f"with_output_type: custom tool {name!r} collides with pydantic-ai's "
+                    "output tool — rename the tool"
+                )
             if name in seen_custom:
                 problems.append(f"custom tool {name!r} registered twice")
             seen_custom.add(name)
@@ -315,6 +345,60 @@ class HarnessBuilder:
                     f"sub-agent {defn.name!r} grants tools from disabled groups: "
                     f"{sorted(missing)}{hint}"
                 )
+
+    def _check_output_type(self, problems: list[str]) -> None:
+        from pydantic import BaseModel
+
+        schema = self._output_type
+        if schema is None:
+            return
+        if isinstance(schema, dict):
+            if schema.get("type") != "object":
+                problems.append(
+                    "with_output_type: JSON Schema must be object-rooted "
+                    f"(got type {schema.get('type')!r})"
+                )
+                return
+            self._check_dict_schema(schema, problems)
+        elif not (isinstance(schema, type) and issubclass(schema, BaseModel)):
+            problems.append(
+                "with_output_type: expected a pydantic BaseModel subclass or "
+                f"an object-rooted JSON Schema dict, got {schema!r}"
+            )
+
+    @staticmethod
+    def _check_dict_schema(schema: dict, problems: list[str]) -> None:
+        """Both remaining ways an object-rooted dict can still be unusable —
+        checked HERE, at build(), because the alternative is discovering them
+        mid-turn after the token spend: the schema only meets its validator in
+        _correct_dict_output, and StructuredDict is only constructed when the
+        TurnController is built inside build().
+
+        1. Not well-formed JSON Schema (a typo'd `type`, say). Same guard the
+           workflows path applies before spending a spawn
+           (workflows/schema.py's check_valid_schema) — for the same reason.
+        2. Well-formed but unsupported by pydantic-ai: a recursive `$ref`/`$defs`
+           schema makes StructuredDict raise UserError. Pre-resolving it here
+           (rather than wrapping the TurnController construction) keeps the
+           translation in the one place that already speaks BuilderError, and
+           costs only a discarded duplicate construction; every other builder
+           misconfiguration in this codebase is a BuilderError at build()."""
+        import jsonschema
+        import jsonschema.validators
+        from pydantic_ai import StructuredDict
+        from pydantic_ai.exceptions import UserError
+
+        try:
+            jsonschema.validators.validator_for(schema).check_schema(schema)
+        except jsonschema.SchemaError as exc:
+            problems.append(
+                f"with_output_type: malformed JSON Schema: {exc.message} (at {exc.json_path})"
+            )
+            return
+        try:
+            StructuredDict(schema)
+        except UserError as exc:
+            problems.append(f"with_output_type: {exc}")
 
     def _open_sessions(
         self, problems: list[str]
@@ -363,6 +447,17 @@ class HarnessBuilder:
 
         problems: list[str] = []
 
+        # ``with_config_overrides`` is a raw seam: the dict is merged over
+        # ``config_fields`` at the END of build(), after every check below has
+        # run. For ``output_type`` that meant a value never seen by
+        # ``_check_output_type`` (schema shape) or ``_check_custom_tools`` (the
+        # ``final_result`` collision guard) — both read ``self._output_type`` —
+        # handing back a harness whose every turn dies on the first request.
+        # Fold the effective value into the typed field up front so the checks
+        # validate exactly what build() will ship.
+        if "output_type" in self._config_overrides:
+            self._output_type = self._config_overrides["output_type"]
+
         model = self._resolve_model(problems)
 
         groups = ToolGroups(
@@ -409,6 +504,8 @@ class HarnessBuilder:
         self._check_subagent_grants(grantable, problems)
 
         manager, store, stats_ledger = self._open_sessions(problems)
+
+        self._check_output_type(problems)
 
         if problems:
             raise BuilderError(problems)
@@ -477,6 +574,7 @@ class HarnessBuilder:
             stats_ledger=stats_ledger,
             summarizer=make_summarizer(model),
             titler=make_titler(model),
+            output_type=self._output_type,
         )
         config_fields.update(self._config_overrides)
 

@@ -4,7 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from ..forge.backend import ForgeBackend
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
+    from .outcome import TurnOutcome
 
 from ..compaction import (
     Summarizer,
@@ -161,6 +162,12 @@ class HarnessConfig:
     # select_backend's tea-on-PATH auto-detection; forge_enabled must still be
     # True for it to attach.
     forge_backend: object | None = None
+    # Structured output for embedder turns (HarnessBuilder.with_output_type).
+    # A pydantic BaseModel subclass or an object-rooted JSON Schema dict;
+    # None ⇒ turns return plain text. Left loosely typed (like forge_backend's
+    # `object | None`) to keep this dataclass's imports light; TurnController
+    # resolves it into the per-run output_type override.
+    output_type: Any = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
     # match ModelConfig: wake on, cap 8.
     autonomous_wake: bool = True
@@ -631,6 +638,7 @@ class Harness:
             lsp_toolset=self.provider.lsp_toolset(),
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
+            output_type=cfg.output_type,
         )
         # Advisor: build ONE advise callable for the harness lifetime; which
         # model it consults is re-resolved PER CALL through the closure over
@@ -1067,9 +1075,15 @@ class Harness:
         prompt: str,
         event_stream_handler: EventStreamHandler[Deps] | None = None,
         attachments: list[tuple[bytes, str]] | None = None,
-    ) -> str:
-        """Run the agent until it produces a final text answer, looping through
-        any approval rounds. Returns the final text output."""
+    ) -> TurnOutcome:
+        """Run the agent until it produces a final answer, looping through
+        any approval rounds.
+
+        Returns:
+            The terminal TurnOutcome: subtype, final text (result), validated
+            structured data (structured_output, when built with_output_type),
+            and failure detail.
+        """
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
 
     async def manual_compact(self, instructions: str | None = None) -> bool:

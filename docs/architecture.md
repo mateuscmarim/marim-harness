@@ -73,7 +73,10 @@ Key invariants encoded there (read the docstrings before touching):
 - **Approval rounds.** The agent's `output_type` is
   `[str, DeferredToolRequests]`. Gated tools (`write_file`, `edit_file`,
   `bash`) defer; `_run_with_approval` loops, resolving each deferred batch
-  against the current `Mode`, then continues the run with the results.
+  against the current `Mode`, then continues the run with the results. A
+  structured harness (`HarnessBuilder.with_output_type`) overrides that union
+  per run round, continuations included; either way `run_turn` returns a
+  `TurnOutcome` (`runtime/outcome.py`), not a bare string.
 - **Resumability.** A persisted history must never end with a `ToolCallPart`
   lacking its `ToolReturnPart` — every provider rejects that on the next
   request. `_repair_unanswered_tool_calls` self-heals such histories; an
