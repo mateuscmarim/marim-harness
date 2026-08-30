@@ -31,15 +31,13 @@ The mutating core is the `GATED_TOOLS` set in `src/marim_harness/tools/names.py`
 - `bash`
 
 On the main agent, a few more tools are registered behind the same approval flow
-(`requires_approval=True` in `src/marim_harness/tools/provider.py` and
-`tools/forge_tools.py`):
+(`requires_approval=True` in `src/marim_harness/tools/provider.py`):
 
 - `web_search` and `fetch_url` — outbound network is an exfiltration boundary,
   so it is gated like a mutation even though it doesn't touch the workspace
 - `forget` — the only irreversible memory operation
 - `run_workflow` — executes a model-authored script (when the workflows extra
   is enabled)
-- `create_pr` and `checkout_pr` — the two mutating forge tools
 
 MCP server tools are gated separately, per server — see
 [MCP servers in ask mode](#approval-ux-quick-pointers) below.
@@ -69,9 +67,9 @@ MCP server tools are gated separately, per server — see
   - `web_search`/`fetch_url` are denied too: plan mode is *local* research
     only, because an injected fetch URL or search query could carry file
     contents off the host with zero approval.
-  - `write_file`/`edit_file` (and `forget`, `run_workflow`, the mutating forge
-    tools) are simply denied ("read-only plan mode"). MCP tool calls are also
-    denied in plan mode by each server's approval hook.
+  - `write_file`/`edit_file` (and `forget`, `run_workflow`) are simply denied
+    ("read-only plan mode"). MCP tool calls are also denied in plan mode by
+    each server's approval hook.
 
   The read-only classifier is a best-effort nudge, **not a sandbox** — see
   [What trust does not cover](#what-trust-does-not-cover).
@@ -351,9 +349,6 @@ at a repo-controlled trust store, is blocked from project `.env` files too.
   prompts per call (and all MCP calls are denied in plan mode). Sub-agents
   spawned in ask mode are simply not granted servers that would prompt.
   Full detail: [the MCP guide](mcp.md).
-- **Forge tools**: only `create_pr` and `checkout_pr` are approval-gated; the
-  read-only forge tools (list/view/CI status) are not. Master switch:
-  `MARIM_FORGE`.
 - **TUI approval panels** (inline, above the status bar): see
   [the TUI guide](tui.md).
 - **Plugins and trust bits**: `docs/plugins.md`; third-party LSP:

@@ -67,9 +67,9 @@ mode and ask mode stay usable.
 ## Validation at `build()`
 
 - A custom tool whose name collides with any tool actually loaded fails
-  `build()` — that includes built-ins from enabled groups, the six LSP names
-  when `with_lsp(tools=True)`, and the five forge names under
-  `with_forge(...)`. The same name is fine when the colliding group is off.
+  `build()` — that includes built-ins from enabled groups and the six LSP
+  names when `with_lsp(tools=True)`. The same name is fine when the
+  colliding group is off.
 - Registering the same custom tool name twice fails `build()`.
 - MCP tool names are the accepted gap (servers connect after `build()`); a
   collision there surfaces at connect/run time.

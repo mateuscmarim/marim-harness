@@ -162,7 +162,7 @@ time:
 
 The grantable universe is: the read tools (`read_file`, `glob`, `grep`,
 `tree`, plus the six LSP navigation tools), the network tools, and the gated
-tools. Memory, skills, tasks, and forge tools are main-agent only.
+tools. Memory, skills, and tasks tools are main-agent only.
 
 **Nesting is bounded, not forbidden.** `spawn_agent` itself is granted to a
 sub-agent only when the child could still spawn within the depth ceiling

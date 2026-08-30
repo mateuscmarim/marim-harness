@@ -302,21 +302,6 @@ def test_custom_tool_named_like_lsp_tool_ok_without_lsp_tools(tmp_path: Path):
     assert "goto_definition" in _tool_names(h)
 
 
-def test_custom_tool_collides_with_forge_name_under_with_forge(tmp_path: Path):
-    def create_pr(ctx: RunContext[Deps]) -> str:
-        """Shadows the forge create_pr tool."""
-        return ""
-
-    with pytest.raises(BuilderError) as exc:
-        (
-            HarnessBuilder(workspace=tmp_path, model=TestModel())
-            .with_forge(object())
-            .with_tool(create_pr)
-            .build()
-        )
-    assert "create_pr" in str(exc.value)
-
-
 # -- Finding 4: with_hooks silently discarded when with_deps set -------------
 
 

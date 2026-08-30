@@ -339,15 +339,6 @@ without setting anything; `MARIM_NO_BANNER=1` (or `--no-banner`) forces it on
 a terminal too. `NO_COLOR` (any non-empty value) and `TERM=dumb` keep the art
 but drop the accent color.
 
-## Forge
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `MARIM_FORGE` | `1` (on) | Boolean. Gitea/GitHub forge tools (via the `tea` CLI). |
-
-Even when on, the tools attach only if a backend is available (`tea` on PATH
-with a configured login). `MARIM_FORGE=0` disables them regardless.
-
 ## Scratchpad & memory
 
 | Variable | Default | Purpose |
