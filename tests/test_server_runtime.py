@@ -3,14 +3,47 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from marim_harness.server.runtime import (
     DaemonRuntime,
     clear_runtime,
+    format_base_url,
     read_runtime,
     runtime_path,
     write_runtime,
 )
+
+
+def test_format_base_url_ipv4() -> None:
+    assert format_base_url("127.0.0.1", 8642) == "http://127.0.0.1:8642"
+
+
+def test_format_base_url_all_interfaces() -> None:
+    assert format_base_url("0.0.0.0", 8642) == "http://0.0.0.0:8642"
+
+
+def test_format_base_url_brackets_bare_ipv6() -> None:
+    assert format_base_url("::1", 8643) == "http://[::1]:8643"
+
+
+def test_format_base_url_is_idempotent_on_already_bracketed_ipv6() -> None:
+    assert format_base_url("[::1]", 8643) == "http://[::1]:8643"
+
+
+def test_format_base_url_hostname() -> None:
+    assert format_base_url("example.com", 80) == "http://example.com:80"
+
+
+def test_format_base_url_ipv6_round_trips_through_urlsplit() -> None:
+    assert urlsplit(format_base_url("::1", 8643)).hostname == "::1"
+
+
+def test_daemon_runtime_url_brackets_ipv6_host() -> None:
+    runtime = DaemonRuntime(
+        host="::1", port=8643, pid=1, started="2026-08-30T00:00:00+00:00"
+    )
+    assert runtime.url == "http://[::1]:8643"
 
 
 def test_write_then_read_roundtrips(tmp_path: Path) -> None:

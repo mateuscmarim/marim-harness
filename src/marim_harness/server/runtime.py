@@ -22,6 +22,16 @@ from pathlib import Path
 from ..atomic_io import atomic_write_text
 
 
+def format_base_url(host: str, port: int) -> str:
+    """Assemble the daemon's base URL, bracketing bare IPv6 literals so the
+    result stays parseable — ``::1`` must become ``http://[::1]:8643``, matching
+    the keep-v6-bracketed contract of ``pairing._split_host_port``. Hosts that
+    already start with ``[`` are left alone (idempotent)."""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"http://{host}:{port}"
+
+
 @dataclass(frozen=True)
 class DaemonRuntime:
     host: str
@@ -31,7 +41,9 @@ class DaemonRuntime:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        # This is a URL formatter, not a persistence path — unlike the claim
+        # sidecar writes, runtime.json is free to keep using atomic_write_text.
+        return format_base_url(self.host, self.port)
 
 
 def runtime_path(state_dir) -> Path:
