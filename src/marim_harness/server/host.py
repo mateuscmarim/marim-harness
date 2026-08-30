@@ -27,6 +27,7 @@ from ..runtime.errors import format_provider_error
 from ..runtime.harness import Harness
 from ..runtime.wake import WakeController
 from ..runtime.wake_driver import WakeDriver
+from ..session.claim import SessionClaim
 from ..stream_events import event_to_dict
 from ..usage import usage_summary
 from .bus import EventBus
@@ -64,9 +65,21 @@ class SessionHost:
     """Must be constructed inside a running event loop (it starts its worker
     task immediately)."""
 
-    def __init__(self, harness: Harness, bus: EventBus, *, queue_limit: int = 8) -> None:
+    def __init__(
+        self,
+        harness: Harness,
+        bus: EventBus,
+        *,
+        queue_limit: int = 8,
+        claim: "SessionClaim | None" = None,
+    ) -> None:
         self.harness = harness
         self.bus = bus
+        # Ownership of the session file for this host's whole lifetime. Released
+        # in aclose(), which every teardown path funnels through — including idle
+        # eviction, where giving up ownership is correct: the harness is gone and
+        # the session is resumable from disk, so nobody owns it.
+        self._claim = claim
         self._queue: asyncio.Queue[tuple[str, str, list | None, str]] = asyncio.Queue(
             maxsize=queue_limit
         )
@@ -351,3 +364,8 @@ class SessionHost:
                 await coro_fn()
             except Exception as exc:  # noqa: BLE001 - teardown is best-effort
                 logger.warning("host teardown step %s failed: %s", label, exc, exc_info=True)
+        # Last, so ownership outlives every write above: the final persist must
+        # complete while we still hold the session.
+        if self._claim is not None:
+            self._claim.release()
+            self._claim = None

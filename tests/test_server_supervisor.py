@@ -66,6 +66,18 @@ def _record(tmp_path) -> WorkspaceRecord:
                            kind="registered", created="2026-07-06")
 
 
+def _registered_workspace(tmp_path):
+    """A registered workspace plus a supervisor whose factory builds fakes."""
+    from marim_harness.server.workspaces import WorkspaceRegistry
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    registry = WorkspaceRegistry(tmp_path / "workspaces.json", tmp_path / "roots")
+    record = registry.register("ws", workspace)
+    supervisor = SessionSupervisor(factory=_factory([]))
+    return record, supervisor
+
+
 async def test_host_for_creates_once_and_reuses(tmp_path):
     created: list = []
     sup = SessionSupervisor(_factory(created))
@@ -346,3 +358,85 @@ async def test_close_workspace_reclaims_all_state(tmp_path):
     assert created[-1][1:] == ("s2", None)
     assert sup.bus_peek("other", "s9") is not None
     await sup.aclose()
+
+
+async def test_host_for_claims_the_session(tmp_path, monkeypatch):
+    """A built host owns its session for as long as it lives."""
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    host = await supervisor.host_for(record, "s1")
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    try:
+        assert try_acquire(session_path, kind="tui") is None
+    finally:
+        await supervisor.close_host(record.id, "s1")
+    assert host is not None
+
+
+async def test_close_host_releases_the_claim(tmp_path):
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    await supervisor.host_for(record, "s1")
+    await supervisor.close_host(record.id, "s1")
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    claim = try_acquire(session_path, kind="tui")
+    assert claim is not None
+    claim.release()
+
+
+async def test_idle_eviction_releases_the_claim(tmp_path):
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    supervisor.idle_ttl = 0.0
+    await supervisor.host_for(record, "s1")
+    await supervisor.evict_idle()
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    claim = try_acquire(session_path, kind="tui")
+    assert claim is not None
+    claim.release()
+
+
+async def test_host_for_refuses_a_session_claimed_by_another_process(tmp_path):
+    from marim_harness.server.supervisor import SessionClaimed
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    outsider = try_acquire(session_path, kind="tui")
+    assert outsider is not None
+    try:
+        with pytest.raises(SessionClaimed) as excinfo:
+            await supervisor.host_for(record, "s1")
+        assert excinfo.value.session_id == "s1"
+        assert excinfo.value.holder is not None
+        assert excinfo.value.holder.kind == "tui"
+    finally:
+        outsider.release()
+
+
+async def test_a_refused_claim_leaves_no_host_behind(tmp_path):
+    """The refusal must not half-register a session: a later retry, once the
+    outsider has gone, has to build cleanly rather than find a wedged entry."""
+    from marim_harness.server.supervisor import SessionClaimed
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    outsider = try_acquire(session_path, kind="tui")
+    with pytest.raises(SessionClaimed):
+        await supervisor.host_for(record, "s1")
+    assert supervisor.peek(record.id, "s1") is None
+    outsider.release()
+    host = await supervisor.host_for(record, "s1")
+    assert host is not None
+    await supervisor.close_host(record.id, "s1")
