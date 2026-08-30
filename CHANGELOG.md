@@ -8,6 +8,13 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Removed
+
+- The `forge` subsystem (Gitea/GitHub PR tools) — `list_prs`, `view_pr`,
+  `ci_status`, `create_pr`, `checkout_pr`, the `ForgeBackend`/`TeaBackend`
+  seam, `with_forge()`, and the `MARIM_FORGE` config knob. There was no
+  GitHub backend implementation, only the Gitea-backed `TeaBackend`.
+
 ## [0.5.0] - 2026-08-29
 
 ### Added

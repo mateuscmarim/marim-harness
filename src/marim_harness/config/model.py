@@ -185,9 +185,6 @@ class ModelConfig:
     # tools are not registered, but the manager still runs so diagnostics-on-edit
     # keeps grounding the agent after writes.
     lsp_tools_enabled: bool = True
-    # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
-    # and no forge tools are attached, regardless of backend availability.
-    forge_enabled: bool = True
     # Session scratchpad master switch. False ⇒ no scratchpad dir is
     # advertised, writable, or approval-exempt (services.get_scratchpad
     # stays None).
@@ -322,7 +319,6 @@ def _common_kwargs() -> dict[str, Any]:
         trust_project_hooks=trust_env(),
         lsp_enabled=_bool_env("MARIM_LSP", True),
         lsp_tools_enabled=_bool_env("MARIM_LSP_TOOLS", True),
-        forge_enabled=_bool_env("MARIM_FORGE", True),
         scratchpad_enabled=_bool_env("MARIM_SCRATCHPAD", True),
         stats_enabled=_bool_env("MARIM_STATS", True),
         workflows_enabled=_bool_env("MARIM_WORKFLOWS", True),

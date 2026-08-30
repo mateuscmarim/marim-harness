@@ -51,7 +51,7 @@ boundary:
 - **Gated tools** — `write_file`, `edit_file`, `bash`. Mutate the workspace;
   a sub-agent only receives them in `auto` mode (where they run unprompted).
 
-Memory, skills, tasks, and forge tools are main-agent only — a sub-agent's
+Memory, skills, and tasks tools are main-agent only — a sub-agent's
 job is its task, not the session's bookkeeping.
 
 `build()` validates every grant up front:

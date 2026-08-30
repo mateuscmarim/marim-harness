@@ -153,12 +153,6 @@ to avoid import cycles.
   `lsp_enabled` (manager + diagnostics-on-edit) and `lsp_tools_enabled` (the six nav
   tools). marim never downloads server binaries — it probes PATH and surfaces the
   provider's install hint.
-- `forge/` — Gitea/GitHub integration via a `ForgeBackend` seam. `TeaBackend`
-  shells out to the `tea` CLI (`--output json`); five forge-agnostic tools
-  (`tools/forge_tools.py`) list/view PRs, check CI, and open/check out PRs, with
-  create/checkout gated for approval. Attached at build time only when
-  `MARIM_FORGE` is on (default) and a backend is available (`tea` on PATH + a
-  configured login). A `gh` backend is a future drop-in behind the same protocol.
 - `hooks/` — Claude-Code-compatible lifecycle hook engine (session/prompt/tool/
   compaction events). Observe-only except SessionStart/UserPromptSubmit (inject
   context) and PreCompact (may block a *manual* /compact via exit 2 or

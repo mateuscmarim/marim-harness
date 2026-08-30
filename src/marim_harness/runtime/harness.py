@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
-    from ..forge.backend import ForgeBackend
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
     from .outcome import TurnOutcome
@@ -39,7 +38,6 @@ from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
-from ..tools.forge_tools import build_forge_toolset, forge_toolsets
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolGroups, ToolProvider
@@ -131,8 +129,8 @@ class HarnessConfig:
     # Extra pydantic-ai capabilities (AbstractCapability instances — e.g. from
     # pydantic-ai-harness, or your own) appended to the Agent AFTER marim's
     # built-ins, so the built-in history sanitizers always run first. Typed
-    # `object` like forge_backend/mcp_servers to keep this dataclass's imports
-    # light; build_collaborators casts at the single use site.
+    # `object` like mcp_servers to keep this dataclass's imports light;
+    # build_collaborators casts at the single use site.
     capabilities: list[object] = field(default_factory=list)
     # The project-trust decision McpManager threads into every disable_server/
     # enable_server persist call (mcp.manager.McpManager.trust_project). It
@@ -154,18 +152,10 @@ class HarnessConfig:
     # a HarnessConfig built by hand without a registry gets no LSP, matching
     # "opt-in, nothing implicit" for direct HarnessConfig construction.
     lsp_registry: LspRegistry | None = None
-    # Forge (Gitea/GitHub) tools master switch. False ⇒ forge_toolsets returns []
-    # and no forge tools are attached to the Agent, regardless of backend
-    # availability (tea on PATH + a configured login).
-    forge_enabled: bool = True
-    # Explicit forge backend (HarnessBuilder.with_forge). When set it bypasses
-    # select_backend's tea-on-PATH auto-detection; forge_enabled must still be
-    # True for it to attach.
-    forge_backend: object | None = None
     # Structured output for embedder turns (HarnessBuilder.with_output_type).
     # A pydantic BaseModel subclass or an object-rooted JSON Schema dict;
-    # None ⇒ turns return plain text. Left loosely typed (like forge_backend's
-    # `object | None`) to keep this dataclass's imports light; TurnController
+    # None ⇒ turns return plain text. Left loosely typed (`object | None`
+    # equivalent) to keep this dataclass's imports light; TurnController
     # resolves it into the per-run output_type override.
     output_type: Any = None
     # Autonomous wake-on-completion knobs, surfaced to the TUI app. Defaults
@@ -335,18 +325,6 @@ def build_collaborators(
         set(cfg.mcp_disabled or []),
         trust_project=cfg.mcp_trust_project,
     )
-    # Forge (Gitea/GitHub) tools: an explicit backend (embedders) attaches
-    # directly; otherwise attach only when enabled AND a backend is available
-    # (tea on PATH + a configured login); forge_toolsets returns [] otherwise,
-    # making toolsets=[] a no-op on the Agent below.
-    if cfg.forge_backend is not None and cfg.forge_enabled:
-        # forge_backend is typed `object` on HarnessConfig (it's a dataclass
-        # field, not a Protocol-typed one — see the field's docstring); the
-        # cast asserts what forge_backend's caller contract already requires:
-        # an object satisfying ForgeBackend's five async methods.
-        forge_ts = [build_forge_toolset(cast("ForgeBackend", cfg.forge_backend))]
-    else:
-        forge_ts = forge_toolsets(cfg.forge_enabled, deps.workspace.root)
     agent = Agent(
         model,
         deps_type=Deps,
@@ -363,7 +341,6 @@ def build_collaborators(
         # already produced its answer.
         end_strategy="early",
         model_settings=_DEFAULT_MODEL_SETTINGS,
-        toolsets=forge_ts,
         # History processors run before EVERY model request (including mid-turn
         # tool-loop continuations and retries), so they catch malformations the
         # turn-start sanitizer in run_turn can't see:

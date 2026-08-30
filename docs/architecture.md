@@ -151,8 +151,6 @@ cycles.
   (`provider.py`). Four bundled language plugins (python, typescript, cpp,
   java) always load; third-party plugins add languages declaratively under the
   trust gate. See [`lsp-plugins.md`](lsp-plugins.md).
-- **`forge/`** — Gitea/GitHub integration behind a `ForgeBackend` seam;
-  `TeaBackend` shells out to the `tea` CLI.
 - **`hooks/`** — Claude-Code-compatible lifecycle hook engine. Observe-only
   except SessionStart/UserPromptSubmit (inject context) and PreCompact (may
   block a manual compact).

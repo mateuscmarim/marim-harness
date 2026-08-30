@@ -112,7 +112,7 @@ before trusting `structured_output`. Every `run_turn` returns a
 | [Custom tools](sdk/custom-tools.md) | Tool shape, the TYPE_CHECKING import gotcha, gating |
 | [Sub-agents](sdk/subagents.md) | `AgentDef`, tool grants, the depth ceiling |
 | [Sessions & state](sdk/sessions-and-state.md) | Persistence, memory, skills, the XDG boundary, the `.marim/` spill |
-| [Integrations](sdk/integrations.md) | MCP, LSP, forge, hooks, `CommandPolicy` |
+| [Integrations](sdk/integrations.md) | MCP, LSP, hooks, `CommandPolicy` |
 | [Testing](sdk/testing.md) | Network-free turn tests with `FunctionModel` / `TestModel` |
 | [Tutorial](sdk/tutorial-daily-report.md) | A real embedder, end to end |
 

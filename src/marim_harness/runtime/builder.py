@@ -74,7 +74,6 @@ class HarnessBuilder:
         self._lsp_registry: LspRegistry | None = None
         self._mcp_servers: list[object] = []
         self._capabilities: list[object] = []
-        self._forge_backend: object | None = None
         self._subagents: list[AgentDef] = []
         self._custom_tools: list[tuple[Callable, bool]] = []
         self._instructions_replace: str | None = None
@@ -155,10 +154,6 @@ class HarnessBuilder:
         the raw history first. Chain the call to attach several; order among
         your own capabilities is preserved."""
         self._capabilities.append(capability)
-        return self
-
-    def with_forge(self, backend: object) -> HarnessBuilder:
-        self._forge_backend = backend
         return self
 
     def with_subagent(self, defn: AgentDef) -> HarnessBuilder:
@@ -435,7 +430,7 @@ class HarnessBuilder:
         # Imports deferred so `import marim_harness` (lazy __getattr__) stays
         # cheap until a builder is actually built.
         from ..compaction import make_summarizer, make_titler
-        from ..tools.names import FORGE_TOOLS, LSP_TOOLS
+        from ..tools.names import LSP_TOOLS
         from ..tools.provider import ToolGroups
         from .deps import Deps, WorkspaceConfig
         from .harness import Harness, HarnessConfig
@@ -470,11 +465,9 @@ class HarnessBuilder:
         #   - LSP navigation tools (goto_definition, hover, ...) — registered
         #     as a separate deferred toolset (provider.lsp_toolset()), gated
         #     on with_lsp(tools=True) rather than a ToolGroups field.
-        #   - forge tools (list_prs, create_pr, ...) — attached as their own
-        #     pydantic-ai toolset (build_forge_toolset), gated on with_forge().
         # A custom tool named e.g. "goto_definition" used to pass build()
-        # cleanly and then collide with the LSP toolset mid-run. Folding both
-        # sets in here (only when their gate is actually on) catches that at
+        # cleanly and then collide with the LSP toolset mid-run. Folding it
+        # in here (only when its gate is actually on) catches that at
         # build() time instead.
         #
         # MCP server tool names are NOT included: MCP servers are connected
@@ -483,8 +476,6 @@ class HarnessBuilder:
         # between a custom tool and an MCP tool name can still only surface at
         # connect/run time; that's an accepted gap, not an oversight.
         loaded_names = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
-        if self._forge_backend is not None:
-            loaded_names |= FORGE_TOOLS
         self._check_custom_tools(loaded_names, problems)
 
         # with_hooks sets self._hook_runner, but the hook runner only ever
@@ -558,8 +549,6 @@ class HarnessBuilder:
         config_fields: dict[str, Any] = dict(
             lsp_enabled=self._lsp,
             lsp_registry=lsp_registry,
-            forge_enabled=self._forge_backend is not None,
-            forge_backend=self._forge_backend,
             global_instructions=self._global_instructions,
             # Threads the composed ToolGroups through to register_instructions
             # so instruction closures that advertise a tool group (spawn/

@@ -195,10 +195,6 @@ def build_harness(
         # off too, matching register_lsp_tools's own "both must be true" rule.
         .with_lsp(enabled=cfg.lsp_enabled, tools=register_lsp_tools, registry=lsp_reg)
         .with_config_overrides(
-            # The builder derives forge_enabled from an explicit backend (None
-            # here), which would turn CLI forge OFF. Pin the config-driven value
-            # so tea auto-detection keeps working — this override must stay.
-            forge_enabled=cfg.forge_enabled,
             scratchpad_enabled=cfg.scratchpad_enabled,
             workflows_enabled=cfg.workflows_enabled,
             workflow_timeout_secs=cfg.workflow_timeout_secs,
