@@ -167,12 +167,13 @@ class SessionSupervisor:
             claim = self._claim_session(Path(record.path), session_id)
             try:
                 harness = await self._factory(Path(record.path), session_id, mode)
+                host = SessionHost(harness, self.bus_for(*key), claim=claim)
             except BaseException:
-                # Nothing was registered, so release rather than strand the
-                # session behind a claim no host will ever come to own.
+                # Either the factory or SessionHost.__init__ failed, so nothing
+                # was registered: release rather than strand the session behind
+                # a claim no host will ever come to own.
                 claim.release()
                 raise
-            host = SessionHost(harness, self.bus_for(*key), claim=claim)
             self._hosts[key] = host
             return host
 

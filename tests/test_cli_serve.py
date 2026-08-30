@@ -35,6 +35,43 @@ def test_serve_main_builds_app_and_runs_uvicorn(tmp_path, monkeypatch):
     assert str(token_file) in out.getvalue()
 
 
+def test_serve_publishes_runtime_json_for_the_life_of_the_run(tmp_path, monkeypatch):
+    """runtime.json must exist while uvicorn is serving and be gone after a
+    clean exit — a client discovers the daemon by reading it, and the supervisor
+    stamps that same endpoint into the claims it takes."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    import uvicorn
+
+    from marim_harness.server.runtime import read_runtime, runtime_path
+    from marim_harness.server.supervisor import SessionSupervisor
+
+    state_dir = tmp_path / "xdg-data" / "marim-harness" / "server"
+    seen = {}
+
+    real_init = SessionSupervisor.__init__
+
+    def spy_init(self, *args, **kwargs):
+        seen["endpoint"] = kwargs.get("endpoint")
+        real_init(self, *args, **kwargs)
+
+    def fake_run(app, **kwargs):
+        # Mid-run: the record is on disk and points at this daemon.
+        seen["during"] = read_runtime(state_dir)
+
+    monkeypatch.setattr(SessionSupervisor, "__init__", spy_init)
+    monkeypatch.setattr(uvicorn, "run", fake_run)
+    from marim_harness.interfaces.cli import serve
+
+    assert serve.main(["--port", "9998"], out=io.StringIO(), err=io.StringIO()) == 0
+
+    assert seen["endpoint"] == "http://127.0.0.1:9998"
+    during = seen["during"]
+    assert during is not None
+    assert (during.host, during.port) == ("127.0.0.1", 9998)
+    assert during.url == "http://127.0.0.1:9998"
+    assert not runtime_path(state_dir).exists()  # cleared on the way out
+
+
 class _Tty(io.StringIO):
     """stdout that claims to be a terminal — the one signal the banner gate reads."""
 

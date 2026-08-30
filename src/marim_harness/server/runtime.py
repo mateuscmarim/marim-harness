@@ -14,15 +14,12 @@ it behind. Treat a connection failure as the authoritative answer.
 
 import contextlib
 import json
-import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..atomic_io import atomic_write_text
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -78,6 +75,16 @@ def read_runtime(state_dir) -> DaemonRuntime | None:
 
 
 def clear_runtime(state_dir) -> None:
-    """Remove the record on clean shutdown. Never raises."""
+    """Remove OUR record on clean shutdown, leaving another daemon's alone.
+
+    Ownership-checked on purpose: a second ``marim serve`` that fails to start
+    (a port already in use exits through this same shutdown path) must not
+    delete the record of the daemon that is still running and still serving.
+    So we unlink only when the record on disk names this process; anything
+    else — no record, or someone else's — is left untouched. Never raises.
+    """
+    record = read_runtime(state_dir)
+    if record is None or record.pid != os.getpid():
+        return
     with contextlib.suppress(OSError):
         runtime_path(state_dir).unlink(missing_ok=True)

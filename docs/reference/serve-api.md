@@ -511,6 +511,10 @@ progress on the WebSocket stream. Errors:
   not transient and retrying will not clear it; the message names the holder.
   Close the session there first.
 
+  Scope: ownership tracks the session a client process *launched* against.
+  Switching sessions inside a running TUI (`/resume`, `/new`) does not yet move
+  the claim with it — that lands in phase 4.
+
 ### POST /v1/workspaces/{ws}/sessions/{sid}/interrupt
 
 Cancels the running turn (empty request body). The session rolls back to its

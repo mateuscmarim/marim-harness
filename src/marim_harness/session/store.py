@@ -514,8 +514,8 @@ class SessionManager:
 
     def delete(self, session_id: str) -> None:
         """Remove a session and every sidecar keyed by its id: the JSON file,
-        the checkpoints sidecar, the sub-agent transcript dir, the image cache
-        dir, the session's scratchpad dir, and the
+        the checkpoints sidecar, the ownership claim sidecar, the sub-agent
+        transcript dir, the image cache dir, the session's scratchpad dir, and the
         ``refs/marim/checkpoints/<id>/*`` git refs (which pin whole-working-tree
         snapshot commits — untracked files included — in ``.git`` indefinitely).
         Each step is independent and best-effort, so a missing artifact never
@@ -528,11 +528,17 @@ class SessionManager:
         from ..images import image_cache_root
         from ..workspace.scratchpad import scratchpad_root
         from ..workspace.snapshot import delete_checkpoint_refs
+        from .claim import claim_path
         from .transcripts import TranscriptStore
 
         self._path(session_id).unlink(missing_ok=True)
         with_suffix = self.dir / f"{session_id}.checkpoints.json"
         with_suffix.unlink(missing_ok=True)
+        # The single-owner claim sidecar (see session/claim.py). Unlinking it
+        # cannot break a live holder: flock lives on the open inode, so a
+        # holder keeps its lock and the next acquirer simply creates the file
+        # anew — and nobody should own a session that is being deleted anyway.
+        claim_path(self._path(session_id)).unlink(missing_ok=True)
         TranscriptStore(self._path(session_id), session_id).delete_all()
         shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
         delete_checkpoint_refs(self.workspace_root, session_id)

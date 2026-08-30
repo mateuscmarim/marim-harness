@@ -1,6 +1,7 @@
 """The daemon's runtime.json: where it is listening, for a client to find."""
 
 import json
+import os
 from pathlib import Path
 
 from marim_harness.server.runtime import (
@@ -57,3 +58,20 @@ def test_clear_removes_the_file(tmp_path: Path) -> None:
 
 def test_clear_is_a_noop_when_absent(tmp_path: Path) -> None:
     clear_runtime(tmp_path)  # must not raise
+
+
+def test_clear_leaves_another_daemons_record_alone(tmp_path: Path) -> None:
+    """A second `marim serve` that fails to start runs the same shutdown path.
+    It must not delete the record of the daemon that is still running."""
+    write_runtime(tmp_path, host="127.0.0.1", port=8642)
+    record = json.loads(runtime_path(tmp_path).read_text())
+    record["pid"] = os.getpid() + 1  # a foreign, live-looking daemon
+    runtime_path(tmp_path).write_text(json.dumps(record))
+
+    clear_runtime(tmp_path)
+
+    assert runtime_path(tmp_path).exists()
+    survivor = read_runtime(tmp_path)
+    assert survivor is not None
+    assert survivor.pid == os.getpid() + 1
+    assert survivor.port == 8642

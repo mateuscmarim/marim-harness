@@ -53,7 +53,9 @@ def test_release_makes_the_session_claimable_again(session_file: Path) -> None:
 def test_context_manager_releases_on_exit(session_file: Path) -> None:
     with try_acquire(session_file, kind="tui") as claim:
         assert claim is not None
-    assert try_acquire(session_file, kind="daemon") is not None
+    after = try_acquire(session_file, kind="daemon")
+    assert after is not None
+    after.release()
 
 
 def test_holder_identity_is_readable_by_the_refused_caller(session_file: Path) -> None:

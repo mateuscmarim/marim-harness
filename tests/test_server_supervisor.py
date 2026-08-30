@@ -360,7 +360,7 @@ async def test_close_workspace_reclaims_all_state(tmp_path):
     await sup.aclose()
 
 
-async def test_host_for_claims_the_session(tmp_path, monkeypatch):
+async def test_host_for_claims_the_session(tmp_path):
     """A built host owns its session for as long as it lives."""
     from marim_harness.session.claim import try_acquire
     from marim_harness.session.store import SessionManager
@@ -440,3 +440,27 @@ async def test_a_refused_claim_leaves_no_host_behind(tmp_path):
     host = await supervisor.host_for(record, "s1")
     assert host is not None
     await supervisor.close_host(record.id, "s1")
+
+
+async def test_a_failing_host_construction_releases_the_claim(tmp_path, monkeypatch):
+    """Both the factory and SessionHost.__init__ sit under the release guard:
+    nothing was registered, so the session must be free for the next attempt
+    rather than stranded behind a claim no host will ever own."""
+    from marim_harness.server import supervisor as supervisor_mod
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+
+    def exploding_host(*args, **kwargs):
+        raise RuntimeError("host wiring failed")
+
+    monkeypatch.setattr(supervisor_mod, "SessionHost", exploding_host)
+    with pytest.raises(RuntimeError, match="host wiring failed"):
+        await supervisor.host_for(record, "s1")
+
+    assert supervisor.peek(record.id, "s1") is None
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    claim = try_acquire(session_path, kind="tui")
+    assert claim is not None
+    claim.release()
