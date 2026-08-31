@@ -755,9 +755,36 @@ class Harness:
             claim.release()
 
     def _owns_session(self, session_id: str) -> bool:
-        """Whether ``session_id`` is the session whose claim we already hold."""
+        """Whether the claim we hold is *this session's* claim.
+
+        Answered from the held claim's own path, never from the store we happen
+        to be sitting on. Inferring ownership from ``store.session_id`` would
+        rest on the convention "the adopted claim always belongs to the current
+        store"; the moment that drifts, the guard reports True for a session
+        whose claim somebody else holds and ``switch_session`` skips the
+        ``try_acquire`` that is the only real ownership check — masking a
+        refusal instead of raising it.
+        """
+        from ..session.claim import claim_path
+
+        manager = self.session.manager
+        if self._claim is None or manager is None:
+            return False
+        return self._claim.path == claim_path(manager.session_path(session_id))
+
+    def _is_active(self, session_id: str) -> bool:
+        """Whether the controller is currently driving ``session_id``. None-safe:
+        a manager-less controller can be storeless."""
         store = self.session.store
-        return self._claim is not None and store is not None and store.session_id == session_id
+        return store is not None and store.session_id == session_id
+
+    def _install_claim(self, claim: SessionClaim | None) -> None:
+        """Make ``claim`` the one we hold and release the one it replaces —
+        install first, release after, so there is never a moment where the
+        session we drive is disowned."""
+        old, self._claim = self._claim, claim
+        if old is not None:
+            old.release()
 
     def _claim_active_session(self) -> None:
         """Move ownership onto the session now in view: claim the one we just
@@ -780,9 +807,7 @@ class Harness:
             # then release ownership of a session we are still driving.
             return
         fresh = try_acquire(manager.session_path(store.session_id), kind=self._claim_kind)
-        old, self._claim = self._claim, fresh
-        if old is not None:
-            old.release()
+        self._install_claim(fresh)
 
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
@@ -806,6 +831,10 @@ class Harness:
         switch is a total no-op, and a failed load releases the tentative
         claim so we never hold a session we never reached. The outgoing claim
         is released only after the incoming session loaded and was claimed.
+
+        The claim always ends up on the session we are actually driving —
+        including when the switch commits and a later step raises, which is why
+        the error path asks where we landed rather than assuming we stayed.
         """
         from ..session.claim import SessionClaimed, read_holder, try_acquire
 
@@ -825,11 +854,22 @@ class Harness:
         try:
             count = self._switch_session_body(session_id)
         except Exception:
-            tentative.release()
+            # A failure here is NOT necessarily a failure to switch. The body
+            # commits the switch first (SessionController rebinds its store) and
+            # then runs the post-load steps, any of which can still raise —
+            # _apply_saved_model → model_source.build() blows up for a saved
+            # model whose provider can no longer be constructed. Releasing the
+            # tentative claim unconditionally would then leave the session we
+            # now drive unclaimed while we keep holding the claim on the session
+            # we left: another process could claim the target and two owners
+            # would drive it. So decide by where the controller actually landed,
+            # not by the fact that something raised.
+            if self._is_active(session_id):
+                self._install_claim(tentative)
+            else:
+                tentative.release()
             raise
-        old, self._claim = self._claim, tentative
-        if old is not None:
-            old.release()
+        self._install_claim(tentative)
         return count
 
     def _switch_session_body(self, session_id: str) -> int:

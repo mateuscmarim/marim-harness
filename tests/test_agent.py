@@ -455,6 +455,76 @@ def test_switch_session_failed_load_releases_the_tentative_claim(tmp_path: Path)
     assert try_acquire(h.session.store.path, kind="probe") is None
 
 
+def test_switch_session_failing_after_the_commit_keeps_the_target_claim(tmp_path: Path):
+    """The body can raise AFTER the controller already moved onto the target
+    (``_apply_saved_model`` builds a model that no longer constructs). The claim
+    must follow where we actually landed: releasing the tentative claim here
+    would leave the session we now drive unowned while we still held the one we
+    left — two processes could then drive the target."""
+    from marim_harness.session.claim import claim_path, try_acquire
+
+    h = _switch_harness(tmp_path)
+    outgoing_path = h.session.store.path
+    h.adopt_claim(try_acquire(outgoing_path, kind="tui"), kind="tui")
+    beta = h.session.manager.create()
+    beta.path.parent.mkdir(parents=True, exist_ok=True)
+    beta.path.write_text("{}")  # loads fine; the failure comes after the switch
+
+    def boom() -> None:
+        raise RuntimeError("saved model no longer builds")
+
+    h._apply_saved_model = boom  # the first post-commit step in the body
+
+    with pytest.raises(RuntimeError):
+        h.switch_session(beta.session_id)
+
+    # We are on beta, so beta is the session we own.
+    assert h.session.store.session_id == beta.session_id
+    assert h._claim is not None
+    assert h._claim.path == claim_path(beta.path)
+    assert try_acquire(beta.path, kind="probe") is None  # held by the harness
+    assert try_acquire(outgoing_path, kind="probe") is not None  # the one we left, let go
+
+
+def test_owns_session_reads_the_held_claim_not_the_current_store(tmp_path: Path):
+    """The guard must verify the claim it actually holds. Inferred from
+    ``store.session_id`` it answers about the wrong file the moment the two
+    disagree — True for a session we never claimed (masking a real refusal) and
+    False for the one we do hold."""
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    ours = h.session.store
+    h.adopt_claim(try_acquire(ours.path, kind="tui"), kind="tui")
+    unclaimed = h.session.manager.create()
+    h.session.store = unclaimed  # the store now points somewhere our claim doesn't
+
+    assert h._owns_session(unclaimed.session_id) is False  # store says yes, the claim says no
+    assert h._owns_session(ours.session_id) is True  # the session we truly hold
+
+
+def test_switch_session_still_refuses_a_target_the_store_already_shows(tmp_path: Path):
+    """The consequence of the guard above: with the store pointing at a session
+    whose claim an outsider holds, the switch must still acquire — and be
+    refused — instead of short-circuiting into the body and driving it
+    alongside the holder."""
+    from marim_harness.session.claim import SessionClaimed, try_acquire
+
+    h = _switch_harness(tmp_path)
+    h.adopt_claim(try_acquire(h.session.store.path, kind="tui"), kind="tui")
+    theirs = h.session.manager.create()
+    theirs.path.parent.mkdir(parents=True, exist_ok=True)
+    theirs.path.write_text("{}")  # loadable, so only the claim can refuse the switch
+    h.session.store = theirs
+    outsider = try_acquire(theirs.path, kind="daemon")
+    assert outsider is not None
+    try:
+        with pytest.raises(SessionClaimed):
+            h.switch_session(theirs.session_id)
+    finally:
+        outsider.release()
+
+
 def test_switch_session_to_the_session_we_already_own_is_not_a_self_refusal(tmp_path: Path):
     """The session picker pre-highlights the ACTIVE row, so re-selecting the
     current session is one keystroke away. Re-acquiring our own claim would be
