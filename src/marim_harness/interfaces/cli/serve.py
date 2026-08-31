@@ -102,6 +102,31 @@ class ServeStartup:
         )
 
 
+def bind_listener(host: str, port: int):
+    """Bind the listen socket BEFORE publishing runtime.json.
+
+    A daemon that cannot take the port (a squatter while another daemon is
+    live) dies here — before writing runtime.json — so it can neither
+    overwrite the live daemon's discovery record nor clear it on the way out.
+    Accepts bare ("::1") or bracketed ("[::1]") IPv6 literals."""
+    import socket
+
+    addr = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    family = socket.AF_INET6 if ":" in addr else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((addr, port))
+        # On Linux, SO_REUSEADDR lets a second bind to the same address:port
+        # succeed as long as neither socket is listening yet — so listen()
+        # here, not just bind(), is what actually makes a taken port raise.
+        sock.listen(1)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
 def _isatty(stream) -> bool:
     """Whether ``stream`` is a terminal. A StringIO under test and a pipe under
     systemd both answer honestly, which is exactly the signal we want."""
@@ -430,11 +455,21 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     )
     if args.qr:
         _print_startup_qr(args, token=token, out=out, err=err)
+    try:
+        listener = bind_listener(args.host, args.port)
+    except OSError as exc:
+        print(f"marim serve: cannot bind {args.host}:{args.port}: {exc}", file=err)
+        return 1
     write_runtime(state_dir, host=args.host, port=args.port)
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        # fd handoff: uvicorn serves on the socket we already bound, so the
+        # bind failure (a live daemon on this port) was decided BEFORE
+        # runtime.json was published. `listener` stays referenced for the
+        # whole run — closing it early would drop the listening socket.
+        uvicorn.run(app, fd=listener.fileno(), log_level="warning")
     finally:
         # Best-effort: a SIGKILL leaves the file behind, which is why readers
         # treat it as a hint and let the connection attempt be authoritative.
         clear_runtime(state_dir)
+        listener.close()
     return 0
