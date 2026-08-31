@@ -4123,6 +4123,33 @@ async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_switch_session_refused_when_claimed_elsewhere(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.session.claim import Holder, SessionClaimed
+
+    app = _app(tmp_path)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        called = False
+
+        async def refusing(session_id) -> None:
+            nonlocal called
+            called = True
+            raise SessionClaimed(
+                session_id, Holder(pid=999, kind="daemon", endpoint="http://127.0.0.1:8643")
+            )
+
+        monkeypatch.setattr(app.session, "switch_to_session_id", refusing)
+        await app.switch_to_session_id("20260101-000000-abc123")
+        await pilot.pause()
+        # The underlying switch was attempted but refused.
+        assert called is True
+        # No crash — the notice was posted.
+        messages = [str(w.render()) for w in app.query(NoticeMessage)]
+        assert any("owned by" in m for m in messages)
+
+
+@pytest.mark.anyio
 async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
     # A forced compaction that doesn't shrink calls _on_compact(before, before).
     # The "compacting…" notice must be cleared, and no misleading "compacted

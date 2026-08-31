@@ -655,10 +655,21 @@ class HarnessApp(App):
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off. Refused mid-turn
         for the same reason as /new — the running turn writes to the session it
-        would be switched away from."""
+        would be switched away from — and refused when another process owns the
+        target: claims follow the active view, so driving a session means
+        claiming it, and a claimed session is off-limits until its holder
+        releases it."""
         if await self._refuse_if_session_busy("switch sessions"):
             return
-        await self.session.switch_to_session_id(session_id)
+        from ...session.claim import SessionClaimed
+
+        try:
+            await self.session.switch_to_session_id(session_id)
+        except SessionClaimed as exc:
+            who = exc.holder.describe() if exc.holder is not None else "another process"
+            self.append_log(
+                NoticeMessage(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
+            )
 
     async def _refuse_if_session_busy(self, what: str) -> bool:
         """True (with a notice posted) when ``what`` must not run right now.
