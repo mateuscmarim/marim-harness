@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
+    from ..session.claim import SessionClaim
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
     from .outcome import TurnOutcome
@@ -565,6 +566,13 @@ class Harness:
         self.project_surface: ProjectSurface | None = None
         self.trust_prompt: ProjectSurface | None = None
         self.provider = provider
+        # Ownership of the session this harness actively drives (see
+        # session/claim.py). Adopted from the CLI launch path; swapped by
+        # switch_session/new_session; released through release_claim(), which
+        # every teardown path calls. None means unclaimed (fresh launch before
+        # adoption, or the accepted degrade stance).
+        self._claim: SessionClaim | None = None
+        self._claim_kind = "tui"
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -729,8 +737,58 @@ class Harness:
         self.checkpoints.clear()
         self._clear_job_context()
 
+    def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
+        """Take ownership of an externally acquired claim (the CLI launch path
+        claims before the Harness exists). Adopting a second claim releases the
+        first — ownership is one-session-at-a-time."""
+        if self._claim is not None and self._claim is not claim:
+            self._claim.release()
+        self._claim = claim
+        self._claim_kind = kind
+
+    def release_claim(self) -> None:
+        """Give up the current claim, if any. Idempotent: teardown paths call
+        this unconditionally, and a session switch may have already swapped the
+        claim this object was created for."""
+        claim, self._claim = self._claim, None
+        if claim is not None:
+            claim.release()
+
+    def _owns_session(self, session_id: str) -> bool:
+        """Whether ``session_id`` is the session whose claim we already hold."""
+        store = self.session.store
+        return self._claim is not None and store is not None and store.session_id == session_id
+
+    def _claim_active_session(self) -> None:
+        """Move ownership onto the session now in view: claim the one we just
+        landed on, then release the one we left.
+
+        Used by ``new_session``, where the target id only exists after the
+        manager minted it. A brand-new unique id cannot realistically be held,
+        so on the impossible case ``fresh`` is None and we proceed unclaimed
+        (accepted degrade stance, same as a failed claim-file open).
+        """
+        from ..session.claim import try_acquire
+
+        manager, store = self.session.manager, self.session.store
+        if manager is None or store is None:
+            # Without a manager SessionController.new_session degrades to a
+            # reset, i.e. we are still on the SAME session whose claim we hold.
+            # Re-acquiring would be denied by our own lock (flock is per
+            # open-file-description, so a second fd in this very process is
+            # refused exactly like another process's) and the swap below would
+            # then release ownership of a session we are still driving.
+            return
+        fresh = try_acquire(manager.session_path(store.session_id), kind=self._claim_kind)
+        old, self._claim = self._claim, fresh
+        if old is not None:
+            old.release()
+
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
+        # Ownership follows the view: claim the fresh session, release the one
+        # we're leaving.
+        self._claim_active_session()
         self.checkpoints.reload()
         self._clear_job_context()
         # Apply the model inherited by SessionManager.create() when it
@@ -742,6 +800,39 @@ class Harness:
         self._apply_saved_thinking()
 
     def switch_session(self, session_id: str) -> int:
+        """Load another session, moving the ownership claim with the view.
+
+        Ownership is claimed BEFORE any outgoing-state mutation: a refused
+        switch is a total no-op, and a failed load releases the tentative
+        claim so we never hold a session we never reached. The outgoing claim
+        is released only after the incoming session loaded and was claimed.
+        """
+        from ..session.claim import SessionClaimed, read_holder, try_acquire
+
+        manager = self.session.manager
+        if manager is None or self._owns_session(session_id):
+            # Nothing to swap. Either there is no manager (SessionController's
+            # switch is itself a no-op, and there is no path to claim), or the
+            # target IS the session we already own — the picker pre-highlights
+            # the active row, so re-selecting it is one keystroke away, and
+            # re-acquiring would be denied by our own lock (see the note in
+            # _claim_active_session), making us report ourselves as the holder.
+            return self._switch_session_body(session_id)
+        target = manager.session_path(session_id)
+        tentative = try_acquire(target, kind=self._claim_kind)
+        if tentative is None:
+            raise SessionClaimed(session_id, read_holder(target))
+        try:
+            count = self._switch_session_body(session_id)
+        except Exception:
+            tentative.release()
+            raise
+        old, self._claim = self._claim, tentative
+        if old is not None:
+            old.release()
+        return count
+
+    def _switch_session_body(self, session_id: str) -> int:
         # Clear the OUTGOING session's job context BEFORE loading the incoming one.
         # The clear belongs to the session we're leaving: _clear_job_context wipes
         # jobs.history (plus the digest / `!` passthrough buffers), which are the

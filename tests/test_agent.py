@@ -395,6 +395,121 @@ async def test_switch_session_restores_its_model(tmp_path: Path):
     assert h.model_label == "fake/openai/gpt-5.2"
 
 
+# --- session-ownership claims following the active view (session/claim.py) ---
+# A successful ``try_acquire(..., kind="probe")`` means the slot is FREE; None
+# means someone still holds it. flock is per open-file-description, so a probe
+# from THIS process is denied by the harness's own claim exactly as another
+# process's would be — which is what makes these single-process assertions valid.
+
+
+def test_switch_session_swaps_claims(tmp_path: Path):
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    outgoing_path = h.session.store.path
+    h.adopt_claim(try_acquire(outgoing_path, kind="tui"), kind="tui")
+
+    beta = h.session.manager.create()  # a second session to switch to
+    beta.path.parent.mkdir(parents=True, exist_ok=True)
+    beta.path.write_text("{}")  # create() does not persist; the switch loads
+    assert h.switch_session(beta.session_id) >= 0
+
+    # The outgoing claim is released, the incoming one held.
+    assert try_acquire(outgoing_path, kind="probe") is not None
+    assert try_acquire(h.session.store.path, kind="probe") is None
+
+
+def test_switch_session_refuses_claimed_target_without_touching_outgoing(tmp_path: Path):
+    from marim_harness.session.claim import SessionClaimed, try_acquire
+
+    h = _switch_harness(tmp_path)
+    outgoing_id = h.session.store.session_id
+    h.adopt_claim(try_acquire(h.session.store.path, kind="tui"), kind="tui")
+    beta = h.session.manager.create()
+    outsider = try_acquire(beta.path, kind="daemon", endpoint="http://127.0.0.1:8643")
+    assert outsider is not None
+    try:
+        with pytest.raises(SessionClaimed) as excinfo:
+            h.switch_session(beta.session_id)
+        assert excinfo.value.holder is not None
+        assert excinfo.value.holder.kind == "daemon"
+        # Still on the outgoing session, its claim intact.
+        assert h.session.store.session_id == outgoing_id
+        assert try_acquire(h.session.store.path, kind="probe") is None
+    finally:
+        outsider.release()
+
+
+def test_switch_session_failed_load_releases_the_tentative_claim(tmp_path: Path):
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionLoadError
+
+    h = _switch_harness(tmp_path)
+    h.adopt_claim(try_acquire(h.session.store.path, kind="tui"), kind="tui")
+    beta = h.session.manager.create()
+    beta.path.write_text("{corrupt")  # forces SessionLoadError on switch
+    with pytest.raises(SessionLoadError):
+        h.switch_session(beta.session_id)
+    # The tentative claim on beta was released; outgoing still held.
+    assert try_acquire(beta.path, kind="probe") is not None
+    assert try_acquire(h.session.store.path, kind="probe") is None
+
+
+def test_switch_session_to_the_session_we_already_own_is_not_a_self_refusal(tmp_path: Path):
+    """The session picker pre-highlights the ACTIVE row, so re-selecting the
+    current session is one keystroke away. Re-acquiring our own claim would be
+    denied by our own lock, so the swap must be skipped rather than reporting
+    ourselves as the holder."""
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    current_id = h.session.store.session_id
+    h.session.store.path.parent.mkdir(parents=True, exist_ok=True)
+    h.session.store.path.write_text("{}")  # so the reload has something to load
+    claim = try_acquire(h.session.store.path, kind="tui")
+    h.adopt_claim(claim, kind="tui")
+
+    assert h.switch_session(current_id) >= 0
+    assert h._claim is claim  # same claim, never swapped out
+    assert try_acquire(h.session.store.path, kind="probe") is None  # still held
+
+
+def test_new_session_swaps_claims(tmp_path: Path):
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    old_path = h.session.store.path
+    h.adopt_claim(try_acquire(old_path, kind="tui"), kind="tui")
+    h.new_session("fresh")
+    assert try_acquire(old_path, kind="probe") is not None
+    assert try_acquire(h.session.store.path, kind="probe") is None
+
+
+def test_release_claim_is_idempotent(tmp_path: Path):
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    h.adopt_claim(try_acquire(h.session.store.path, kind="tui"), kind="tui")
+    h.release_claim()
+    h.release_claim()  # second call is a no-op
+    assert try_acquire(h.session.store.path, kind="probe") is not None
+
+
+def test_adopt_claim_releases_the_previously_held_one(tmp_path: Path):
+    """Ownership is one session at a time: adopting a second claim gives up the
+    first, so a re-adoption can never strand the session it replaces."""
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    first_path = h.session.store.path
+    h.adopt_claim(try_acquire(first_path, kind="tui"), kind="tui")
+    other = h.session.manager.create()
+    h.adopt_claim(try_acquire(other.path, kind="headless"), kind="headless")
+    assert h._claim_kind == "headless"
+    assert try_acquire(first_path, kind="probe") is not None  # first one let go
+    assert try_acquire(other.path, kind="probe") is None  # second one held
+
+
 def test_build_collaborators_wires_full_graph(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 
