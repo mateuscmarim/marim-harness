@@ -136,12 +136,12 @@ handoff changes nothing about the advertised URL).
 
 `default_cmd` resolves the target session id **before** `build_harness`:
 
-- explicit `--resume <id>` → that id;
-- otherwise a small pure resolver `resolve_target_session(store_dir) ->
-  str | None` picking the most recent session for the workspace (the same
-  latest-session rule the bootstrap resume path uses — extracted, not
-  re-implemented; if bootstrap has no single helper, mirror its list+sort and
-  unit-test the resolver against it).
+`--resume` is a `store_true` flag (default_cmd.py:42-46), so the resolver is:
+resume flag set → the workspace's most recent session id, via
+`SessionManager(workspace).latest()` — the same rule bootstrap.py:133 uses;
+flag absent → `None` (fresh anonymous session, nothing pre-existing to claim).
+Pure helper `_resolve_target_session(workspace, resume) -> str | None` in
+default_cmd.py, unit-tested directly.
 
 Then: `try_acquire` → refuse-with-exit-2 as today if held → `build_harness(...,
 resume=resolved_id)` → `adopt_claim`. Build failure releases the claim in
