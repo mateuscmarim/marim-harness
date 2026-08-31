@@ -21,7 +21,12 @@ from pathlib import Path
 
 from ..runtime.harness import Harness
 from ..runtime.permissions import Mode
-from ..session.claim import Holder, SessionClaim, read_holder, try_acquire
+from ..session.claim import (
+    SessionClaim,
+    SessionClaimed,
+    read_holder,
+    try_acquire,
+)
 from ..session.store import SessionManager
 from .bus import EventBus
 from .host import SessionHost
@@ -36,18 +41,6 @@ _EVICT_POLL_CEILING_SECONDS = 60.0
 
 class SessionBusy(Exception):
     """Raised by set_model when a live host has a turn running."""
-
-
-class SessionClaimed(Exception):
-    """Raised by host_for when another live process owns the session.
-
-    Not a transient condition to retry: the holder keeps the session until it
-    exits, so the caller's job is to report who has it, not to back off."""
-
-    def __init__(self, session_id: str, holder: "Holder | None") -> None:
-        super().__init__(session_id)
-        self.session_id = session_id
-        self.holder = holder
 
 
 def _persisted_mode(workspace: Path, session_id: str) -> Mode | None:

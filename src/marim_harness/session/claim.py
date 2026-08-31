@@ -1,26 +1,23 @@
-"""Single-owner claims on a session, so two processes never run one harness.
+"""Non-blocking flock-based session-ownership claims.
 
-A session file is shared state: the TUI, a headless run, and the serve daemon
-all read it at start and write the whole history back at each persist. The
-advisory lock in ``atomic_io.file_lock`` keeps those writes from tearing, but it
-does not stop two *owners* from existing — both load the same baseline and the
-second to finish silently overwrites the first's turn.
+A claim marks the session a process is ACTIVELY DRIVING: ``try_acquire`` opens
+(or creates) the ``<id>.json.claim`` sidecar, ``flock(LOCK_EX | LOCK_NB)`` it,
+and writes the holder's identity into the LOCKED fd. The kernel releases the
+lock on process death — no pid liveness checks, no stale-lock cleanup.
 
-A claim fixes that by making ownership explicit for the owner's whole lifetime,
-not just the width of one write. It is a non-blocking ``fcntl.flock`` held on a
-``<session>.json.claim`` sidecar. Because flock is released by the kernel when
-the holding fd closes — including when the process dies, is killed, or the
-machine reboots — a claim is self-healing. There is deliberately no pid liveness
-check, no stale sweeper, and no pid-reuse hazard to reason about: if you can
-take the lock, nobody owns the session.
+Ownership follows the active view: a process swaps claims when it switches
+sessions (Harness.switch_session), so a claim is held for as long as its
+holder drives that session — not necessarily the process's whole lifetime.
 
-Two naming constraints, both load-bearing:
+Degrade stance (accepted, mirrors atomic_io.file_lock): if the claim file
+cannot be opened, the caller proceeds UNCLAIMED rather than refusing to run.
+Locking is a safety net against two simultaneous owners under normal
+operation, not an absolute guarantee under resource failure.
 
-- The suffix is ``.claim``, never ``.lock``. ``atomic_io.file_lock`` locks
-  ``<path>.lock`` around every ``SessionStore.save``; sharing that file would
-  mean holding a claim blocks all persistence forever.
-- It is ``<id>.json.claim``, never ``<id>.claim.json``. ``SessionManager.list``
-  globs ``*.json``, and a claim that matched would render as a phantom session.
+Naming invariant: the sidecar is ``<id>.json.claim`` — not ``.lock``
+(atomic_io.file_lock's name; sharing it would block every SessionStore.save)
+and not ``<id>.claim.json`` (SessionManager.list's *.json glob would render
+it as a phantom session).
 """
 
 import contextlib
@@ -59,6 +56,19 @@ class Holder:
     def describe(self) -> str:
         where = f" at {self.endpoint}" if self.endpoint else ""
         return f"{self.kind} (pid {self.pid}){where}"
+
+
+class SessionClaimed(Exception):
+    """Raised when a session is owned by another live process.
+
+    Not a transient condition to retry: the holder keeps the session until it
+    exits (or switches away from it), so the caller's job is to report who has
+    it, not to back off."""
+
+    def __init__(self, session_id: str, holder: "Holder | None") -> None:
+        super().__init__(session_id)
+        self.session_id = session_id
+        self.holder = holder
 
 
 class SessionClaim:
