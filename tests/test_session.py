@@ -423,6 +423,25 @@ def test_delete_removes_session(tmp_path: Path):
     assert mgr.list() == []
 
 
+def test_delete_refuses_a_claimed_session(tmp_path: Path):
+    from marim_harness.session.claim import SessionClaimed, try_acquire
+
+    mgr = _manager(tmp_path)
+    store = mgr.create("doomed")
+    store.save(_history(), RunUsage())
+    outsider = try_acquire(store.path, kind="daemon", endpoint="http://127.0.0.1:8642")
+    assert outsider is not None
+    try:
+        with pytest.raises(SessionClaimed) as excinfo:
+            mgr.delete(store.session_id)
+        assert excinfo.value.session_id == store.session_id
+        assert store.path.exists()  # nothing removed while claimed
+    finally:
+        outsider.release()
+    mgr.delete(store.session_id)  # released → deletes fine
+    assert not store.path.exists()
+
+
 def test_clear_removes_file(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()

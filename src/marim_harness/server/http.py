@@ -449,7 +449,13 @@ async def delete_session(request: Request) -> Response:
     if host is not None and host.busy:
         return _error(409, "busy", "session has a running turn; interrupt it first")
     await _supervisor(request).close_host(record.id, session_id)
-    SessionManager(Path(record.path)).delete(session_id)
+    try:
+        SessionManager(Path(record.path)).delete(session_id)
+    except SessionClaimed as exc:
+        who = exc.holder.describe() if exc.holder is not None else "another process"
+        return _error(
+            409, "claimed", f"session is owned by {who}; close it there before deleting it"
+        )
     _supervisor(request).forget(record.id, session_id)
     return JSONResponse({"deleted": True})
 

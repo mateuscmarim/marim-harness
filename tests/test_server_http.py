@@ -943,3 +943,23 @@ def test_post_message_409s_when_another_process_claims_the_session(client):
         assert "tui" in response.json()["error"]["message"]
     finally:
         outsider.release()
+
+
+def test_delete_session_409s_when_another_process_claims_it(client):
+    """A claimed session is being driven elsewhere; deletion must be refused."""
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionManager
+
+    test_client, tmp_path = client
+    ws_id, session_id, project = _setup_workspace_and_session(test_client, tmp_path)
+    session_path = SessionManager(project).session_path(session_id)
+    outsider = try_acquire(session_path, kind="tui")
+    assert outsider is not None
+    try:
+        response = test_client.delete(f"/v1/workspaces/{ws_id}/sessions/{session_id}", headers=AUTH)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "claimed"
+        assert "tui" in response.json()["error"]["message"]
+        assert session_path.exists()  # nothing deleted while claimed
+    finally:
+        outsider.release()

@@ -538,6 +538,25 @@ class SessionManager:
         snapshot commits — untracked files included — in ``.git`` indefinitely).
         Each step is independent and best-effort, so a missing artifact never
         blocks removing the rest."""
+        from .claim import SessionClaimed, read_holder, try_acquire
+
+        # A claimed session is being actively driven elsewhere; deleting it
+        # would erase live history out from under its holder. try_acquire is
+        # the authoritative check (a live flock): release() leaves stale
+        # identity content in the sidecar, so read_holder alone proves
+        # nothing — it only supplies the holder identity for the message.
+        # A held-but-unreadable sidecar degrades to "another process".
+        # The probe's own brief identity write is harmless: this method
+        # unlinks the sidecar below. The resurrection window between
+        # probe.release() and the unlink is the same accepted micro-race
+        # documented in the spec (a claim appearing after the check).
+        session_path = self._path(session_id)
+        probe = try_acquire(session_path, kind="delete")
+        if probe is None:
+            holder = read_holder(session_path)
+            raise SessionClaimed(session_id, holder)
+        probe.release()
+
         import shutil
 
         # Imported here, not at module top: transcripts imports from workspace,
@@ -556,6 +575,8 @@ class SessionManager:
         # cannot break a live holder: flock lives on the open inode, so a
         # holder keeps its lock and the next acquirer simply creates the file
         # anew — and nobody should own a session that is being deleted anyway.
+        # The file-then-sidecar order matters: the session file goes first so
+        # a racing reader finds the session gone before the claim does.
         claim_path(self._path(session_id)).unlink(missing_ok=True)
         TranscriptStore(self._path(session_id), session_id).delete_all()
         shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
