@@ -485,7 +485,11 @@ Rename the current method to `_switch_session_body(self, session_id: str) -> int
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_agent.py tests/test_agent_sessions.py tests/test_switch_jobs_history.py --no-cov -q`
-Expected: PASS — the pre-existing switch tests exercise `_switch_session_body` through the new wrapper with no claim adopted (`self._claim` None → no refuse, no swap), which must remain a no-op path.
+Expected: PASS. Note the semantics: with no claim adopted, a switch still
+claims the target and refuses a claimed one — ownership follows the active
+view regardless of how the harness got its session. The pre-existing switch
+tests pass because their targets are unclaimed; they are not exercising a
+no-op claim path.
 
 - [ ] **Step 5: Full gates, then commit**
 
