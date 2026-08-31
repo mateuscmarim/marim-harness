@@ -1,6 +1,7 @@
 import io
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,8 +127,8 @@ def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
 
     captured = {}
 
-    def fake_build(workspace, *, mode, resume):
-        captured.update(mode=mode, workspace=workspace, resume=resume)
+    def fake_build(workspace, *, mode, resume, session_id=None):
+        captured.update(mode=mode, workspace=workspace, resume=resume, session_id=session_id)
         return _cli_harness(tmp_path, "auto-ran")
 
     monkeypatch.setattr(bootstrap, "build_harness", fake_build)
@@ -145,7 +146,7 @@ def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
 
     captured = {}
 
-    def fake_build(workspace, *, mode, resume):
+    def fake_build(workspace, *, mode, resume, session_id=None):
         captured["mode"] = mode
         return _cli_harness(tmp_path)
 
@@ -162,7 +163,7 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         bootstrap,
         "build_harness",
-        lambda workspace, *, mode, resume: _cli_harness(tmp_path, "piped-ok"),
+        lambda workspace, *, mode, resume, session_id=None: _cli_harness(tmp_path, "piped-ok"),
     )
     out = io.StringIO()
     stdin = io.StringIO("read the file")
@@ -189,12 +190,15 @@ def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path
         def run(self):
             captured["ran"] = True
 
+    def fake_build(workspace, *, mode=None, resume, session_id=None):
+        captured["mode"] = mode
+        stub = SimpleNamespace()
+        stub.adopt_claim = lambda claim, *, kind: None
+        stub.release_claim = lambda: None
+        return stub
+
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # keep off the real file
-    monkeypatch.setattr(
-        bootstrap,
-        "build_harness",
-        lambda workspace, *, mode=None, resume: captured.update(mode=mode) or object(),
-    )
+    monkeypatch.setattr(bootstrap, "build_harness", fake_build)
     monkeypatch.setattr(tui_app, "HarnessApp", FakeApp)
     stdin = io.StringIO()
     stdin.isatty = lambda: True  # interactive
@@ -243,7 +247,7 @@ def test_headless_works_without_textual(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         bootstrap,
         "build_harness",
-        lambda workspace, *, mode, resume: _cli_harness(tmp_path, "bare-ok"),
+        lambda workspace, *, mode, resume, session_id=None: _cli_harness(tmp_path, "bare-ok"),
     )
     monkeypatch.setattr(default_cmd, "_tui_available", lambda: False)
     out = io.StringIO()

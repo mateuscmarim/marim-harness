@@ -134,21 +134,70 @@ def _acquire_session(harness, *, kind: str, err) -> "tuple[SessionClaim | None, 
     return None, False
 
 
-def _run_claimed(harness, *, kind: str, err, run: Callable[[], int]) -> int:
-    """Claim `harness`'s session, run `run()` under the claim, and release it.
+def _resolve_target_session(workspace: Path, resume: bool) -> str | None:
+    """The session id a launch will reattach to, resolved BEFORE build_harness
+    so ownership can be taken before any store read. --resume is a flag: it
+    means the workspace's most recent session (bootstrap.py's manager.latest()
+    rule). No resume (or no sessions yet) -> None: a fresh session's id only
+    exists after the build, so it is claimed post-build by _acquire_session."""
+    if not resume:
+        return None
+    from ...session.store import SessionManager
 
-    Returns 2 without calling `run` when the session is already owned
-    elsewhere; otherwise returns whatever `run()` returns. Shared by the
-    headless and TUI launch paths so the claim/release wiring lives once.
+    latest = SessionManager(workspace).latest()
+    return latest.id if latest is not None else None
+
+
+def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
+    """Claim a pre-resolved target session before build_harness reads it.
+
+    Returns ``(claim, may_proceed)``; ``may_proceed`` False means the refusal
+    message was printed. ``target`` None -> ``(None, True)``: nothing to claim
+    up front."""
+    if target is None:
+        return None, True
+    from ...session.claim import read_holder, try_acquire
+    from ...session.store import SessionManager
+
+    session_path = SessionManager(workspace).session_path(target)
+    claim = try_acquire(session_path, kind=kind)
+    if claim is not None:
+        return claim, True
+    holder = read_holder(session_path)
+    who = holder.describe() if holder is not None else "another process"
+    print(
+        f"session {target} is already open in {who}.\n"
+        "Close it there first, or start a new session (drop --resume).",
+        file=err,
+    )
+    return None, False
+
+
+def _run_claimed(
+    harness, *, kind: str, err, run: Callable[[], int], claim: "SessionClaim | None" = None
+) -> int:
+    """Run `run()` under a session claim, adopted by the Harness, and release
+    it on the way out.
+
+    `claim` is a PRE-BUILD claim for a resumed session (ownership taken before
+    build_harness read the store — see _claim_target). When None, the session
+    is claimed post-build (_acquire_session: fresh sessions have their id only
+    after the build). Either way the claim is adopted by the Harness so an
+    in-run session switch can move it, and released through the Harness on
+    exit — idempotent, since a switch may have already swapped it.
+
+    Returns 2 without calling `run` when a post-build claim finds the session
+    owned elsewhere.
     """
-    claim, may_proceed = _acquire_session(harness, kind=kind, err=err)
-    if not may_proceed:
-        return 2
+    if claim is None:
+        claim, may_proceed = _acquire_session(harness, kind=kind, err=err)
+        if not may_proceed:
+            return 2
+    harness.adopt_claim(claim, kind=kind)
     try:
         return run()
     finally:
-        if claim is not None:
-            claim.release()
+        harness.release_claim()
 
 
 def _launch_tui(harness) -> int:
@@ -178,6 +227,33 @@ def _enter_worktree(workspace, branch, err):
         return None
 
 
+def _claim_and_build(workspace: Path, *, resume: bool, mode, kind: str, err):
+    """Resolve and claim the target session, then build the Harness onto it.
+
+    Returns ``(harness, claim) | None`` — ``None`` means the refusal was
+    already printed and the caller should return 2. A build failure releases
+    the pre-build claim (nothing else will) before re-raising.
+    """
+    from ...runtime.bootstrap import build_harness
+
+    target = _resolve_target_session(workspace, resume)
+    claim, may_proceed = _claim_target(workspace, target, kind=kind, err=err)
+    if not may_proceed:
+        return None
+    try:
+        harness = build_harness(
+            workspace,
+            mode=mode,
+            session_id=target if target is not None else None,
+            resume=resume and target is None,
+        )
+    except BaseException:
+        if claim is not None:
+            claim.release()
+        raise
+    return harness, claim
+
+
 def run_default(argv, *, stdin=None, out=None, err=None) -> int:
     stdin = stdin if stdin is not None else sys.stdin
     out = out if out is not None else sys.stdout
@@ -200,7 +276,6 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
 
     # Heavy imports (pydantic_ai) deferred to here so `--help` and arg errors stay
     # fast; only an actual launch pays for the agent.
-    from ...runtime.bootstrap import build_harness
     from ...runtime.permissions import Mode
 
     if _is_headless(
@@ -216,11 +291,15 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         from .headless import run_headless
 
         mode = Mode(args.mode) if args.mode else Mode.auto
-        harness = build_harness(workspace, mode=mode, resume=args.resume)
+        built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="headless", err=err)
+        if built is None:
+            return 2
+        harness, claim = built
         return _run_claimed(
             harness,
             kind="headless",
             err=err,
+            claim=claim,
             run=lambda: asyncio.run(
                 run_headless(harness, prompt, args.output_format, out=out, err=err)
             ),
@@ -247,5 +326,8 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
     # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
     # build_harness.
     mode = Mode(args.mode) if args.mode else None
-    harness = build_harness(workspace, mode=mode, resume=args.resume)
-    return _run_claimed(harness, kind="tui", err=err, run=lambda: _launch_tui(harness))
+    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="tui", err=err)
+    if built is None:
+        return 2
+    harness, claim = built
+    return _run_claimed(harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness))
