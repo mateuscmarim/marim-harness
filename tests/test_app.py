@@ -4124,17 +4124,18 @@ async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
 
 @pytest.mark.anyio
 async def test_switch_session_refused_when_claimed_elsewhere(tmp_path: Path, monkeypatch):
-    from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session import SessionManager
     from marim_harness.session.claim import Holder, SessionClaimed
 
     app = _app(tmp_path)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    app.harness.session.store = store
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        called = False
+        current = app.harness.session.store.session_id
 
         async def refusing(session_id) -> None:
-            nonlocal called
-            called = True
             raise SessionClaimed(
                 session_id, Holder(pid=999, kind="daemon", endpoint="http://127.0.0.1:8643")
             )
@@ -4142,11 +4143,11 @@ async def test_switch_session_refused_when_claimed_elsewhere(tmp_path: Path, mon
         monkeypatch.setattr(app.session, "switch_to_session_id", refusing)
         await app.switch_to_session_id("20260101-000000-abc123")
         await pilot.pause()
-        # The underlying switch was attempted but refused.
-        assert called is True
-        # No crash — the notice was posted.
-        messages = [str(w.render()) for w in app.query(NoticeMessage)]
-        assert any("owned by" in m for m in messages)
+        # No crash, no switch — the TUI stays on its session.
+        assert app.harness.session.store.session_id == current
+        # The notice was posted.
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "owned by" in notes
 
 
 @pytest.mark.anyio

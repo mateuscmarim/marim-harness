@@ -667,9 +667,7 @@ class HarnessApp(App):
             await self.session.switch_to_session_id(session_id)
         except SessionClaimed as exc:
             who = exc.holder.describe() if exc.holder is not None else "another process"
-            self.append_log(
-                NoticeMessage(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
-            )
+            await self.post_system(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
 
     async def _refuse_if_session_busy(self, what: str) -> bool:
         """True (with a notice posted) when ``what`` must not run right now.
