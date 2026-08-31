@@ -232,17 +232,24 @@ Expected: FAIL (delete currently removes claimed sessions without complaint).
 In `session/store.py` `SessionManager.delete`, insert at the TOP of the method body (before `import shutil`), and update the claim-unlink comment:
 
 ```python
-        from .claim import SessionClaimed, read_holder
+        from .claim import SessionClaimed, read_holder, try_acquire
 
         # A claimed session is being actively driven elsewhere; deleting it
-        # would erase live history out from under its holder. The holder
-        # releases on exit (or by switching away), after which the delete
-        # proceeds. A held-but-unreadable sidecar degrades to proceed —
-        # same stance as try_acquire's open-failure path.
+        # would erase live history out from under its holder. try_acquire is
+        # the authoritative check (a live flock): release() leaves stale
+        # identity content in the sidecar, so read_holder alone proves
+        # nothing — it only supplies the holder identity for the message.
+        # A held-but-unreadable sidecar degrades to "another process".
+        # The probe's own brief identity write is harmless: this method
+        # unlinks the sidecar below. The resurrection window between
+        # probe.release() and the unlink is the same accepted micro-race
+        # documented in the spec (a claim appearing after the check).
         session_path = self._path(session_id)
-        holder = read_holder(session_path)
-        if holder is not None:
+        probe = try_acquire(session_path, kind="delete")
+        if probe is None:
+            holder = read_holder(session_path)
             raise SessionClaimed(session_id, holder)
+        probe.release()
 ```
 
 And reword the existing claim-sidecar comment (the "Unlinking it cannot break a live holder…" block) to end with: "The file-then-sidecar order matters: the session file goes first so a racing reader finds the session gone before the claim does."

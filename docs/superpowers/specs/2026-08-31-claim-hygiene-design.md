@@ -159,9 +159,12 @@ atomic arbiter and the window cannot produce two owners, only a refused start.
 (`interfaces/cli/sessions.py:94`) and the HTTP DELETE route
 (`server/http.py:452`) both go through it.
 
-1. First: `read_holder` on the session. Claim held → raise `SessionClaimed`.
-   Callers convert: HTTP → 409 `claimed` (reuse the `post_message` mapping
-   pattern); CLI `_cmd_delete` → exit 2 with the holder named.
+1. First: probe the claim with `try_acquire` — the authoritative liveness
+   check, because `release()` leaves stale content in the sidecar, so
+   `read_holder` alone proves nothing. Probe fails (lock held) → raise
+   `SessionClaimed` (with `read_holder` supplying the identity for the
+   message). Callers convert: HTTP → 409 `claimed` (reuse the `post_message`
+   mapping pattern); CLI `_cmd_delete` → exit 2 with the holder named.
 2. Deletion order becomes session file **then** claim sidecar (sidecar last),
    so a racing persist cannot find a claimless file it should have been
    blocked by. With refuse-while-claimed and unique timestamp ids, the
