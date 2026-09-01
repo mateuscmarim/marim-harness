@@ -763,8 +763,10 @@ class HarnessApp(App):
         actual on-disk teardown via the same SessionManager.delete used by
         `marim sessions delete` (interfaces/cli/sessions.py). SessionManager.delete
         refuses a session claimed by another live process — report that instead
-        of crashing; the picker doesn't need correcting since its next open
-        re-lists from disk (the delete never happened)."""
+        of crashing, AND tell the still-open picker to undo its optimistic
+        removal, so the user isn't left looking at a vanished row for a session
+        that still exists. (Waiting for the picker's next open to re-list from
+        disk isn't enough: the picker is usually still on screen.)"""
         from ...session.claim import SessionClaimed
 
         manager = self.harness.session.manager
@@ -774,6 +776,14 @@ class HarnessApp(App):
             manager.delete(message.session_id)
         except SessionClaimed as exc:
             who = exc.holder.describe() if exc.holder is not None else "another process"
+            # Found on the screen stack, not via self.query(): a pushed Screen
+            # is not a DOM descendant of the App, so `query` returns nothing
+            # for it (verified against the installed Textual 8.2.7). Iterating
+            # also tolerates the picker having already been dismissed by the
+            # time the refusal lands — DOMQuery.first would raise NoMatches.
+            for screen in self.screen_stack:
+                if isinstance(screen, SessionPickerModal):
+                    screen.note_delete_failed(exc.session_id, f"Can't delete: owned by {who}")
             await self.post_system(f"Can't delete {exc.session_id}: it is owned by {who}.")
 
     # --- Callbacks the harness reaches the user through (see bind_ui) ---

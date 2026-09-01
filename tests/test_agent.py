@@ -455,12 +455,15 @@ def test_switch_session_failed_load_releases_the_tentative_claim(tmp_path: Path)
     assert try_acquire(h.session.store.path, kind="probe") is None
 
 
-def test_switch_session_failing_after_the_commit_keeps_the_target_claim(tmp_path: Path):
-    """The body can raise AFTER the controller already moved onto the target
-    (``_apply_saved_model`` builds a model that no longer constructs). The claim
-    must follow where we actually landed: releasing the tentative claim here
-    would leave the session we now drive unowned while we still held the one we
-    left — two processes could then drive the target."""
+def test_switch_session_failing_after_the_commit_completes_and_claims_the_target(
+    tmp_path: Path,
+) -> None:
+    """A settings restore can raise AFTER the controller already moved onto the
+    target (``_apply_saved_model`` builds a model that no longer constructs).
+    The conversation switch factually HAPPENED, so it must not be reported as a
+    failure: switch_session returns normally, and the claim follows where we
+    actually landed. Re-raising used to leave the caller (the TUI) rendering the
+    OUTGOING conversation while the harness — and the claim — drove the target."""
     from marim_harness.session.claim import claim_path, try_acquire
 
     h = _switch_harness(tmp_path)
@@ -473,17 +476,72 @@ def test_switch_session_failing_after_the_commit_keeps_the_target_claim(tmp_path
     def boom() -> None:
         raise RuntimeError("saved model no longer builds")
 
-    h._apply_saved_model = boom  # the first post-commit step in the body
+    h._apply_saved_model = boom  # a post-commit settings restore
 
-    with pytest.raises(RuntimeError):
-        h.switch_session(beta.session_id)
+    count = h.switch_session(beta.session_id)  # must NOT raise
 
+    assert count >= 0
     # We are on beta, so beta is the session we own.
     assert h.session.store.session_id == beta.session_id
     assert h._claim is not None
     assert h._claim.path == claim_path(beta.path)
     assert try_acquire(beta.path, kind="probe") is None  # held by the harness
     assert try_acquire(outgoing_path, kind="probe") is not None  # the one we left, let go
+
+
+def test_switch_session_restores_survive_a_failing_one(tmp_path: Path) -> None:
+    """Each post-commit restore is guarded on its own: a model that no longer
+    builds must not skip the advisor/thinking restores that would have worked.
+    The session degrades to whatever settings survived — it stays runnable
+    rather than half-restored-and-raised."""
+    ran: list[str] = []
+
+    h = _switch_harness(tmp_path)
+    beta = h.session.manager.create()
+    beta.path.parent.mkdir(parents=True, exist_ok=True)
+    beta.path.write_text("{}")
+
+    def boom() -> None:
+        raise RuntimeError("saved model no longer builds")
+
+    h._apply_saved_model = boom
+    h._apply_saved_advisor = lambda: ran.append("advisor")
+    h._apply_saved_thinking = lambda: ran.append("thinking")
+
+    h.switch_session(beta.session_id)
+
+    assert ran == ["advisor", "thinking"]
+    # Still driving beta on a usable model (the pre-switch one), not a torn state.
+    assert h.session.store.session_id == beta.session_id
+    assert h.model_id
+
+
+@pytest.mark.anyio
+async def test_aclose_releases_the_claim_even_when_teardown_is_cancelled(tmp_path: Path) -> None:
+    """CancelledError is a BaseException: it sails past ``aclose``'s awaits. With
+    the release as a trailing statement it was skipped entirely and the claim
+    leaked until process exit, leaving every other process refused on a session
+    nobody was driving. The release lives in a ``finally`` for exactly this."""
+    import asyncio
+
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    path = h.session.store.path
+    h.adopt_claim(try_acquire(path, kind="tui"), kind="tui")
+    assert try_acquire(path, kind="probe") is None  # the harness holds it
+
+    async def cancelled() -> None:
+        raise asyncio.CancelledError
+
+    h.mcp.aclose = cancelled  # cancellation lands mid-teardown
+
+    with pytest.raises(asyncio.CancelledError):
+        await h.aclose()
+
+    outsider = try_acquire(path, kind="probe")
+    assert outsider is not None  # released despite the cancellation
+    outsider.release()
 
 
 def test_owns_session_reads_the_held_claim_not_the_current_store(tmp_path: Path):

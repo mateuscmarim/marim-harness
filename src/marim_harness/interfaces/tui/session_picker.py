@@ -46,7 +46,10 @@ class SessionPickerModal(ModalScreen[str | None]):
     class Deleted(Message):
         """Posted once a delete is confirmed (second `d` within the window).
         The caller (HarnessApp) owns the actual SessionManager.delete() call —
-        this modal only knows the SessionInfo list it was given, not a manager."""
+        this modal only knows the SessionInfo list it was given, not a manager.
+
+        The row is removed provisionally when this is posted; the caller must
+        call ``note_delete_failed`` if the teardown is refused."""
 
         def __init__(self, session_id: str) -> None:
             self.session_id = session_id
@@ -104,6 +107,10 @@ class SessionPickerModal(ModalScreen[str | None]):
         # times in the time it takes a human to lift a finger, cascading into
         # multiple real SessionManager.delete() teardowns from one keypress.
         self._locked_until: float | None = None
+        # The row removed optimistically by the last _confirm_delete, kept with
+        # its original index so note_delete_failed can put it back where it was
+        # when the host refuses the teardown. Cleared on every resolution.
+        self._pending_delete: tuple[int, SessionInfo] | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="session-box"):
@@ -157,10 +164,24 @@ class SessionPickerModal(ModalScreen[str | None]):
             self._set_status("")
 
     def _confirm_delete(self, session_id: str, now: float) -> None:
-        """Second `d` within the window: remove the session, keep the active
-        filter and cursor position, and start the post-delete lockout."""
-        name = next((s.name for s in self.sessions if s.id == session_id), session_id)
+        """Second `d` within the window: remove the session's row, keep the
+        active filter and cursor position, and start the post-delete lockout.
+
+        The removal is OPTIMISTIC — the on-disk teardown belongs to the host
+        (``HarnessApp.on_session_picker_modal_deleted``) and can still be
+        REFUSED, because ``SessionManager.delete`` raises ``SessionClaimed``
+        for a session another live process owns. So the status reads
+        "Deleting …" rather than announcing a success we haven't been told
+        about: it used to say "Deleted", leaving the user looking at a vanished
+        row and a success message for a session that still exists. The removed
+        row is stashed in ``_pending_delete`` for ``note_delete_failed``.
+        """
+        index = next((i for i, s in enumerate(self.sessions) if s.id == session_id), None)
+        if index is None:  # not in the list we were handed; nothing to remove
+            return
+        removed = self.sessions[index]
         self.sessions = [s for s in self.sessions if s.id != session_id]
+        self._pending_delete = (index, removed)
         options = self.query_one("#session-options", OptionList)
         old_index = options.highlighted
         filter_text = self.query_one("#session-filter", Input).value
@@ -169,8 +190,28 @@ class SessionPickerModal(ModalScreen[str | None]):
             options.highlighted = min(old_index, options.option_count - 1)
         self._armed = None
         self._locked_until = now + _DELETE_CONFIRM_WINDOW
-        self._set_status(f"Deleted {name}.")
+        self._set_status(f"Deleting {removed.name}…")
         self.post_message(self.Deleted(session_id))
+
+    def note_delete_failed(self, session_id: str, reason: str) -> None:
+        """Roll the optimistic removal back: the host refused the teardown.
+
+        Puts the row back at the index it was removed from (so the list keeps
+        its newest-first order) and replaces the provisional "Deleting …"
+        status with ``reason`` — which names the holder, since "it is claimed"
+        is the only way a delete gets refused. Safe to call for a session we
+        have no pending removal for: the status is still shown, nothing else
+        moves.
+        """
+        pending, self._pending_delete = self._pending_delete, None
+        if pending is not None and pending[1].id == session_id:
+            index, info = pending
+            restored = list(self.sessions)
+            restored.insert(min(index, len(restored)), info)
+            self.sessions = restored
+            filter_text = self.query_one("#session-filter", Input).value
+            self._populate(filter_sessions(self.sessions, filter_text))
+        self._set_status(reason)
 
     def action_delete(self) -> None:
         session_id = self._highlighted_id()

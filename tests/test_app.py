@@ -2529,7 +2529,14 @@ async def test_session_picker_delete_message_removes_session(tmp_path: Path):
 async def test_session_picker_delete_refused_when_claimed_elsewhere(tmp_path: Path):
     """SessionManager.delete raises SessionClaimed for a live-claimed session;
     the handler must report it, not crash — it used to be a bare `manager.delete`
-    call with nothing catching that exception."""
+    call with nothing catching that exception.
+
+    It must ALSO undo the picker's optimistic row removal while the picker is
+    still on screen: the modal removes the row and posts Deleted before we get
+    here, so a refusal that only posted a system note left the user staring at a
+    vanished row for a session that still exists."""
+    import time
+
     from marim_harness.interfaces.tui.session_picker import SessionPickerModal
     from marim_harness.interfaces.tui.widgets import AssistantMessage
     from marim_harness.session.claim import try_acquire
@@ -2549,11 +2556,25 @@ async def test_session_picker_delete_refused_when_claimed_elsewhere(tmp_path: Pa
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(claimed_id))
+            infos = app.harness.session.sessions()
+            modal = SessionPickerModal(infos, active=app.harness.session.store.session_id)
+            app.push_screen(modal)
             await pilot.pause()
+            # Drive the real confirm path: it removes the row and posts Deleted,
+            # which bubbles to the app's handler below.
+            modal._confirm_delete(claimed_id, time.monotonic())
+            await pilot.pause()
+
             assert session_path.exists()
             notes = " ".join(w.text for w in app.query(AssistantMessage))
             assert "owned by" in notes
+            # The picker was corrected, not left showing the optimistic delete.
+            opts = modal.query_one("#session-options")
+            listed = {opts.get_option_at_index(i).id for i in range(opts.option_count)}
+            assert claimed_id in listed
+            status = str(modal.query_one("#session-status").render())
+            assert "Can't delete" in status
+            assert "daemon" in status
     finally:
         claim.release()
 

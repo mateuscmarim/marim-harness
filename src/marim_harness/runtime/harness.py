@@ -836,9 +836,25 @@ class Harness:
         claim so we never hold a session we never reached. The outgoing claim
         is released only after the incoming session loaded and was claimed.
 
-        The claim always ends up on the session we are actually driving —
-        including when the switch commits and a later step raises, which is why
-        the error path asks where we landed rather than assuming we stayed.
+        The contract, precisely:
+
+        * **Refused or failed before the commit** — the target is claimed by
+          someone else (``SessionClaimed``) or its store won't load
+          (``SessionLoadError``): a total no-op. We stay on, and keep owning,
+          the session we were already driving, and the exception propagates.
+        * **Once committed** (``SessionController`` rebound its store) the
+          switch COMPLETES: this returns the message count and the claim is on
+          the target. The per-session settings restores that follow the commit
+          (checkpoints, model, advisor, thinking) are best-effort — a failure
+          there is logged and swallowed by ``_restore_session_settings``, never
+          re-raised as a switch failure. Reporting a committed switch as failed
+          used to leave the caller (the TUI) rendering the OUTGOING conversation
+          while the harness — and the claim — drove the target.
+
+        The ``except`` below therefore covers only the pre-commit failures, but
+        still asks where we actually landed rather than assuming we stayed: it
+        is the defensive net that keeps the claim on the session we drive even
+        if some future step reintroduces a post-commit raise.
         """
         from ..session.claim import SessionClaimed, read_holder, try_acquire
 
@@ -860,14 +876,14 @@ class Harness:
         except Exception:
             # A failure here is NOT necessarily a failure to switch. The body
             # commits the switch first (SessionController rebinds its store) and
-            # then runs the post-load steps, any of which can still raise —
-            # _apply_saved_model → model_source.build() blows up for a saved
-            # model whose provider can no longer be constructed. Releasing the
-            # tentative claim unconditionally would then leave the session we
-            # now drive unclaimed while we keep holding the claim on the session
-            # we left: another process could claim the target and two owners
-            # would drive it. So decide by where the controller actually landed,
-            # not by the fact that something raised.
+            # only then restores per-session settings — and those restores are
+            # now swallowed by _restore_session_settings, so in practice only
+            # pre-commit failures reach here. This stays as the defensive net:
+            # releasing the tentative claim unconditionally would leave a
+            # session we DID land on unclaimed while we kept holding the claim
+            # on the session we left, so another process could claim the target
+            # and two owners would drive it. Decide by where the controller
+            # actually landed, not by the fact that something raised.
             if self._is_active(session_id):
                 self._install_claim(tentative)
             else:
@@ -907,11 +923,41 @@ class Harness:
             # failed switch dropping them is harmless.
             self.deps.jobs.import_history(saved_jobs)
             raise
-        self.checkpoints.reload()
-        self._apply_saved_model()
-        self._apply_saved_advisor()
-        self._apply_saved_thinking()
+        # COMMITTED from here on — see switch_session's contract. Everything
+        # below is best-effort by construction.
+        self._restore_session_settings()
         return count
+
+    def _restore_session_settings(self) -> None:
+        """Re-apply the per-session settings a freshly loaded store carries.
+
+        Called only AFTER the conversation switch has committed, so every step
+        here is best-effort: the switch factually happened, and a settings
+        restore blowing up must not be re-raised as a switch failure (the
+        caller would then render the outgoing conversation while the harness —
+        and the ownership claim — drive the target). ``_apply_saved_model`` is
+        the realistic offender: ``model_source.build()`` raises for a saved
+        model whose provider can no longer be constructed (key gone, provider
+        removed). Each restore is guarded on its own so one failure doesn't
+        skip the three that would have succeeded; the session then simply runs
+        on whatever settings survived, which is a graceful degrade, not a
+        broken switch.
+        """
+        for restore in (
+            self.checkpoints.reload,
+            self._apply_saved_model,
+            self._apply_saved_advisor,
+            self._apply_saved_thinking,
+        ):
+            try:
+                restore()
+            except Exception:
+                logger.warning(
+                    "session settings restore %r failed after the switch committed; "
+                    "continuing on the session we landed on",
+                    getattr(restore, "__name__", restore),
+                    exc_info=True,
+                )
 
     async def rename_session(self, name: str | None = None) -> str | None:
         return await self.session.rename(name)
@@ -1142,14 +1188,22 @@ class Harness:
         return await self.mcp.connect()
 
     async def aclose(self) -> None:
-        await self.mcp.aclose()
-        lsp = getattr(self, "lsp", None)
-        if lsp is not None:
-            await lsp.aclose()
-        # A discarded Harness must not leak the session it was driving.
-        # release_claim() is idempotent and a no-op for the daemon (its
-        # harness never holds a claim — SessionHost owns that separately).
-        self.release_claim()
+        try:
+            await self.mcp.aclose()
+            lsp = getattr(self, "lsp", None)
+            if lsp is not None:
+                await lsp.aclose()
+        finally:
+            # A discarded Harness must not leak the session it was driving.
+            # release_claim() is idempotent and a no-op for the daemon (its
+            # harness never holds a claim — SessionHost owns that separately).
+            #
+            # In a `finally` because teardown is a prime place to be cancelled:
+            # CancelledError is a BaseException, so it sails past the awaits
+            # above and — left as a trailing statement — would skip the release
+            # entirely, stranding the claim until the process exits and leaving
+            # every other process refused on a session nobody is driving.
+            self.release_claim()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace.root)
