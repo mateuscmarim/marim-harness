@@ -758,6 +758,16 @@ class HarnessApp(App):
             return
         await self.switch_to_session_id(chosen)
 
+    def _find_session_picker_modal(self) -> SessionPickerModal | None:
+        """Find the session picker on the screen stack if it is still mounted.
+
+        Found on the screen stack, not via self.query(): a pushed Screen is not
+        a DOM descendant of the App, so `query` returns nothing for it."""
+        for screen in self.screen_stack:
+            if isinstance(screen, SessionPickerModal):
+                return screen
+        return None
+
     async def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
         """The picker already removed the row optimistically; this performs the
         actual on-disk teardown via the same SessionManager.delete used by
@@ -766,7 +776,9 @@ class HarnessApp(App):
         of crashing, AND tell the still-open picker to undo its optimistic
         removal, so the user isn't left looking at a vanished row for a session
         that still exists. (Waiting for the picker's next open to re-list from
-        disk isn't enough: the picker is usually still on screen.)"""
+        disk isn't enough: the picker is usually still on screen.) On success,
+        confirm the deletion in the picker. Either way, tolerate the picker
+        having already been dismissed."""
         from ...session.claim import SessionClaimed
 
         manager = self.harness.session.manager
@@ -776,15 +788,14 @@ class HarnessApp(App):
             manager.delete(message.session_id)
         except SessionClaimed as exc:
             who = exc.holder.describe() if exc.holder is not None else "another process"
-            # Found on the screen stack, not via self.query(): a pushed Screen
-            # is not a DOM descendant of the App, so `query` returns nothing
-            # for it (verified against the installed Textual 8.2.7). Iterating
-            # also tolerates the picker having already been dismissed by the
-            # time the refusal lands — DOMQuery.first would raise NoMatches.
-            for screen in self.screen_stack:
-                if isinstance(screen, SessionPickerModal):
-                    screen.note_delete_failed(exc.session_id, f"Can't delete: owned by {who}")
+            picker = self._find_session_picker_modal()
+            if picker is not None:
+                picker.note_delete_failed(exc.session_id, f"Can't delete: owned by {who}")
             await self.post_system(f"Can't delete {exc.session_id}: it is owned by {who}.")
+        else:
+            picker = self._find_session_picker_modal()
+            if picker is not None:
+                picker.note_deleted(message.session_id)
 
     # --- Callbacks the harness reaches the user through (see bind_ui) ---
 

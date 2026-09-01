@@ -2580,6 +2580,45 @@ async def test_session_picker_delete_refused_when_claimed_elsewhere(tmp_path: Pa
 
 
 @pytest.mark.anyio
+async def test_session_picker_delete_succeeds_confirms_in_modal(tmp_path: Path):
+    """On successful delete (no SessionClaimed exception), the handler must
+    confirm the deletion in the modal by setting status to "Deleted {name}."
+    Previously a successful delete left the picker showing "Deleting …" forever."""
+    from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("to_delete")
+    app.harness.session.persist()
+    delete_id = next(info.id for info in app.harness.session.sessions() if info.name == "to_delete")
+    # Move the harness's own claim off "to_delete" so it can be deleted freely.
+    app.harness.new_session("keeper")
+    app.harness.session.persist()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        infos = app.harness.session.sessions()
+        modal = SessionPickerModal(infos, active=app.harness.session.store.session_id)
+        app.push_screen(modal)
+        await pilot.pause()
+        # Drive the real confirm path: it removes the row and posts Deleted,
+        # which triggers the handler; capture the status after both steps.
+        modal._confirm_delete(delete_id, __import__("time").monotonic())
+        await pilot.pause()
+
+        # Row is gone and status shows "Deleted {name}." (the handler confirmed it).
+        opts = modal.query_one("#session-options")
+        listed = {opts.get_option_at_index(i).id for i in range(opts.option_count)}
+        assert delete_id not in listed
+        status = str(modal.query_one("#session-status").render())
+        assert status == "Deleted to_delete."  # success confirmed
+        # The key difference from the refusal path: no system message about
+        # the delete (only the refusal case posts a message).
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "Can't delete" not in notes  # not a refusal
+
+
+@pytest.mark.anyio
 async def test_picker_opens_without_blocking_on_catalog_fetch(tmp_path: Path):
     """The picker must appear immediately even when the catalog fetch is slow —
     the modal loads the catalog in its own worker, so a stalled provider never

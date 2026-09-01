@@ -1,3 +1,5 @@
+from typing import cast
+
 import pytest
 from textual.app import App
 from textual.widgets import Input, OptionList
@@ -352,7 +354,7 @@ async def test_refused_delete_restores_the_row_and_names_the_holder():
     app = _Host(list(_SESSIONS))
     async with app.run_test() as pilot:
         await pilot.pause()
-        modal = app.screen
+        modal = cast(SessionPickerModal, app.screen)
         opts = modal.query_one("#session-options", OptionList)
         await pilot.press("tab")
         await pilot.press("down")  # highlight s-beta, the middle row
@@ -408,3 +410,49 @@ async def test_held_d_does_not_cascade_delete_past_one_session():
             await pilot.pause()
         assert len(received) == 1
         assert opts.option_count == start_count - 1
+
+
+@pytest.mark.anyio
+async def test_note_deleted_sets_status_and_clears_pending():
+    # The successful delete path: note_deleted confirms the deletion succeeded
+    # by setting status to "Deleted {name}." and clearing the pending record.
+    app = _Host(list(_SESSIONS))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = cast(SessionPickerModal, app.screen)
+        opts = modal.query_one("#session-options", OptionList)
+        await pilot.press("tab")
+        await pilot.press("d")
+        await pilot.press("d")
+        await pilot.pause()
+        assert opts.option_count == len(_SESSIONS) - 1
+        status = str(modal.query_one("#session-status").render())
+        assert status.startswith("Deleting ")
+
+        modal.note_deleted("s-alpha")
+        await pilot.pause()
+
+        # Status flips to "Deleted {name}."
+        status = str(modal.query_one("#session-status").render())
+        assert status == "Deleted Fix auth bug."
+        # Pending record is cleared; calling again on the same id is a no-op
+        modal.note_deleted("s-alpha")
+        await pilot.pause()
+        status = str(modal.query_one("#session-status").render())
+        assert status == "Deleted Fix auth bug."  # unchanged
+
+
+@pytest.mark.anyio
+async def test_note_deleted_for_unknown_session_is_noop():
+    # Safe to call note_deleted for a session we have no pending record for:
+    # it should be a silent no-op (e.g., the refusal path may race dismissal).
+    app = _Host(list(_SESSIONS))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = cast(SessionPickerModal, app.screen)
+        # Call note_deleted without confirming a delete first.
+        modal.note_deleted("s-alpha")
+        await pilot.pause()
+        # Status is still empty (no change).
+        status = str(modal.query_one("#session-status").render())
+        assert status == ""

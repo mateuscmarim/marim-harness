@@ -213,6 +213,15 @@ class SessionPickerModal(ModalScreen[str | None]):
             self._populate(filter_sessions(self.sessions, filter_text))
         self._set_status(reason)
 
+    def note_deleted(self, session_id: str) -> None:
+        """Confirm the deletion succeeded: the row was removed and the teardown
+        succeeded. Replaces the provisional "Deleting …" status with "Deleted
+        {name}." and clears the pending deletion record. Safe to call for a
+        session we have no pending removal for: it is a silent no-op."""
+        pending, self._pending_delete = self._pending_delete, None
+        if pending is not None and pending[1].id == session_id:
+            self._set_status(f"Deleted {pending[1].name}.")
+
     def action_delete(self) -> None:
         session_id = self._highlighted_id()
         if session_id is None:
