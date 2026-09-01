@@ -210,6 +210,50 @@ def test_resolve_target_session_none_when_no_sessions(tmp_path):
     assert _resolve_target_session(tmp_path, resume=True) is None
 
 
+def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_path, monkeypatch):
+    """Review-bot #470: build_harness(resume=True, session_id=None) performs
+    its OWN latest() lookup with no claim held (bootstrap.py:133) — a session
+    created between our resolve and its lookup would be resumed unclaimed.
+    --resume must therefore pin the build via session_id (resolved target) or
+    build fresh (resume=False); the resume flag never reaches build_harness."""
+    import io
+
+    from marim_harness.interfaces.cli import default_cmd
+    from marim_harness.runtime import bootstrap
+
+    seen: dict = {}
+
+    def fake_build(workspace, *, mode, session_id, resume):
+        seen["session_id"] = session_id
+        seen["resume"] = resume
+        return object()
+
+    monkeypatch.setattr(bootstrap, "build_harness", fake_build)
+    err = io.StringIO()
+
+    # Resolved target: pinned via session_id, resume stays False.
+    target = "20260101-000000-tttttt"
+    _write_session(tmp_path, target)
+    monkeypatch.setattr(default_cmd, "_resolve_target_session", lambda ws, r: target)
+    harness, claim = default_cmd._claim_and_build(
+        tmp_path, resume=True, mode=None, kind="headless", err=err
+    )
+    assert harness is not None and err.getvalue() == ""
+    assert seen == {"session_id": target, "resume": False}
+    assert claim is not None  # the pre-build claim on the target is returned
+    claim.release()
+
+    # No target (fresh or mid-race deleted): a fresh build, never a second
+    # unclaimed lookup.
+    monkeypatch.setattr(default_cmd, "_resolve_target_session", lambda ws, r: None)
+    harness, claim = default_cmd._claim_and_build(
+        tmp_path, resume=True, mode=None, kind="headless", err=err
+    )
+    assert harness is not None
+    assert seen == {"session_id": None, "resume": False}
+    assert claim is None
+
+
 def test_claim_target_claims_resolved_session(tmp_path):
     import io
 

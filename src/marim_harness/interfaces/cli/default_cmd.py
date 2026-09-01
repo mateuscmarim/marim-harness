@@ -255,8 +255,14 @@ def _claim_and_build(workspace: Path, *, resume: bool, mode, kind: str, err):
         harness = build_harness(
             workspace,
             mode=mode,
-            session_id=target if target is not None else None,
-            resume=resume and target is None,
+            session_id=target,
+            # Never resume=True: build_harness's resume flag performs its OWN
+            # unclaimed latest() lookup (bootstrap.py:133) — the exact read
+            # this function exists to claim BEFORE. If resolve found no
+            # target, the honest reading of "--resume with no sessions" is a
+            # fresh session (one created in the meantime would otherwise be
+            # picked up unclaimed); if it did, session_id above pins it.
+            resume=False,
         )
     except BaseException:
         if claim is not None:
