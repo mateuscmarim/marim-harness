@@ -102,6 +102,20 @@ retries; dict: one corrective round), and exhaustion surfaces as the
 before trusting `structured_output`. Every `run_turn` returns a
 `TurnOutcome`; plain harnesses get the text in `.result`.
 
+### Session claims
+
+A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))
+holds a non-blocking ownership claim on whichever session it's driving.
+`switch_session`/`new_session` move that claim to the target session and
+release the one being left; switching onto a session another live process
+(a TUI, a headless run, the `serve` daemon) already owns raises
+`marim_harness.session.claim.SessionClaimed` instead of switching — the
+outgoing session's claim is untouched. `harness.aclose()` releases the held
+claim, so a discarded harness never leaks ownership of the session it was
+driving. An embedder driving a session that another process has claimed is
+subject to the same refusal `switch_session` would give — there is no
+separate claim API to bypass it.
+
 ## The SDK docs
 
 | Page | Covers |

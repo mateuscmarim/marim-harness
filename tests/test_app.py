@@ -2519,10 +2519,43 @@ async def test_session_picker_delete_message_removes_session(tmp_path: Path):
         await pilot.pause()
         from marim_harness.interfaces.tui.session_picker import SessionPickerModal
 
-        app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(doomed_id))
+        await app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(doomed_id))
         await pilot.pause()
         remaining_ids = {info.id for info in app.harness.session.sessions()}
         assert doomed_id not in remaining_ids
+
+
+@pytest.mark.anyio
+async def test_session_picker_delete_refused_when_claimed_elsewhere(tmp_path: Path):
+    """SessionManager.delete raises SessionClaimed for a live-claimed session;
+    the handler must report it, not crash — it used to be a bare `manager.delete`
+    call with nothing catching that exception."""
+    from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session.claim import try_acquire
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("claimed")
+    app.harness.session.persist()
+    claimed_id = next(info.id for info in app.harness.session.sessions() if info.name == "claimed")
+    session_path = app.harness.session.manager._path(claimed_id)  # type: ignore[union-attr]
+    # Move the harness's own claim off "claimed" so an outsider can take it —
+    # the app still holds a claim on whichever session it's actively driving.
+    app.harness.new_session("keeper")
+    app.harness.session.persist()
+
+    claim = try_acquire(session_path, kind="daemon", endpoint="http://127.0.0.1:8643")
+    assert claim is not None
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(claimed_id))
+            await pilot.pause()
+            assert session_path.exists()
+            notes = " ".join(w.text for w in app.query(AssistantMessage))
+            assert "owned by" in notes
+    finally:
+        claim.release()
 
 
 @pytest.mark.anyio

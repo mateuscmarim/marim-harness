@@ -739,8 +739,12 @@ class Harness:
 
     def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
         """Take ownership of an externally acquired claim (the CLI launch path
-        claims before the Harness exists). Adopting a second claim releases the
-        first — ownership is one-session-at-a-time."""
+        claims before the Harness exists). This is an ADOPTION of a claim
+        already held elsewhere, not an acquire-then-swap — there is no target
+        to fail to reach, so unlike ``switch_session``'s install-before-release
+        ordering, the order we release the old claim in doesn't matter here.
+        Adopting a second claim releases the first — ownership is
+        one-session-at-a-time."""
         if self._claim is not None and self._claim is not claim:
             self._claim.release()
         self._claim = claim
@@ -1142,6 +1146,10 @@ class Harness:
         lsp = getattr(self, "lsp", None)
         if lsp is not None:
             await lsp.aclose()
+        # A discarded Harness must not leak the session it was driving.
+        # release_claim() is idempotent and a no-op for the daemon (its
+        # harness never holds a claim — SessionHost owns that separately).
+        self.release_claim()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace.root)

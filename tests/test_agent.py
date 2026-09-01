@@ -580,6 +580,24 @@ def test_adopt_claim_releases_the_previously_held_one(tmp_path: Path):
     assert try_acquire(other.path, kind="probe") is None  # second one held
 
 
+@pytest.mark.anyio
+async def test_aclose_releases_the_held_claim(tmp_path: Path):
+    """An embedder that discards a Harness after switch_session must not leak
+    the claim it acquired — aclose() has to release it, not just tear down MCP/LSP."""
+    from marim_harness.session.claim import try_acquire
+
+    h = _switch_harness(tmp_path)
+    session_path = h.session.store.path
+    h.adopt_claim(try_acquire(session_path, kind="tui"), kind="tui")
+    assert try_acquire(session_path, kind="probe") is None  # held by the harness
+
+    await h.aclose()
+
+    outsider = try_acquire(session_path, kind="daemon", endpoint="http://127.0.0.1:8643")
+    assert outsider is not None
+    outsider.release()
+
+
 def test_build_collaborators_wires_full_graph(tmp_path):
     from pydantic_ai.models.function import FunctionModel
 

@@ -2,6 +2,21 @@
 always stubbed; bind_listener binds a real ephemeral socket where not stubbed."""
 
 import io
+import socket
+
+import pytest
+
+
+def _ipv6_loopback_available() -> bool:
+    """Whether ``::1`` can actually be bound here — some CI/container
+    environments have IPv6 disabled entirely, which makes binding it fail for
+    reasons unrelated to what this test is checking."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
 
 
 def test_router_reserves_serve_keyword():
@@ -23,6 +38,12 @@ def test_serve_main_builds_app_and_runs_uvicorn(tmp_path, monkeypatch):
     monkeypatch.setattr(uvicorn, "run", fake_run)
     from marim_harness.interfaces.cli import serve
 
+    # The advertised port (9999, asserted below) comes from args.port, not the
+    # real bind — so binding an ephemeral port keeps this test hermetic
+    # against a live process squatting 9999 for unrelated reasons.
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     out, err = io.StringIO(), io.StringIO()
     code = serve.main(["--port", "9999"], out=out, err=err)
     assert code == 0
@@ -63,6 +84,12 @@ def test_serve_publishes_runtime_json_for_the_life_of_the_run(tmp_path, monkeypa
     monkeypatch.setattr(uvicorn, "run", fake_run)
     from marim_harness.interfaces.cli import serve
 
+    # The advertised port (9998, asserted below) comes from args.port, not the
+    # real bind — so binding an ephemeral port keeps this test hermetic
+    # against a live process squatting 9998 for unrelated reasons.
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     assert serve.main(["--port", "9998"], out=io.StringIO(), err=io.StringIO()) == 0
 
     assert seen["endpoint"] == "http://127.0.0.1:9998"
@@ -186,6 +213,7 @@ def test_bind_listener_second_bind_fails():
         first.close()
 
 
+@pytest.mark.skipif(not _ipv6_loopback_available(), reason="IPv6 loopback unavailable")
 def test_bind_listener_strips_ipv6_brackets():
     from marim_harness.interfaces.cli.serve import bind_listener
 

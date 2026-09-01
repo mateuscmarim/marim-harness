@@ -446,9 +446,10 @@ message endpoints see it before its first turn.
 
 ### DELETE /v1/workspaces/{ws}/sessions/{sid}
 
-Refuses while a turn is running: `409 busy` ("interrupt it first"). Otherwise
-closes the live host (if any), deletes the session file, and reclaims all
-server state for the session (event bus included).
+Refuses while a turn is running: `409 busy` ("interrupt it first"). Also
+refuses a session owned by another live process: `409 claimed` (see below).
+Otherwise closes the live host (if any), deletes the session file, and
+reclaims all server state for the session (event bus included).
 
 `200`: `{"deleted": true}`
 
@@ -508,10 +509,10 @@ progress on the WebSocket stream. Errors:
 - `404 host_closed` — the host was torn down mid-submit; retry.
 - `409 claimed` — another live process (a local TUI or headless run) owns this
   session. The code is returned by `POST /messages` and `DELETE
-  /workspaces/{wid}/sessions/{sid}` when the session is owned elsewhere. A
-  claim is held for its holder's lifetime, so unlike `busy` this is not
-  transient and retrying will not clear it; the message names the holder.
-  Close the session there first.
+  /workspaces/{wid}/sessions/{sid}` when the session is owned elsewhere. For
+  headless and daemon runs, a claim is held for its holder's lifetime, so
+  unlike `busy` this is not transient and retrying will not clear it; the
+  message names the holder. Close the session there first.
 
   Claims follow the active view: an in-TUI switch (/sessions or the picker)
   claims the target session and releases the one being left; switching onto a

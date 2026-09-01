@@ -758,13 +758,23 @@ class HarnessApp(App):
             return
         await self.switch_to_session_id(chosen)
 
-    def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
+    async def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
         """The picker already removed the row optimistically; this performs the
         actual on-disk teardown via the same SessionManager.delete used by
-        `marim sessions delete` (interfaces/cli/sessions.py)."""
+        `marim sessions delete` (interfaces/cli/sessions.py). SessionManager.delete
+        refuses a session claimed by another live process — report that instead
+        of crashing; the picker doesn't need correcting since its next open
+        re-lists from disk (the delete never happened)."""
+        from ...session.claim import SessionClaimed
+
         manager = self.harness.session.manager
-        if manager is not None:
+        if manager is None:
+            return
+        try:
             manager.delete(message.session_id)
+        except SessionClaimed as exc:
+            who = exc.holder.describe() if exc.holder is not None else "another process"
+            await self.post_system(f"Can't delete {exc.session_id}: it is owned by {who}.")
 
     # --- Callbacks the harness reaches the user through (see bind_ui) ---
 
