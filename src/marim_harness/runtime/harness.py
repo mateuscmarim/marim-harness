@@ -839,9 +839,13 @@ class Harness:
         The contract, precisely:
 
         * **Refused or failed before the commit** — the target is claimed by
-          someone else (``SessionClaimed``) or its store won't load
-          (``SessionLoadError``): a total no-op. We stay on, and keep owning,
-          the session we were already driving, and the exception propagates.
+          someone else (``SessionClaimed``), its store won't load
+          (``SessionLoadError``), or its file vanished between being listed
+          and being claimed (also ``SessionLoadError`` — a missing file loads
+          as an empty session, so this is checked explicitly rather than left
+          to happen to load empty): a total no-op. We stay on, and keep
+          owning, the session we were already driving, and the exception
+          propagates.
         * **Once committed** (``SessionController`` rebound its store) the
           switch COMPLETES: this returns the message count and the claim is on
           the target. The per-session settings restores that follow the commit
@@ -857,6 +861,7 @@ class Harness:
         if some future step reintroduces a post-commit raise.
         """
         from ..session.claim import SessionClaimed, read_holder, try_acquire
+        from ..session.store import SessionLoadError
 
         manager = self.session.manager
         if manager is None or self._owns_session(session_id):
@@ -871,6 +876,13 @@ class Harness:
         tentative = try_acquire(target, kind=self._claim_kind)
         if tentative is None:
             raise SessionClaimed(session_id, read_holder(target))
+        if not target.exists():
+            # The claim just created an empty sidecar for a file that isn't
+            # there — the id was listed, then deleted, before we claimed it.
+            # SessionStore.load would happily return an empty session under
+            # this id; refuse instead of quietly driving a ghost.
+            tentative.release()
+            raise SessionLoadError(f"session {session_id} no longer exists")
         try:
             count = self._switch_session_body(session_id)
         except Exception:

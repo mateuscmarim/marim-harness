@@ -153,7 +153,11 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
 
     Returns ``(claim, may_proceed)``; ``may_proceed`` False means the refusal
     message was printed. ``target`` None -> ``(None, True)``: nothing to claim
-    up front."""
+    up front. A target whose file vanished between being resolved (latest())
+    and being claimed here is also refused: the claim happily creates a fresh
+    sidecar for a missing id, and build_harness would then load that id as an
+    empty session — resurrecting a deleted one on the next persist — rather
+    than reporting that it's gone."""
     if target is None:
         return None, True
     from ...session.claim import read_holder, try_acquire
@@ -162,6 +166,13 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
     session_path = SessionManager(workspace).session_path(target)
     claim = try_acquire(session_path, kind=kind)
     if claim is not None:
+        if not session_path.exists():
+            claim.release()
+            print(
+                f"session {target} no longer exists (deleted after it was listed).",
+                file=err,
+            )
+            return None, False
         return claim, True
     holder = read_holder(session_path)
     who = holder.describe() if holder is not None else "another process"

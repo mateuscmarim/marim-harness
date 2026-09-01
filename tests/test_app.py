@@ -4244,6 +4244,35 @@ async def test_switch_session_refused_when_claimed_elsewhere(tmp_path: Path, mon
 
 
 @pytest.mark.anyio
+async def test_switch_session_refused_when_target_vanished(tmp_path: Path, monkeypatch):
+    """A target that vanished between being listed and being claimed raises
+    SessionLoadError (review-bot #466); the TUI must post a notice instead of
+    crashing, same as the SessionClaimed refusal above."""
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session import SessionManager
+    from marim_harness.session.store import SessionLoadError
+
+    app = _app(tmp_path)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    app.harness.session.store = store
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        current = app.harness.session.store.session_id
+
+        async def vanished(session_id) -> None:
+            raise SessionLoadError(f"session {session_id} no longer exists")
+
+        monkeypatch.setattr(app.session, "switch_to_session_id", vanished)
+        await app.switch_to_session_id("20260101-000000-ghostid")
+        await pilot.pause()
+        # No crash, no switch — the TUI stays on its session.
+        assert app.harness.session.store.session_id == current
+        # The notice was posted.
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "no longer exists" in notes
+
+
+@pytest.mark.anyio
 async def test_on_compact_noop_clears_indicator_without_message(tmp_path: Path):
     # A forced compaction that doesn't shrink calls _on_compact(before, before).
     # The "compacting…" notice must be cleared, and no misleading "compacted

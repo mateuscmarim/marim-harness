@@ -455,6 +455,30 @@ def test_switch_session_failed_load_releases_the_tentative_claim(tmp_path: Path)
     assert try_acquire(h.session.store.path, kind="probe") is None
 
 
+def test_switch_session_refuses_a_target_whose_file_vanished(tmp_path: Path):
+    """A target that was listed then deleted before the claim landed must be
+    refused, not silently driven as an empty session under the dead id
+    (review-bot #466). The claim happily creates a fresh sidecar for a missing
+    session file — target.exists() is checked explicitly rather than left to
+    SessionStore.load, which would return empty defaults for a missing file."""
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionLoadError
+
+    h = _switch_harness(tmp_path)
+    outgoing_id = h.session.store.session_id
+    outgoing_path = h.session.store.path
+    outgoing_claim = try_acquire(outgoing_path, kind="tui")
+    h.adopt_claim(outgoing_claim, kind="tui")
+
+    with pytest.raises(SessionLoadError):
+        h.switch_session("20260101-000000-ghostid")  # never created
+
+    # The outgoing claim is untouched, and we're still on the outgoing session.
+    assert h._claim is outgoing_claim
+    assert h.session.store.session_id == outgoing_id
+    assert try_acquire(outgoing_path, kind="probe") is None  # still held by the harness
+
+
 def test_switch_session_failing_after_the_commit_completes_and_claims_the_target(
     tmp_path: Path,
 ) -> None:

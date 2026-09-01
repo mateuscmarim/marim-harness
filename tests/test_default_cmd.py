@@ -244,6 +244,19 @@ def test_claim_target_refuses_owned_session(tmp_path):
     assert "http://127.0.0.1:8643" in err.getvalue()
 
 
+def test_claim_target_refuses_vanished_session(tmp_path):
+    """A target resolved by latest() but deleted before the claim lands must be
+    refused, not silently claimed and driven as an empty session (review-bot #466)."""
+    import io
+
+    from marim_harness.interfaces.cli.default_cmd import _claim_target
+
+    err = io.StringIO()
+    claim, ok = _claim_target(tmp_path, "20260101-000000-aaaaaa", kind="headless", err=err)
+    assert ok is False and claim is None
+    assert "no longer exists" in err.getvalue()
+
+
 def test_run_default_refuses_before_building_a_claimed_session(tmp_path, monkeypatch):
     """The ordering proof: with --resume, refusal happens before build_harness
     is even called. Mirrors _stub_launch_paths (tests/test_default_cmd.py:69)

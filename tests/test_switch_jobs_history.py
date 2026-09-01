@@ -50,6 +50,11 @@ async def test_switch_roundtrip_keeps_incoming_jobs_history(tmp_path: Path):
 
     store_b = manager.create("B")
     b_id = store_b.session_id
+    # switch_session now refuses a target with no file on disk (review-bot #466:
+    # an absent file is indistinguishable from one deleted after being listed),
+    # so B needs to exist before the switch onto it below.
+    store_b.path.parent.mkdir(parents=True, exist_ok=True)
+    store_b.path.write_text("{}")
 
     # A → B → A round-trip.
     harness.switch_session(b_id)

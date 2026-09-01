@@ -658,16 +658,21 @@ class HarnessApp(App):
         would be switched away from — and refused when another process owns the
         target: claims follow the active view, so driving a session means
         claiming it, and a claimed session is off-limits until its holder
-        releases it."""
+        releases it. Also refused (posted, not raised) when the target's store
+        won't load, including the file having vanished between being listed in
+        the picker and being claimed here."""
         if await self._refuse_if_session_busy("switch sessions"):
             return
         from ...session.claim import SessionClaimed
+        from ...session.store import SessionLoadError
 
         try:
             await self.session.switch_to_session_id(session_id)
         except SessionClaimed as exc:
             who = exc.holder.describe() if exc.holder is not None else "another process"
             await self.post_system(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
+        except SessionLoadError as exc:
+            await self.post_system(f"Can't switch sessions: {exc}")
 
     async def _refuse_if_session_busy(self, what: str) -> bool:
         """True (with a notice posted) when ``what`` must not run right now.
