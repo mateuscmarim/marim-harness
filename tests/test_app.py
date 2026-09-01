@@ -2519,10 +2519,103 @@ async def test_session_picker_delete_message_removes_session(tmp_path: Path):
         await pilot.pause()
         from marim_harness.interfaces.tui.session_picker import SessionPickerModal
 
-        app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(doomed_id))
+        await app.on_session_picker_modal_deleted(SessionPickerModal.Deleted(doomed_id))
         await pilot.pause()
         remaining_ids = {info.id for info in app.harness.session.sessions()}
         assert doomed_id not in remaining_ids
+
+
+@pytest.mark.anyio
+async def test_session_picker_delete_refused_when_claimed_elsewhere(tmp_path: Path):
+    """SessionManager.delete raises SessionClaimed for a live-claimed session;
+    the handler must report it, not crash — it used to be a bare `manager.delete`
+    call with nothing catching that exception.
+
+    It must ALSO undo the picker's optimistic row removal while the picker is
+    still on screen: the modal removes the row and posts Deleted before we get
+    here, so a refusal that only posted a system note left the user staring at a
+    vanished row for a session that still exists."""
+    import time
+
+    from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session.claim import try_acquire
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("claimed")
+    app.harness.session.persist()
+    claimed_id = next(info.id for info in app.harness.session.sessions() if info.name == "claimed")
+    session_path = app.harness.session.manager._path(claimed_id)  # type: ignore[union-attr]
+    # Move the harness's own claim off "claimed" so an outsider can take it —
+    # the app still holds a claim on whichever session it's actively driving.
+    app.harness.new_session("keeper")
+    app.harness.session.persist()
+
+    claim = try_acquire(session_path, kind="daemon", endpoint="http://127.0.0.1:8643")
+    assert claim is not None
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            infos = app.harness.session.sessions()
+            modal = SessionPickerModal(infos, active=app.harness.session.store.session_id)
+            app.push_screen(modal)
+            await pilot.pause()
+            # Drive the real confirm path: it removes the row and posts Deleted,
+            # which bubbles to the app's handler below.
+            modal._confirm_delete(claimed_id, time.monotonic())
+            await pilot.pause()
+
+            assert session_path.exists()
+            notes = " ".join(w.text for w in app.query(AssistantMessage))
+            assert "owned by" in notes
+            # The picker was corrected, not left showing the optimistic delete.
+            opts = modal.query_one("#session-options")
+            listed = {opts.get_option_at_index(i).id for i in range(opts.option_count)}
+            assert claimed_id in listed
+            status = str(modal.query_one("#session-status").render())
+            assert "Can't delete" in status
+            assert "daemon" in status
+    finally:
+        claim.release()
+
+
+@pytest.mark.anyio
+async def test_session_picker_delete_succeeds_confirms_in_modal(tmp_path: Path):
+    """On successful delete (no SessionClaimed exception), the handler must
+    confirm the deletion in the modal by setting status to "Deleted {name}."
+    Previously a successful delete left the picker showing "Deleting …" forever."""
+    from marim_harness.interfaces.tui.session_picker import SessionPickerModal
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app_with_manager(tmp_path)
+    app.harness.new_session("to_delete")
+    app.harness.session.persist()
+    delete_id = next(info.id for info in app.harness.session.sessions() if info.name == "to_delete")
+    # Move the harness's own claim off "to_delete" so it can be deleted freely.
+    app.harness.new_session("keeper")
+    app.harness.session.persist()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        infos = app.harness.session.sessions()
+        modal = SessionPickerModal(infos, active=app.harness.session.store.session_id)
+        app.push_screen(modal)
+        await pilot.pause()
+        # Drive the real confirm path: it removes the row and posts Deleted,
+        # which triggers the handler; capture the status after both steps.
+        modal._confirm_delete(delete_id, __import__("time").monotonic())
+        await pilot.pause()
+
+        # Row is gone and status shows "Deleted {name}." (the handler confirmed it).
+        opts = modal.query_one("#session-options")
+        listed = {opts.get_option_at_index(i).id for i in range(opts.option_count)}
+        assert delete_id not in listed
+        status = str(modal.query_one("#session-status").render())
+        assert status == "Deleted to_delete."  # success confirmed
+        # The key difference from the refusal path: no system message about
+        # the delete (only the refusal case posts a message).
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "Can't delete" not in notes  # not a refusal
 
 
 @pytest.mark.anyio
@@ -4120,6 +4213,63 @@ async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
         app._turn_worker = object()
         await app.switch_to_session_id("alpha")
         assert called is False
+
+
+@pytest.mark.anyio
+async def test_switch_session_refused_when_claimed_elsewhere(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session import SessionManager
+    from marim_harness.session.claim import Holder, SessionClaimed
+
+    app = _app(tmp_path)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    app.harness.session.store = store
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        current = app.harness.session.store.session_id
+
+        async def refusing(session_id) -> None:
+            raise SessionClaimed(
+                session_id, Holder(pid=999, kind="daemon", endpoint="http://127.0.0.1:8643")
+            )
+
+        monkeypatch.setattr(app.session, "switch_to_session_id", refusing)
+        await app.switch_to_session_id("20260101-000000-abc123")
+        await pilot.pause()
+        # No crash, no switch — the TUI stays on its session.
+        assert app.harness.session.store.session_id == current
+        # The notice was posted.
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "owned by" in notes
+
+
+@pytest.mark.anyio
+async def test_switch_session_refused_when_target_vanished(tmp_path: Path, monkeypatch):
+    """A target that vanished between being listed and being claimed raises
+    SessionLoadError (review-bot #466); the TUI must post a notice instead of
+    crashing, same as the SessionClaimed refusal above."""
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from marim_harness.session import SessionManager
+    from marim_harness.session.store import SessionLoadError
+
+    app = _app(tmp_path)
+    store = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data").create()
+    app.harness.session.store = store
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        current = app.harness.session.store.session_id
+
+        async def vanished(session_id) -> None:
+            raise SessionLoadError(f"session {session_id} no longer exists")
+
+        monkeypatch.setattr(app.session, "switch_to_session_id", vanished)
+        await app.switch_to_session_id("20260101-000000-ghostid")
+        await pilot.pause()
+        # No crash, no switch — the TUI stays on its session.
+        assert app.harness.session.store.session_id == current
+        # The notice was posted.
+        notes = " ".join(w.text for w in app.query(AssistantMessage))
+        assert "no longer exists" in notes
 
 
 @pytest.mark.anyio

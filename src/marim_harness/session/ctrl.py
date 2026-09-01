@@ -35,7 +35,7 @@ from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
 from ..workspace.scratchpad import persist_elided
-from .store import SessionInfo, SessionManager, SessionStore
+from .store import SessionInfo, SessionLoadError, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -458,13 +458,24 @@ class SessionController:
         ``resume`` and ``switch_session`` so the load sequence can't drift between
         them. Returns the loaded message count.
 
-        ``store.load()`` runs FIRST, into locals, and is the only step that can
-        raise (a corrupt/version-skewed file is a designed ``SessionLoadError``
-        path). ``self.store`` and the in-memory history/usage are mutated only
-        AFTER it succeeds — so a failed switch leaves the controller wholly on the
-        previous session. Rebinding ``self.store`` before the load (the old bug)
-        left store=target but history=previous, and the next ``persist()`` wrote
-        the previous session's history over the target's file."""
+        ``store.load()`` runs FIRST, into locals, and can raise (a corrupt/
+        version-skewed file is a designed ``SessionLoadError`` path). But a
+        structurally-valid file can still carry a garbage-typed ``tasks``/``jobs``
+        field — ``store.load()`` hands those over as-is, with no deep validation —
+        and ``deps.tasks.load``/``deps.jobs.import_history`` can raise building
+        their in-memory objects from it (e.g. iterating a non-list). Both imports
+        therefore also run BEFORE the commit point, so ``self.store`` is rebound
+        only once every raising step has already succeeded: a failed switch
+        leaves the controller wholly on the previous session, and the outgoing
+        task/job state — cleared to import the candidate — is best-effort restored
+        on the way out. Rebinding ``self.store`` before the load (the old bug) left
+        store=target but history=previous, and the next ``persist()`` wrote the
+        previous session's history over the target's file; committing before the
+        tasks/jobs import (a later bug) had the same effect for a session whose
+        persisted tasks/jobs were unimportable. Everything from ``self.store =
+        store`` onward is plain, non-raising assignment (``_repoint_stats`` only
+        sets an attribute on the recorder; the rest are attribute/property
+        writes)."""
         history, usage, tasks, prev_duration, jobs = store.load()  # may raise
         # A session can outlive its /tmp scratchpad (reboot, systemd-tmpfiles
         # aging), leaving elided-pointer placeholders in the persisted history
@@ -489,6 +500,29 @@ class SessionController:
                 "(elided pointers masked, offload handles annotated)",
                 n_dangling,
             )
+        # Import the candidate's tasks/jobs BEFORE touching self.store: this is
+        # the last step that can still raise, so it must stay pre-commit (see
+        # the docstring). Snapshot the OUTGOING in-memory state first so a
+        # failure can restore it — tasks.load/jobs.import_history both replace
+        # the registry wholesale, so a raise partway through import_history
+        # would otherwise leave deps.tasks holding the candidate's (partially
+        # imported) items while the controller stayed on the outgoing session.
+        outgoing_tasks = self.deps.tasks.to_payload()
+        outgoing_jobs = self.deps.jobs.export_settled()
+        try:
+            self.deps.tasks.load(tasks)
+            self.deps.jobs.import_history(jobs)
+        except Exception as exc:
+            # Best-effort restore: tasks/jobs are transient per-process state
+            # (not what persist() writes — that reads deps.tasks/deps.jobs
+            # live), so a restore failure here would not itself corrupt the
+            # session file, but keep the controller's in-memory state coherent
+            # with the session it's still actually driving.
+            self.deps.tasks.load(outgoing_tasks)
+            self.deps.jobs.import_history(outgoing_jobs)
+            raise SessionLoadError(
+                f"session {store.session_id} has unimportable persisted state: {exc}"
+            ) from exc
         self.store = store
         self._repoint_stats(store.session_id)
         self.history = history
@@ -498,8 +532,6 @@ class SessionController:
         # so drop any carried-over value and let the estimate gate until the first
         # run of this session reports usage.
         self.last_input_tokens = None
-        self.deps.tasks.load(tasks)
-        self.deps.jobs.import_history(jobs)
         self.duration_seconds = prev_duration or 0.0
         self._segment_start = time.monotonic()
         self.breaker.reset()

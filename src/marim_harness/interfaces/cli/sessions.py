@@ -86,12 +86,19 @@ def _cmd_list(args, *, out, err) -> int:
 
 
 def _cmd_delete(args, *, out, err) -> int:
+    from ...session.claim import SessionClaimed
+
     manager = _manager(args.workspace)
     ids = {info.id for info in manager.list()}
     if args.id not in ids:
         print(f"No session with id {args.id!r} in this workspace.", file=err)
         return 1
-    manager.delete(args.id)
+    try:
+        manager.delete(args.id)
+    except SessionClaimed as exc:
+        who = exc.holder.describe() if exc.holder is not None else "another process"
+        print(f"session {args.id} is owned by {who}; close it there first.", file=err)
+        return 2
     print(f"Deleted session {args.id}.", file=out)
     return 0
 

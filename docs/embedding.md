@@ -102,6 +102,43 @@ retries; dict: one corrective round), and exhaustion surfaces as the
 before trusting `structured_output`. Every `run_turn` returns a
 `TurnOutcome`; plain harnesses get the text in `.result`.
 
+### Session claims
+
+A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))
+carries a non-blocking ownership claim on the session it drives — but the
+claim attaches the first time the harness *switches*: `switch_session`/
+`new_session` claim the target before touching the outgoing session and
+release the one being left, so after any switch the active session is always
+claimed. A freshly built harness does NOT auto-claim its starting session —
+the CLI claims before construction and hands the result to `adopt_claim()`,
+while `serve` keeps daemon ownership on the `SessionHost` (released through
+its `aclose()` funnel) and never passes it to the harness at all; the
+builder has no equivalent, because a build-time auto-claim would collide
+with those already-held claims (`flock` locks on separate file descriptors
+deny each other even within one process).
+Embedders that persist sessions should take starting ownership explicitly:
+
+```python
+from marim_harness.session.claim import try_acquire
+
+manager = harness.session.manager
+store = harness.session.store
+if manager is not None and store is not None:
+    claim = try_acquire(manager.session_path(store.session_id), kind="sdk")
+    if claim is None:
+        ...  # another live process owns it — refuse to drive it
+    harness.adopt_claim(claim, kind="sdk")
+```
+
+Switching onto a session another live process (a TUI, a headless run, the
+`serve` daemon) already owns raises `marim_harness.session.claim.SessionClaimed`
+instead of switching — the outgoing session's claim is untouched.
+`harness.aclose()` releases the held claim in a `finally`, so a discarded
+harness never leaks ownership, even under cancellation. A session an
+embedder never claimed is not protected against: another process can claim
+it, and a deletion elsewhere can remove the file the harness keeps
+persisting to — the same degrade stance `session/claim.py` documents.
+
 ## The SDK docs
 
 | Page | Covers |

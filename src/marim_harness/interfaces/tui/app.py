@@ -655,10 +655,24 @@ class HarnessApp(App):
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off. Refused mid-turn
         for the same reason as /new — the running turn writes to the session it
-        would be switched away from."""
+        would be switched away from — and refused when another process owns the
+        target: claims follow the active view, so driving a session means
+        claiming it, and a claimed session is off-limits until its holder
+        releases it. Also refused (posted, not raised) when the target's store
+        won't load, including the file having vanished between being listed in
+        the picker and being claimed here."""
         if await self._refuse_if_session_busy("switch sessions"):
             return
-        await self.session.switch_to_session_id(session_id)
+        from ...session.claim import SessionClaimed
+        from ...session.store import SessionLoadError
+
+        try:
+            await self.session.switch_to_session_id(session_id)
+        except SessionClaimed as exc:
+            who = exc.holder.describe() if exc.holder is not None else "another process"
+            await self.post_system(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
+        except SessionLoadError as exc:
+            await self.post_system(f"Can't switch sessions: {exc}")
 
     async def _refuse_if_session_busy(self, what: str) -> bool:
         """True (with a notice posted) when ``what`` must not run right now.
@@ -749,13 +763,44 @@ class HarnessApp(App):
             return
         await self.switch_to_session_id(chosen)
 
-    def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
+    def _find_session_picker_modal(self) -> SessionPickerModal | None:
+        """Find the session picker on the screen stack if it is still mounted.
+
+        Found on the screen stack, not via self.query(): a pushed Screen is not
+        a DOM descendant of the App, so `query` returns nothing for it."""
+        for screen in self.screen_stack:
+            if isinstance(screen, SessionPickerModal):
+                return screen
+        return None
+
+    async def on_session_picker_modal_deleted(self, message: SessionPickerModal.Deleted) -> None:
         """The picker already removed the row optimistically; this performs the
         actual on-disk teardown via the same SessionManager.delete used by
-        `marim sessions delete` (interfaces/cli/sessions.py)."""
+        `marim sessions delete` (interfaces/cli/sessions.py). SessionManager.delete
+        refuses a session claimed by another live process — report that instead
+        of crashing, AND tell the still-open picker to undo its optimistic
+        removal, so the user isn't left looking at a vanished row for a session
+        that still exists. (Waiting for the picker's next open to re-list from
+        disk isn't enough: the picker is usually still on screen.) On success,
+        confirm the deletion in the picker. Either way, tolerate the picker
+        having already been dismissed."""
+        from ...session.claim import SessionClaimed
+
         manager = self.harness.session.manager
-        if manager is not None:
+        if manager is None:
+            return
+        try:
             manager.delete(message.session_id)
+        except SessionClaimed as exc:
+            who = exc.holder.describe() if exc.holder is not None else "another process"
+            picker = self._find_session_picker_modal()
+            if picker is not None:
+                picker.note_delete_failed(exc.session_id, f"Can't delete: owned by {who}")
+            await self.post_system(f"Can't delete {exc.session_id}: it is owned by {who}.")
+        else:
+            picker = self._find_session_picker_modal()
+            if picker is not None:
+                picker.note_deleted(message.session_id)
 
     # --- Callbacks the harness reaches the user through (see bind_ui) ---
 

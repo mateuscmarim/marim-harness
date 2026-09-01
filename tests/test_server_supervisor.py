@@ -90,10 +90,21 @@ def _registered_workspace(tmp_path):
     return record, supervisor
 
 
+def _seed_session(record, session_id: str = "s1") -> None:
+    """Create the on-disk session file for ``session_id`` — host_for's
+    post-claim existence check (see SessionSupervisor._claim_session) now
+    refuses to build a host for a session it never saw on disk, the same
+    contract create_session's immediate empty save establishes in http.py.
+    Tests that drive host_for directly (bypassing that route) must seed the
+    file themselves."""
+    SessionManager(Path(record.path)).store(session_id).save([], RunUsage())
+
+
 async def test_host_for_creates_once_and_reuses(tmp_path):
     created: list = []
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     a, b = await asyncio.gather(sup.host_for(record, "s1"), sup.host_for(record, "s1"))
     assert a is b
     assert len(created) == 1  # per-key lock: no double build under concurrency
@@ -107,6 +118,7 @@ async def test_set_mode_reaches_factory(tmp_path):
     created: list = []
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     sup.set_mode(record, "s1", Mode.plan)
     await sup.host_for(record, "s1")
     assert created[0][2] is Mode.plan
@@ -145,6 +157,7 @@ async def test_set_mode_persists_when_idle(tmp_path):
 
 async def test_set_mode_raises_when_host_busy(tmp_path):
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     sup = SessionSupervisor(_factory([]))
     host = await sup.host_for(record, "s1")
     # host.busy reads status, which is "running" whenever _turn_task is not
@@ -165,6 +178,7 @@ async def test_set_mode_raises_when_host_busy(tmp_path):
 async def test_bus_survives_eviction(tmp_path):
     sup = SessionSupervisor(_factory([]), idle_ttl=0.0)
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     host = await sup.host_for(record, "s1")
     bus = sup.bus_for("ws", "s1")
     bus.publish("marker", {})
@@ -179,6 +193,7 @@ async def test_bus_survives_eviction(tmp_path):
 async def test_busy_or_subscribed_hosts_survive_eviction(tmp_path):
     sup = SessionSupervisor(_factory([]), idle_ttl=0.0)
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     await sup.host_for(record, "s1")
     sub = sup.bus_for("ws", "s1").attach()  # live subscriber blocks eviction
     await asyncio.sleep(0.05)
@@ -191,6 +206,7 @@ async def test_busy_or_subscribed_hosts_survive_eviction(tmp_path):
 async def test_close_host(tmp_path):
     sup = SessionSupervisor(_factory([]))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     await sup.host_for(record, "s1")
     assert await sup.close_host("ws", "s1")
     assert sup.peek("ws", "s1") is None
@@ -205,6 +221,7 @@ async def test_evicted_host_rejects_late_submit_instead_of_hanging(tmp_path):
 
     sup = SessionSupervisor(_factory([]), idle_ttl=0.0)
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     host = await sup.host_for(record, "s1")
     await asyncio.sleep(0.05)
     await sup.evict_idle()
@@ -220,6 +237,7 @@ async def test_forget_reclaims_bus_lock_and_mode(tmp_path):
     the lock and any stored mode."""
     sup = SessionSupervisor(_factory([]))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     sup.set_mode(record, "s1", Mode.plan)
     original_bus = sup.bus_for("ws", "s1")
     await sup.host_for(record, "s1")
@@ -253,6 +271,7 @@ async def test_host_for_waits_for_concurrent_close_before_rebuilding(tmp_path):
     timestamps: dict = {}
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     host = await sup.host_for(record, "s1")
 
     original_aclose = host.aclose
@@ -345,6 +364,7 @@ async def test_in_memory_mode_wins_over_persisted(tmp_path):
 async def test_busy_sessions_empty_for_idle_hosts(tmp_path):
     sup = SessionSupervisor(_factory([]))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
     await sup.host_for(record, "s1")
     assert sup.busy_sessions("ws") == []  # a live but idle host is not busy
     assert sup.busy_sessions("other") == []
@@ -355,6 +375,8 @@ async def test_close_workspace_reclaims_all_state(tmp_path):
     created: list = []
     sup = SessionSupervisor(_factory(created))
     record = _record(tmp_path)
+    _seed_session(record, "s1")
+    _seed_session(record, "s2")
     host = await sup.host_for(record, "s1")
     sup.bus_for("ws", "s1")
     sup.set_mode(record, "s2", Mode.auto)  # mode-only entry, no live host
@@ -365,9 +387,15 @@ async def test_close_workspace_reclaims_all_state(tmp_path):
     assert sup.peek("ws", "s1") is None
     assert sup.bus_peek("ws", "s1") is None  # forgotten, not merely evicted
     assert host.harness is not None  # closed cleanly, not corrupted
-    # A rebuilt host after the wipe sees no cached mode for s2.
+    # The rebuild proves what close_workspace actually reclaims: the
+    # IN-MEMORY state (host, bus, mode dict — asserted above). s2's file does
+    # carry a persisted mode, because set_mode on an unloaded session writes
+    # it to the store (supervisor.py:117-119), and a cache-cold host_for
+    # deliberately recovers the file mode so a daemon restart keeps it
+    # (supervisor.py:157-162). Before this test seeded real files, that
+    # recovery found nothing and the old `("s2", None)` asserted an accident.
     await sup.host_for(record, "s2")
-    assert created[-1][1:] == ("s2", None)
+    assert created[-1][1:] == ("s2", Mode.auto)
     assert sup.bus_peek("other", "s9") is not None
     await sup.aclose()
 
@@ -378,6 +406,7 @@ async def test_host_for_claims_the_session(tmp_path):
     from marim_harness.session.store import SessionManager
 
     record, supervisor = _registered_workspace(tmp_path)
+    _seed_session(record, "s1")
     host = await supervisor.host_for(record, "s1")
     session_path = SessionManager(Path(record.path)).session_path("s1")
     try:
@@ -392,6 +421,7 @@ async def test_close_host_releases_the_claim(tmp_path):
     from marim_harness.session.store import SessionManager
 
     record, supervisor = _registered_workspace(tmp_path)
+    _seed_session(record, "s1")
     await supervisor.host_for(record, "s1")
     await supervisor.close_host(record.id, "s1")
     session_path = SessionManager(Path(record.path)).session_path("s1")
@@ -405,6 +435,7 @@ async def test_idle_eviction_releases_the_claim(tmp_path):
     from marim_harness.session.store import SessionManager
 
     record, supervisor = _registered_workspace(tmp_path)
+    _seed_session(record, "s1")
     supervisor.idle_ttl = 0.0
     await supervisor.host_for(record, "s1")
     await supervisor.evict_idle()
@@ -442,6 +473,7 @@ async def test_a_refused_claim_leaves_no_host_behind(tmp_path):
     from marim_harness.session.store import SessionManager
 
     record, supervisor = _registered_workspace(tmp_path)
+    _seed_session(record, "s1")
     session_path = SessionManager(Path(record.path)).session_path("s1")
     session_path.parent.mkdir(parents=True, exist_ok=True)
     outsider = try_acquire(session_path, kind="tui")
@@ -454,6 +486,31 @@ async def test_a_refused_claim_leaves_no_host_behind(tmp_path):
     await supervisor.close_host(record.id, "s1")
 
 
+async def test_host_for_refuses_a_session_that_vanished_before_the_claim(tmp_path):
+    """The delete/claim inode race (finding #3529): a session listed as
+    existing, then deleted, then claimed here — try_acquire happily grants a
+    claim on the fresh sidecar inode a delete's unlink leaves behind (the
+    delete's own flock lives on the orphaned one), but the session file itself
+    is gone. host_for must refuse rather than let the factory build (and
+    persist) an empty session under the vanished id, resurrecting it. The
+    claim must be released too: an outsider's try_acquire has to succeed right
+    after, proving nothing is left holding a session that doesn't exist."""
+    from marim_harness.session.claim import try_acquire
+    from marim_harness.session.store import SessionLoadError, SessionManager
+
+    record, supervisor = _registered_workspace(tmp_path)
+    # No _seed_session: the session file never exists on disk, standing in
+    # for one that was deleted between being listed and being claimed here.
+    with pytest.raises(SessionLoadError):
+        await supervisor.host_for(record, "s1")
+    assert supervisor.peek(record.id, "s1") is None
+
+    session_path = SessionManager(Path(record.path)).session_path("s1")
+    outsider = try_acquire(session_path, kind="tui")
+    assert outsider is not None
+    outsider.release()
+
+
 async def test_a_failing_host_construction_releases_the_claim(tmp_path, monkeypatch):
     """Both the factory and SessionHost.__init__ sit under the release guard:
     nothing was registered, so the session must be free for the next attempt
@@ -463,6 +520,7 @@ async def test_a_failing_host_construction_releases_the_claim(tmp_path, monkeypa
     from marim_harness.session.store import SessionManager
 
     record, supervisor = _registered_workspace(tmp_path)
+    _seed_session(record, "s1")
 
     def exploding_host(*args, **kwargs):
         raise RuntimeError("host wiring failed")

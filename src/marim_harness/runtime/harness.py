@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from pydantic_ai.models import Model
 
     from ..config.model import ModelSource, MultiModelSource
+    from ..session.claim import SessionClaim
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
     from .outcome import TurnOutcome
@@ -565,6 +566,13 @@ class Harness:
         self.project_surface: ProjectSurface | None = None
         self.trust_prompt: ProjectSurface | None = None
         self.provider = provider
+        # Ownership of the session this harness actively drives (see
+        # session/claim.py). Adopted from the CLI launch path; swapped by
+        # switch_session/new_session; released through release_claim(), which
+        # every teardown path calls. None means unclaimed (fresh launch before
+        # adoption, or the accepted degrade stance).
+        self._claim: SessionClaim | None = None
+        self._claim_kind = "tui"
         self.model_label = cfg.model_label
         # The model object used for each turn (swappable at runtime), the source
         # that builds new ones, and the id of the active model.
@@ -729,8 +737,87 @@ class Harness:
         self.checkpoints.clear()
         self._clear_job_context()
 
+    def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
+        """Take ownership of an externally acquired claim (the CLI launch path
+        claims before the Harness exists). This is an ADOPTION of a claim
+        already held elsewhere, not an acquire-then-swap — there is no target
+        to fail to reach, so unlike ``switch_session``'s install-before-release
+        ordering, the order we release the old claim in doesn't matter here.
+        Adopting a second claim releases the first — ownership is
+        one-session-at-a-time."""
+        if self._claim is not None and self._claim is not claim:
+            self._claim.release()
+        self._claim = claim
+        self._claim_kind = kind
+
+    def release_claim(self) -> None:
+        """Give up the current claim, if any. Idempotent: teardown paths call
+        this unconditionally, and a session switch may have already swapped the
+        claim this object was created for."""
+        claim, self._claim = self._claim, None
+        if claim is not None:
+            claim.release()
+
+    def _owns_session(self, session_id: str) -> bool:
+        """Whether the claim we hold is *this session's* claim.
+
+        Answered from the held claim's own path, never from the store we happen
+        to be sitting on. Inferring ownership from ``store.session_id`` would
+        rest on the convention "the adopted claim always belongs to the current
+        store"; the moment that drifts, the guard reports True for a session
+        whose claim somebody else holds and ``switch_session`` skips the
+        ``try_acquire`` that is the only real ownership check — masking a
+        refusal instead of raising it.
+        """
+        from ..session.claim import claim_path
+
+        manager = self.session.manager
+        if self._claim is None or manager is None:
+            return False
+        return self._claim.path == claim_path(manager.session_path(session_id))
+
+    def _is_active(self, session_id: str) -> bool:
+        """Whether the controller is currently driving ``session_id``. None-safe:
+        a manager-less controller can be storeless."""
+        store = self.session.store
+        return store is not None and store.session_id == session_id
+
+    def _install_claim(self, claim: SessionClaim | None) -> None:
+        """Make ``claim`` the one we hold and release the one it replaces —
+        install first, release after, so there is never a moment where the
+        session we drive is disowned."""
+        old, self._claim = self._claim, claim
+        if old is not None:
+            old.release()
+
+    def _claim_active_session(self) -> None:
+        """Move ownership onto the session now in view: claim the one we just
+        landed on, then release the one we left.
+
+        Used by ``new_session``, where the target id only exists after the
+        manager minted it. A brand-new unique id cannot realistically be held,
+        so on the impossible case ``fresh`` is None and we proceed unclaimed
+        (accepted degrade stance, same as a failed claim-file open).
+        """
+        from ..session.claim import try_acquire
+
+        manager, store = self.session.manager, self.session.store
+        if manager is None or store is None:
+            # Without a manager SessionController.new_session degrades to a
+            # reset, i.e. we are still on the SAME session whose claim we hold.
+            # Re-acquiring would be denied by our own lock (flock is per
+            # open-file-description, so a second fd in this very process is
+            # refused exactly like another process's) and the swap below would
+            # then release ownership of a session we are still driving.
+            return
+        fresh = try_acquire(manager.session_path(store.session_id), kind=self._claim_kind)
+        self._install_claim(fresh)
+
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
+        # Ownership follows the view: claim the fresh session, release the one
+        # we're leaving.
+        self._claim_active_session()
         self.checkpoints.reload()
         self._clear_job_context()
         # Apply the model inherited by SessionManager.create() when it
@@ -742,6 +829,82 @@ class Harness:
         self._apply_saved_thinking()
 
     def switch_session(self, session_id: str) -> int:
+        """Load another session, moving the ownership claim with the view.
+
+        Ownership is claimed BEFORE any outgoing-state mutation: a refused
+        switch is a total no-op, and a failed load releases the tentative
+        claim so we never hold a session we never reached. The outgoing claim
+        is released only after the incoming session loaded and was claimed.
+
+        The contract, precisely:
+
+        * **Refused or failed before the commit** — the target is claimed by
+          someone else (``SessionClaimed``), its store won't load
+          (``SessionLoadError``), or its file vanished between being listed
+          and being claimed (also ``SessionLoadError`` — a missing file loads
+          as an empty session, so this is checked explicitly rather than left
+          to happen to load empty): a total no-op. We stay on, and keep
+          owning, the session we were already driving, and the exception
+          propagates.
+        * **Once committed** (``SessionController`` rebound its store) the
+          switch COMPLETES: this returns the message count and the claim is on
+          the target. The per-session settings restores that follow the commit
+          (checkpoints, model, advisor, thinking) are best-effort — a failure
+          there is logged and swallowed by ``_restore_session_settings``, never
+          re-raised as a switch failure. Reporting a committed switch as failed
+          used to leave the caller (the TUI) rendering the OUTGOING conversation
+          while the harness — and the claim — drove the target.
+
+        The ``except`` below therefore covers only the pre-commit failures, but
+        still asks where we actually landed rather than assuming we stayed: it
+        is the defensive net that keeps the claim on the session we drive even
+        if some future step reintroduces a post-commit raise.
+        """
+        from ..session.claim import SessionClaimed, read_holder, try_acquire
+        from ..session.store import SessionLoadError
+
+        manager = self.session.manager
+        if manager is None or self._owns_session(session_id):
+            # Nothing to swap. Either there is no manager (SessionController's
+            # switch is itself a no-op, and there is no path to claim), or the
+            # target IS the session we already own — the picker pre-highlights
+            # the active row, so re-selecting it is one keystroke away, and
+            # re-acquiring would be denied by our own lock (see the note in
+            # _claim_active_session), making us report ourselves as the holder.
+            return self._switch_session_body(session_id)
+        target = manager.session_path(session_id)
+        tentative = try_acquire(target, kind=self._claim_kind)
+        if tentative is None:
+            raise SessionClaimed(session_id, read_holder(target))
+        if not target.exists():
+            # The claim just created an empty sidecar for a file that isn't
+            # there — the id was listed, then deleted, before we claimed it.
+            # SessionStore.load would happily return an empty session under
+            # this id; refuse instead of quietly driving a ghost.
+            tentative.release()
+            raise SessionLoadError(f"session {session_id} no longer exists")
+        try:
+            count = self._switch_session_body(session_id)
+        except Exception:
+            # A failure here is NOT necessarily a failure to switch. The body
+            # commits the switch first (SessionController rebinds its store) and
+            # only then restores per-session settings — and those restores are
+            # now swallowed by _restore_session_settings, so in practice only
+            # pre-commit failures reach here. This stays as the defensive net:
+            # releasing the tentative claim unconditionally would leave a
+            # session we DID land on unclaimed while we kept holding the claim
+            # on the session we left, so another process could claim the target
+            # and two owners would drive it. Decide by where the controller
+            # actually landed, not by the fact that something raised.
+            if self._is_active(session_id):
+                self._install_claim(tentative)
+            else:
+                tentative.release()
+            raise
+        self._install_claim(tentative)
+        return count
+
+    def _switch_session_body(self, session_id: str) -> int:
         # Clear the OUTGOING session's job context BEFORE loading the incoming one.
         # The clear belongs to the session we're leaving: _clear_job_context wipes
         # jobs.history (plus the digest / `!` passthrough buffers), which are the
@@ -772,11 +935,41 @@ class Harness:
             # failed switch dropping them is harmless.
             self.deps.jobs.import_history(saved_jobs)
             raise
-        self.checkpoints.reload()
-        self._apply_saved_model()
-        self._apply_saved_advisor()
-        self._apply_saved_thinking()
+        # COMMITTED from here on — see switch_session's contract. Everything
+        # below is best-effort by construction.
+        self._restore_session_settings()
         return count
+
+    def _restore_session_settings(self) -> None:
+        """Re-apply the per-session settings a freshly loaded store carries.
+
+        Called only AFTER the conversation switch has committed, so every step
+        here is best-effort: the switch factually happened, and a settings
+        restore blowing up must not be re-raised as a switch failure (the
+        caller would then render the outgoing conversation while the harness —
+        and the ownership claim — drive the target). ``_apply_saved_model`` is
+        the realistic offender: ``model_source.build()`` raises for a saved
+        model whose provider can no longer be constructed (key gone, provider
+        removed). Each restore is guarded on its own so one failure doesn't
+        skip the three that would have succeeded; the session then simply runs
+        on whatever settings survived, which is a graceful degrade, not a
+        broken switch.
+        """
+        for restore in (
+            self.checkpoints.reload,
+            self._apply_saved_model,
+            self._apply_saved_advisor,
+            self._apply_saved_thinking,
+        ):
+            try:
+                restore()
+            except Exception:
+                logger.warning(
+                    "session settings restore %r failed after the switch committed; "
+                    "continuing on the session we landed on",
+                    getattr(restore, "__name__", restore),
+                    exc_info=True,
+                )
 
     async def rename_session(self, name: str | None = None) -> str | None:
         return await self.session.rename(name)
@@ -1007,10 +1200,22 @@ class Harness:
         return await self.mcp.connect()
 
     async def aclose(self) -> None:
-        await self.mcp.aclose()
-        lsp = getattr(self, "lsp", None)
-        if lsp is not None:
-            await lsp.aclose()
+        try:
+            await self.mcp.aclose()
+            lsp = getattr(self, "lsp", None)
+            if lsp is not None:
+                await lsp.aclose()
+        finally:
+            # A discarded Harness must not leak the session it was driving.
+            # release_claim() is idempotent and a no-op for the daemon (its
+            # harness never holds a claim — SessionHost owns that separately).
+            #
+            # In a `finally` because teardown is a prime place to be cancelled:
+            # CancelledError is a BaseException, so it sails past the awaits
+            # above and — left as a trailing statement — would skip the release
+            # entirely, stranding the claim until the process exits and leaving
+            # every other process refused on a session nobody is driving.
+            self.release_claim()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace.root)

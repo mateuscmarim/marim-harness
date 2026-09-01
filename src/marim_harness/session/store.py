@@ -538,6 +538,33 @@ class SessionManager:
         snapshot commits — untracked files included — in ``.git`` indefinitely).
         Each step is independent and best-effort, so a missing artifact never
         blocks removing the rest."""
+        from .claim import SessionClaimed, read_holder, try_acquire
+
+        # A claimed session is being actively driven elsewhere; deleting it
+        # would erase live history out from under its holder. try_acquire is
+        # the authoritative check (a live flock): release() leaves stale
+        # identity content in the sidecar, so read_holder alone proves
+        # nothing — it only supplies the holder identity for the message.
+        # A held-but-unreadable sidecar degrades to "another process".
+        # The probe's own brief identity write is harmless: this method
+        # unlinks the sidecar below.
+        #
+        # The probe is HELD across the whole teardown (released in the finally
+        # below), not released right after the check. Releasing early left a
+        # resurrection window: another process could acquire the claim between
+        # the check and the sidecar unlink and start driving a session whose
+        # files we were in the middle of deleting. Holding it means a racer's
+        # try_acquire is refused for the entire delete. The flock outliving the
+        # sidecar's own unlink is fine — it lives on the open inode, and the
+        # only thing an unlinked-then-recreated file costs us is that a racer
+        # arriving AFTER the unlink locks a fresh inode; by then the session
+        # file is already gone, so it finds nothing to drive.
+        session_path = self._path(session_id)
+        probe = try_acquire(session_path, kind="delete")
+        if probe is None:
+            holder = read_holder(session_path)
+            raise SessionClaimed(session_id, holder)
+
         import shutil
 
         # Imported here, not at module top: transcripts imports from workspace,
@@ -549,21 +576,35 @@ class SessionManager:
         from .claim import claim_path
         from .transcripts import TranscriptStore
 
-        self._path(session_id).unlink(missing_ok=True)
-        with_suffix = self.dir / f"{session_id}.checkpoints.json"
-        with_suffix.unlink(missing_ok=True)
-        # The single-owner claim sidecar (see session/claim.py). Unlinking it
-        # cannot break a live holder: flock lives on the open inode, so a
-        # holder keeps its lock and the next acquirer simply creates the file
-        # anew — and nobody should own a session that is being deleted anyway.
-        claim_path(self._path(session_id)).unlink(missing_ok=True)
-        TranscriptStore(self._path(session_id), session_id).delete_all()
-        shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
-        delete_checkpoint_refs(self.workspace_root, session_id)
-        # The scratchpad's per-session dir — the PARENT of the `scratchpad`
-        # leaf — so any future sidecars in the same dir go with it. Like the
-        # rest: best-effort, and /tmp semantics reclaim it on reboot anyway.
-        shutil.rmtree(
-            scratchpad_root(self.workspace_root, session_id).parent,
-            ignore_errors=True,
-        )
+        try:
+            self._path(session_id).unlink(missing_ok=True)
+            with_suffix = self.dir / f"{session_id}.checkpoints.json"
+            with_suffix.unlink(missing_ok=True)
+            # The single-owner claim sidecar (see session/claim.py). Unlinking it
+            # cannot break a live holder: flock lives on the open inode, so a
+            # holder keeps its lock and the next acquirer simply creates the file
+            # anew — and nobody should own a session that is being deleted anyway.
+            # The file-then-sidecar order matters: the session file goes first so
+            # a racing reader finds the session gone before the claim does. But
+            # that ordering only protects a reader that checks BEFORE claiming —
+            # it does NOT make a claim taken AFTER this unlink prove the session
+            # still exists: unlinking the sidecar hands the NEXT acquirer a
+            # FRESH inode (this delete's own flock lives on the orphaned one), so
+            # a claim it grants says nothing about whether the session file
+            # (already gone by then) is still there. Every claim site must
+            # therefore existence-check the session file itself right after
+            # acquiring, not rely on the claim alone: default_cmd._claim_target,
+            # Harness.switch_session, and SessionSupervisor._claim_session all do.
+            claim_path(self._path(session_id)).unlink(missing_ok=True)
+            TranscriptStore(self._path(session_id), session_id).delete_all()
+            shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
+            delete_checkpoint_refs(self.workspace_root, session_id)
+            # The scratchpad's per-session dir — the PARENT of the `scratchpad`
+            # leaf — so any future sidecars in the same dir go with it. Like the
+            # rest: best-effort, and /tmp semantics reclaim it on reboot anyway.
+            shutil.rmtree(
+                scratchpad_root(self.workspace_root, session_id).parent,
+                ignore_errors=True,
+            )
+        finally:
+            probe.release()

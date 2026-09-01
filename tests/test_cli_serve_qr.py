@@ -13,6 +13,12 @@ def stub_uvicorn(monkeypatch):
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
+    # These tests care about the --qr banner output, not the bind: force an
+    # ephemeral port so they don't collide with a live daemon squatting the
+    # requested port (e.g. the default 8642 on a dev machine).
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
 
 
 class _Tty(io.StringIO):

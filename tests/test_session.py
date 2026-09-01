@@ -423,6 +423,25 @@ def test_delete_removes_session(tmp_path: Path):
     assert mgr.list() == []
 
 
+def test_delete_refuses_a_claimed_session(tmp_path: Path):
+    from marim_harness.session.claim import SessionClaimed, try_acquire
+
+    mgr = _manager(tmp_path)
+    store = mgr.create("doomed")
+    store.save(_history(), RunUsage())
+    outsider = try_acquire(store.path, kind="daemon", endpoint="http://127.0.0.1:8642")
+    assert outsider is not None
+    try:
+        with pytest.raises(SessionClaimed) as excinfo:
+            mgr.delete(store.session_id)
+        assert excinfo.value.session_id == store.session_id
+        assert store.path.exists()  # nothing removed while claimed
+    finally:
+        outsider.release()
+    mgr.delete(store.session_id)  # released → deletes fine
+    assert not store.path.exists()
+
+
 def test_clear_removes_file(tmp_path: Path):
     mgr = _manager(tmp_path)
     store = mgr.create()
@@ -579,6 +598,51 @@ def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
     assert target.path.read_text() == corrupt_bytes  # target file untouched
     reloaded_source, _, _, _, _ = mgr.store(source.session_id).load()
     assert len(reloaded_source) == len(source_history)
+
+
+def test_switch_to_session_with_unimportable_state_does_not_commit(tmp_path):
+    """Regression (review-bot #467): a target whose JSON is structurally valid
+    but carries a garbage-typed ``tasks`` field made ``deps.tasks.load`` raise a
+    raw TypeError — and it ran AFTER ``self.store = store``, so the controller
+    had already committed to the target while the exception propagated past the
+    TUI's typed catches (crash, claim moved, view stale). Both deps imports now
+    run BEFORE the commit and surface as SessionLoadError: a failed switch
+    leaves the controller — and its in-memory tasks/jobs — wholly on the
+    source."""
+    import json
+
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+
+    source = mgr.create("source")
+    source_history = _history()
+    source.save(source_history, RunUsage(input_tokens=3, output_tokens=2))
+
+    # Target B: a fully valid persisted file with only the tasks field poisoned
+    # (load() hands it over unvalidated; iterating the int raises TypeError).
+    target = mgr.create("target")
+    target.save(_history(), RunUsage(input_tokens=1, output_tokens=1))
+    data = json.loads(target.path.read_text())
+    data["tasks"] = 5
+    target.path.write_text(json.dumps(data))
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(source, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl.resume()
+    outgoing_tasks = ctrl.deps.tasks.to_payload()
+    outgoing_jobs = ctrl.deps.jobs.export_settled()
+
+    with pytest.raises(SessionLoadError) as excinfo:
+        ctrl.switch_session(target.session_id)
+    assert "unimportable persisted state" in str(excinfo.value)
+
+    # No commit: still wholly on the source, in store AND in the transient
+    # registries the candidate's garbage was being imported into.
+    assert ctrl.store is source
+    assert len(ctrl.history) == len(source_history)
+    assert ctrl.deps.tasks.to_payload() == outgoing_tasks
+    assert ctrl.deps.jobs.export_settled() == outgoing_jobs
 
 
 # ---------------------------------------------------------------------------
@@ -1609,6 +1673,94 @@ def test_delete_removes_the_claim_sidecar(tmp_path):
     manager.delete(store.session_id)
 
     assert not claim_path(store.path).exists()
+
+
+def test_delete_refuses_a_racer_right_up_to_the_sidecar_unlink(tmp_path, monkeypatch):
+    """The resurrection window: delete used to release its ``try_acquire`` probe
+    immediately after the check, so another process could claim the session in
+    the gap before the sidecar was unlinked and start driving files we were
+    mid-way through deleting. The probe is now held through the teardown.
+
+    What this pins: at the exact instant ``delete`` unlinks the claim sidecar —
+    the last moment the locked inode is still the one a racer would open — a
+    fresh ``try_acquire`` is REFUSED. The seam is the module-level
+    ``claim.claim_path``, which ``delete`` imports at call time; we only probe on
+    the call made after the session file is already gone, which by the documented
+    file-then-sidecar order is exactly the sidecar-unlink call (the probe's own
+    ``try_acquire`` at the top of ``delete`` happens while the file still
+    exists). Pre-fix this observed a successful acquire.
+    """
+    from marim_harness.session import SessionManager
+    from marim_harness.session import claim as claim_mod
+    from marim_harness.session.claim import claim_path, try_acquire
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(ws, base_dir=tmp_path / "sessions")
+    store = manager.create()
+    session_path = store.path
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text("{}")  # create() doesn't persist; the spy reads existence
+
+    real_claim_path = claim_mod.claim_path
+    probes: list[object] = []
+    reentrant = False
+
+    def spy(path):
+        nonlocal reentrant
+        if not reentrant and not session_path.exists():
+            reentrant = True  # our own try_acquire re-enters this same hook
+            try:
+                probes.append(claim_mod.try_acquire(session_path, kind="racer"))
+            finally:
+                reentrant = False
+        return real_claim_path(path)
+
+    monkeypatch.setattr(claim_mod, "claim_path", spy)
+    manager.delete(store.session_id)
+    monkeypatch.undo()
+
+    assert probes == [None]  # the racer was refused mid-delete
+    # ...and once delete has returned, the probe is released: the slot is free.
+    after = try_acquire(session_path, kind="probe")
+    assert after is not None
+    after.release()
+    claim_path(session_path).unlink(missing_ok=True)  # the probe recreated it
+
+
+def test_delete_releases_its_probe_only_after_the_whole_teardown(tmp_path, monkeypatch):
+    """Companion to the test above, pinning the ``finally`` scope rather than the
+    race: the probe's release must be the LAST thing delete does, after every
+    teardown step — including the ones that run past the sidecar unlink, where a
+    fresh acquire would land on a new inode and no longer prove anything. An
+    flock survives its file's unlink for as long as the fd is open, which is what
+    makes holding it that far both possible and meaningful."""
+    from marim_harness.session import SessionManager
+    from marim_harness.session import transcripts as transcripts_mod
+    from marim_harness.session.claim import SessionClaim
+
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    manager = SessionManager(ws, base_dir=tmp_path / "sessions")
+    store = manager.create()
+
+    order: list[str] = []
+    real_delete_all = transcripts_mod.TranscriptStore.delete_all
+    real_release = SessionClaim.release
+
+    def spy_delete_all(self):
+        order.append("transcripts")
+        return real_delete_all(self)
+
+    def spy_release(self):
+        order.append("release")
+        return real_release(self)
+
+    monkeypatch.setattr(transcripts_mod.TranscriptStore, "delete_all", spy_delete_all)
+    monkeypatch.setattr(SessionClaim, "release", spy_release)
+    manager.delete(store.session_id)
+
+    assert order == ["transcripts", "release"]
 
 
 def test_delete_without_a_claim_sidecar_still_works(tmp_path):

@@ -1,7 +1,22 @@
-"""The serve CLI entry: routing, arg parsing, and startup wiring (uvicorn is
-stubbed — we never bind a real port in tests)."""
+"""The serve CLI entry: routing, arg parsing, and startup wiring. uvicorn is
+always stubbed; bind_listener binds a real ephemeral socket where not stubbed."""
 
 import io
+import socket
+
+import pytest
+
+
+def _ipv6_loopback_available() -> bool:
+    """Whether ``::1`` can actually be bound here — some CI/container
+    environments have IPv6 disabled entirely, which makes binding it fail for
+    reasons unrelated to what this test is checking."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as sock:
+            sock.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
 
 
 def test_router_reserves_serve_keyword():
@@ -23,11 +38,18 @@ def test_serve_main_builds_app_and_runs_uvicorn(tmp_path, monkeypatch):
     monkeypatch.setattr(uvicorn, "run", fake_run)
     from marim_harness.interfaces.cli import serve
 
+    # The advertised port (9999, asserted below) comes from args.port, not the
+    # real bind — so binding an ephemeral port keeps this test hermetic
+    # against a live process squatting 9999 for unrelated reasons.
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     out, err = io.StringIO(), io.StringIO()
     code = serve.main(["--port", "9999"], out=out, err=err)
     assert code == 0
-    assert calls["kwargs"]["host"] == "127.0.0.1"
-    assert calls["kwargs"]["port"] == 9999
+    assert "fd" in calls["kwargs"] and isinstance(calls["kwargs"]["fd"], int)
+    assert "host" not in calls["kwargs"]
+    assert "port" not in calls["kwargs"]
     assert calls["app"].state.token  # token generated and wired
     token_file = tmp_path / "xdg-data" / "marim-harness" / "server" / "token"
     assert token_file.exists()
@@ -62,6 +84,12 @@ def test_serve_publishes_runtime_json_for_the_life_of_the_run(tmp_path, monkeypa
     monkeypatch.setattr(uvicorn, "run", fake_run)
     from marim_harness.interfaces.cli import serve
 
+    # The advertised port (9998, asserted below) comes from args.port, not the
+    # real bind — so binding an ephemeral port keeps this test hermetic
+    # against a live process squatting 9998 for unrelated reasons.
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     assert serve.main(["--port", "9998"], out=io.StringIO(), err=io.StringIO()) == 0
 
     assert seen["endpoint"] == "http://127.0.0.1:9998"
@@ -89,6 +117,12 @@ def _run_serve(argv, tmp_path, monkeypatch, *, out):
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
     from marim_harness.interfaces.cli import serve
 
+    # These tests care about the banner/args, not the bind: force an
+    # ephemeral port so they don't collide with a live daemon squatting the
+    # requested port (e.g. the default 8642 on a dev machine).
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     assert serve.main(argv, out=out, err=io.StringIO()) == 0
     return out.getvalue()
 
@@ -119,6 +153,9 @@ def test_serve_no_banner_flag_and_env_suppress_the_wordmark(tmp_path, monkeypatc
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
     from marim_harness.interfaces.cli import serve
 
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     assert serve.main([], out=out, err=io.StringIO()) == 0
     assert "█" not in out.getvalue()
 
@@ -132,6 +169,9 @@ def test_serve_banner_honors_no_color(tmp_path, monkeypatch):
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: None)
     from marim_harness.interfaces.cli import serve
 
+    monkeypatch.setattr(
+        serve, "bind_listener", lambda host, port, _real=serve.bind_listener: _real(host, 0)
+    )
     assert serve.main([], out=out, err=io.StringIO()) == 0
     text = out.getvalue()
     assert "█" in text and "\033[" not in text
@@ -157,3 +197,49 @@ def test_serve_main_rejects_unknown_args(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit):
         serve.main(["--bogus"], out=io.StringIO(), err=io.StringIO())
+
+
+def test_bind_listener_second_bind_fails():
+    from marim_harness.interfaces.cli.serve import bind_listener
+
+    first = bind_listener("127.0.0.1", 0)
+    try:
+        port = first.getsockname()[1]
+        import pytest
+
+        with pytest.raises(OSError):
+            bind_listener("127.0.0.1", port)
+    finally:
+        first.close()
+
+
+@pytest.mark.skipif(not _ipv6_loopback_available(), reason="IPv6 loopback unavailable")
+def test_bind_listener_strips_ipv6_brackets():
+    from marim_harness.interfaces.cli.serve import bind_listener
+
+    sock = bind_listener("[::1]", 0)
+    try:
+        assert sock.family.name == "AF_INET6"
+    finally:
+        sock.close()
+
+
+def test_serve_bind_failure_publishes_no_runtime_json(tmp_path, monkeypatch):
+    import io
+
+    from marim_harness.interfaces.cli import serve
+
+    occupier = serve.bind_listener("127.0.0.1", 0)
+    port = occupier.getsockname()[1]
+    monkeypatch.setattr(serve, "_default_state_dir", lambda: tmp_path)
+    ran = []
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: ran.append(True))
+    err = io.StringIO()
+    try:
+        rc = serve.main(["--port", str(port)], out=io.StringIO(), err=err)
+    finally:
+        occupier.close()
+    assert rc == 1
+    assert ran == []
+    assert not (tmp_path / "runtime.json").exists()
+    assert "cannot bind" in err.getvalue()

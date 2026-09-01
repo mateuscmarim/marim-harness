@@ -105,3 +105,14 @@ def test_release_is_idempotent(session_file: Path) -> None:
     assert claim is not None
     claim.release()
     claim.release()  # must not raise
+
+
+def test_session_claimed_lives_in_claim_module_and_supervisor_reexports():
+    from marim_harness.server.supervisor import SessionClaimed as ViaSupervisor
+    from marim_harness.session.claim import Holder, SessionClaimed
+
+    assert SessionClaimed is ViaSupervisor
+    exc = SessionClaimed("20260831-1", Holder(pid=123, kind="tui", endpoint=None))
+    assert exc.session_id == "20260831-1"
+    assert exc.holder is not None and exc.holder.kind == "tui"
+    assert str(exc) == "20260831-1"

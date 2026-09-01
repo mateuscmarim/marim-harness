@@ -125,6 +125,11 @@ async def test_new_and_switch_clear_job_history(tmp_path: Path):
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("first")
     first_id = store.session_id
+    # switch_session now refuses a target with no file on disk (review-bot #466:
+    # an absent file is indistinguishable from one deleted after being listed),
+    # so "first" needs to exist before the later switch back onto it.
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text("{}")
     harness = Harness(
         model=_text_model(),
         provider=BuiltinToolProvider(),
