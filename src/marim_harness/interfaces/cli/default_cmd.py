@@ -254,6 +254,56 @@ def _claim_and_build(workspace: Path, *, resume: bool, mode, kind: str, err):
     return harness, claim
 
 
+def _start_headless(args, workspace: Path, stdin, out, err) -> int:
+    """The headless launch branch of :func:`run_default`: read the prompt, claim
+    + build, and run the turn under the claim. Returns the exit code."""
+    prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()
+    prompt = (prompt or "").strip()
+    if not prompt:
+        print("no prompt provided", file=err)
+        return 2
+    from ...runtime.permissions import Mode
+    from .headless import run_headless
+
+    mode = Mode(args.mode) if args.mode else Mode.auto
+    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="headless", err=err)
+    if built is None:
+        return 2
+    harness, claim = built
+    return _run_claimed(
+        harness,
+        kind="headless",
+        err=err,
+        claim=claim,
+        run=lambda: asyncio.run(
+            run_headless(harness, prompt, args.output_format, out=out, err=err)
+        ),
+    )
+
+
+def _start_tui(args, workspace: Path, err) -> int:
+    """The interactive branch of :func:`run_default`: route logging away from
+    the tty, claim + build, and hand the screen to Textual under the claim."""
+    # Route logs to a file before Textual takes the screen — the stderr handler
+    # installed at startup still points at the real tty and would paint WARNING+
+    # records straight over the live TUI (see route_logging_to_file).
+    from ...runtime.permissions import Mode
+    from .router import route_logging_to_file
+
+    route_logging_to_file()
+
+    # An explicit --mode carries into the interactive session too (it used to
+    # be silently ignored on a tty); without one, the session starts in the
+    # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
+    # build_harness.
+    mode = Mode(args.mode) if args.mode else None
+    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="tui", err=err)
+    if built is None:
+        return 2
+    harness, claim = built
+    return _run_claimed(harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness))
+
+
 def run_default(argv, *, stdin=None, out=None, err=None) -> int:
     stdin = stdin if stdin is not None else sys.stdin
     out = out if out is not None else sys.stdout
@@ -274,36 +324,15 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
     if args.think is not None:
         os.environ["MARIM_THINKING"] = args.think
 
-    # Heavy imports (pydantic_ai) deferred to here so `--help` and arg errors stay
-    # fast; only an actual launch pays for the agent.
-    from ...runtime.permissions import Mode
-
+    # Heavy imports (pydantic_ai) are deferred inside the two launch helpers
+    # below, so `--help` and arg errors stay fast; only an actual launch pays
+    # for the agent.
     if _is_headless(
         args.prompt,
         stdin_isatty=stdin.isatty(),
         textual_driver=bool(os.environ.get("TEXTUAL_DRIVER")),
     ):
-        prompt = args.prompt if isinstance(args.prompt, str) else stdin.read()
-        prompt = (prompt or "").strip()
-        if not prompt:
-            print("no prompt provided", file=err)
-            return 2
-        from .headless import run_headless
-
-        mode = Mode(args.mode) if args.mode else Mode.auto
-        built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="headless", err=err)
-        if built is None:
-            return 2
-        harness, claim = built
-        return _run_claimed(
-            harness,
-            kind="headless",
-            err=err,
-            claim=claim,
-            run=lambda: asyncio.run(
-                run_headless(harness, prompt, args.output_format, out=out, err=err)
-            ),
-        )
+        return _start_headless(args, workspace, stdin, out, err)
 
     if not _tui_available():
         print(
@@ -314,20 +343,4 @@ def run_default(argv, *, stdin=None, out=None, err=None) -> int:
         )
         return 2
 
-    # Route logs to a file before Textual takes the screen — the stderr handler
-    # installed at startup still points at the real tty and would paint WARNING+
-    # records straight over the live TUI (see route_logging_to_file).
-    from .router import route_logging_to_file
-
-    route_logging_to_file()
-
-    # An explicit --mode carries into the interactive session too (it used to
-    # be silently ignored on a tty); without one, the session starts in the
-    # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
-    # build_harness.
-    mode = Mode(args.mode) if args.mode else None
-    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="tui", err=err)
-    if built is None:
-        return 2
-    harness, claim = built
-    return _run_claimed(harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness))
+    return _start_tui(args, workspace, err)
