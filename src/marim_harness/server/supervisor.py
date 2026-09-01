@@ -27,7 +27,7 @@ from ..session.claim import (
     read_holder,
     try_acquire,
 )
-from ..session.store import SessionManager
+from ..session.store import SessionLoadError, SessionManager
 from .bus import EventBus
 from .host import SessionHost
 from .workspaces import WorkspaceRecord
@@ -169,11 +169,27 @@ class SessionSupervisor:
             return host
 
     def _claim_session(self, workspace: Path, session_id: str) -> SessionClaim:
-        """Take ownership of the session, or raise SessionClaimed naming the holder."""
+        """Take ownership of the session, or raise SessionClaimed naming the holder.
+
+        Also refuses a session whose file vanished between being listed by the
+        caller and being claimed here (SessionLoadError) — the same race
+        default_cmd._claim_target and Harness.switch_session already guard:
+        delete unlinks the session file before its claim sidecar (see
+        SessionManager.delete), so a claim acquired here can land on a FRESH
+        sidecar inode after a racing delete's own probe released the orphaned
+        one, without the session file it's supposed to be guarding actually
+        existing. The factory would otherwise load the missing id as an empty
+        session and persist it, resurrecting a deleted session. Checked right
+        after acquiring, not before: once the claim is held, a racing delete's
+        own try_acquire is refused, so this existence check is race-free and
+        decisive — same argument as the two call sites above."""
         session_path = SessionManager(workspace).session_path(session_id)
         claim = try_acquire(session_path, kind="daemon", endpoint=self.endpoint)
         if claim is None:
             raise SessionClaimed(session_id, read_holder(session_path))
+        if not session_path.exists():
+            claim.release()
+            raise SessionLoadError(f"session {session_id} no longer exists")
         return claim
 
     async def close_host(self, ws_id: str, session_id: str) -> bool:

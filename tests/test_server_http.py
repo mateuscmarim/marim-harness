@@ -945,6 +945,36 @@ def test_post_message_409s_when_another_process_claims_the_session(client):
         outsider.release()
 
 
+def test_post_message_404s_when_session_vanishes_after_the_precheck(client, monkeypatch):
+    """The delete/claim inode race (finding #3529): post_message's own
+    _session_exists guard passed (the session existed when it ran), but the
+    file is gone by the time host_for actually claims it — the same window a
+    racing DELETE opens in production (POST checks _session_exists, a DELETE
+    completes, then the claim lands on the DELETE's orphaned-then-recreated
+    sidecar inode). SessionSupervisor._claim_session's post-claim existence
+    check must turn this into 404, not silently build (and persist) an empty
+    session under the deleted id. The precheck is stubbed to simulate landing
+    inside the race window; a plain pre-deleted session would 404 via the
+    precheck alone and never reach the code this test targets."""
+    import marim_harness.server.http as http_mod
+    from marim_harness.session.store import SessionManager
+
+    test_client, tmp_path = client
+    ws_id, session_id, project = _setup_workspace_and_session(test_client, tmp_path)
+    session_path = SessionManager(project).session_path(session_id)
+    session_path.unlink()
+
+    monkeypatch.setattr(http_mod, "_session_exists", lambda record, sid: True)
+
+    response = test_client.post(
+        f"/v1/workspaces/{ws_id}/sessions/{session_id}/messages",
+        json={"prompt": "hi"},
+        headers=AUTH,
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
 def test_delete_session_409s_when_another_process_claims_it(client):
     """A claimed session is being driven elsewhere; deletion must be refused."""
     from marim_harness.session.claim import try_acquire

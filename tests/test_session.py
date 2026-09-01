@@ -600,6 +600,51 @@ def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
     assert len(reloaded_source) == len(source_history)
 
 
+def test_switch_to_session_with_unimportable_state_does_not_commit(tmp_path):
+    """Regression (review-bot #467): a target whose JSON is structurally valid
+    but carries a garbage-typed ``tasks`` field made ``deps.tasks.load`` raise a
+    raw TypeError — and it ran AFTER ``self.store = store``, so the controller
+    had already committed to the target while the exception propagated past the
+    TUI's typed catches (crash, claim moved, view stale). Both deps imports now
+    run BEFORE the commit and surface as SessionLoadError: a failed switch
+    leaves the controller — and its in-memory tasks/jobs — wholly on the
+    source."""
+    import json
+
+    from marim_harness.session.store import SessionLoadError
+
+    mgr = _manager(tmp_path)
+
+    source = mgr.create("source")
+    source_history = _history()
+    source.save(source_history, RunUsage(input_tokens=3, output_tokens=2))
+
+    # Target B: a fully valid persisted file with only the tasks field poisoned
+    # (load() hands it over unvalidated; iterating the int raises TypeError).
+    target = mgr.create("target")
+    target.save(_history(), RunUsage(input_tokens=1, output_tokens=1))
+    data = json.loads(target.path.read_text())
+    data["tasks"] = 5
+    target.path.write_text(json.dumps(data))
+
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    ctrl = SessionController(source, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl.resume()
+    outgoing_tasks = ctrl.deps.tasks.to_payload()
+    outgoing_jobs = ctrl.deps.jobs.export_settled()
+
+    with pytest.raises(SessionLoadError) as excinfo:
+        ctrl.switch_session(target.session_id)
+    assert "unimportable persisted state" in str(excinfo.value)
+
+    # No commit: still wholly on the source, in store AND in the transient
+    # registries the candidate's garbage was being imported into.
+    assert ctrl.store is source
+    assert len(ctrl.history) == len(source_history)
+    assert ctrl.deps.tasks.to_payload() == outgoing_tasks
+    assert ctrl.deps.jobs.export_settled() == outgoing_jobs
+
+
 # ---------------------------------------------------------------------------
 # resume revalidates elided pointers (the scratchpad may not have survived)
 # ---------------------------------------------------------------------------

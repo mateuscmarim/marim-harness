@@ -29,6 +29,7 @@ from ..config import MultiModelSource, detect_active_providers
 from ..images import image_cache_root, media_type_for_path
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
+from ..session.store import SessionLoadError
 from ..trust import record_decision, resolve_project_trust, stored_decision
 from ..trust_surface import ProjectSurface, scan_project_surface
 from . import jobs_view
@@ -460,6 +461,28 @@ async def delete_session(request: Request) -> Response:
     return JSONResponse({"deleted": True})
 
 
+async def _host_for_response(request: Request, record, session_id: str) -> tuple:
+    """``SessionSupervisor.host_for`` plus its HTTP-facing refusals, as
+    ``(host, error_response)`` — exactly one of the two is None. Kept out of
+    post_message to stay under the complexity cap."""
+    try:
+        host = await _supervisor(request).host_for(record, session_id)
+    except SessionClaimed as exc:
+        who = exc.holder.describe() if exc.holder is not None else "another process"
+        return None, _error(
+            409,
+            "claimed",
+            f"session is owned by {who}; close it there before driving it here",
+        )
+    except SessionLoadError:
+        # The pre-flight _session_exists check in post_message raced a delete
+        # that completed after it ran but before host_for's own post-claim
+        # existence check (see SessionSupervisor._claim_session) — the
+        # session is gone, not merely claimed elsewhere.
+        return None, _error(404, "not_found", "unknown session")
+    return host, None
+
+
 async def post_message(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -480,15 +503,9 @@ async def post_message(request: Request) -> Response:
             attachments = [(base64.b64decode(a.data_b64), a.media_type) for a in body.attachments]
         except ValueError:
             return _error(400, "bad_request", "invalid base64 in attachment data_b64")
-    try:
-        host = await _supervisor(request).host_for(record, session_id)
-    except SessionClaimed as exc:
-        who = exc.holder.describe() if exc.holder is not None else "another process"
-        return _error(
-            409,
-            "claimed",
-            f"session is owned by {who}; close it there before driving it here",
-        )
+    host, refusal = await _host_for_response(request, record, session_id)
+    if refusal is not None:
+        return refusal
     try:
         turn_id = host.submit(body.prompt, attachments)
     except TurnQueueFull:

@@ -585,7 +585,16 @@ class SessionManager:
             # holder keeps its lock and the next acquirer simply creates the file
             # anew — and nobody should own a session that is being deleted anyway.
             # The file-then-sidecar order matters: the session file goes first so
-            # a racing reader finds the session gone before the claim does.
+            # a racing reader finds the session gone before the claim does. But
+            # that ordering only protects a reader that checks BEFORE claiming —
+            # it does NOT make a claim taken AFTER this unlink prove the session
+            # still exists: unlinking the sidecar hands the NEXT acquirer a
+            # FRESH inode (this delete's own flock lives on the orphaned one), so
+            # a claim it grants says nothing about whether the session file
+            # (already gone by then) is still there. Every claim site must
+            # therefore existence-check the session file itself right after
+            # acquiring, not rely on the claim alone: default_cmd._claim_target,
+            # Harness.switch_session, and SessionSupervisor._claim_session all do.
             claim_path(self._path(session_id)).unlink(missing_ok=True)
             TranscriptStore(self._path(session_id), session_id).delete_all()
             shutil.rmtree(image_cache_root() / session_id, ignore_errors=True)
