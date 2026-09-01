@@ -507,13 +507,18 @@ progress on the WebSocket stream. Errors:
 - `429 queue_full` — the per-session turn queue is at capacity.
 - `404 host_closed` — the host was torn down mid-submit; retry.
 - `409 claimed` — another live process (a local TUI or headless run) owns this
-  session. A claim is held for its holder's lifetime, so unlike `busy` this is
-  not transient and retrying will not clear it; the message names the holder.
+  session. The code is returned by `POST /messages` and `DELETE
+  /workspaces/{wid}/sessions/{sid}` when the session is owned elsewhere. A
+  claim is held for its holder's lifetime, so unlike `busy` this is not
+  transient and retrying will not clear it; the message names the holder.
   Close the session there first.
 
-  Scope: ownership tracks the session a client process *launched* against.
-  Switching sessions inside a running TUI (`/resume`, `/new`) does not yet move
-  the claim with it — that lands in phase 4.
+  Claims follow the active view: an in-TUI switch (/sessions or the picker)
+  claims the target session and releases the one being left; switching onto a
+  session owned by another process is refused with a notice naming the holder
+  (kind, pid, endpoint). /new releases the outgoing claim and claims the fresh
+  session. The claim lifecycle for headless and daemon paths is unchanged
+  (held until exit; the daemon releases through SessionHost teardown).
 
 ### POST /v1/workspaces/{ws}/sessions/{sid}/interrupt
 

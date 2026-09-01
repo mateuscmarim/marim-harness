@@ -1,5 +1,5 @@
-"""The serve CLI entry: routing, arg parsing, and startup wiring (uvicorn is
-stubbed — we never bind a real port in tests)."""
+"""The serve CLI entry: routing, arg parsing, and startup wiring. uvicorn is
+always stubbed; bind_listener binds a real ephemeral socket where not stubbed."""
 
 import io
 
