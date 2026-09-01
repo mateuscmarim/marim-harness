@@ -110,10 +110,12 @@ claim attaches the first time the harness *switches*: `switch_session`/
 `new_session` claim the target before touching the outgoing session and
 release the one being left, so after any switch the active session is always
 claimed. A freshly built harness does NOT auto-claim its starting session —
-the CLI and `serve` paths claim before construction and hand the claim over
-via `adopt_claim()`; the builder has no equivalent, because a build-time
-auto-claim would collide with those already-held claims (`flock` locks on
-separate file descriptors deny each other even within one process).
+the CLI claims before construction and hands the result to `adopt_claim()`,
+while `serve` keeps daemon ownership on the `SessionHost` (released through
+its `aclose()` funnel) and never passes it to the harness at all; the
+builder has no equivalent, because a build-time auto-claim would collide
+with those already-held claims (`flock` locks on separate file descriptors
+deny each other even within one process).
 Embedders that persist sessions should take starting ownership explicitly:
 
 ```python
