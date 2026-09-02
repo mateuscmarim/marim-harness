@@ -58,6 +58,10 @@ class ToolResult(BaseModel):
     type: Literal["tool.result"]
     id: str
     content: Any = None
+    # "done" | "failed" | "denied" — the call's outcome (stream_events.
+    # status_from_part). Defaulted so an older server that omits it renders as a
+    # plain success, exactly as before the field existed.
+    status: str = "done"
 
 
 class AskPending(BaseModel):

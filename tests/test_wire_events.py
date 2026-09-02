@@ -3,6 +3,7 @@ from marim_harness.server.wire_events import (
     AskResolved,
     TextDelta,
     ToolCall,
+    ToolResult,
     TurnFinished,
     parse_wire_event,
 )
@@ -193,6 +194,38 @@ def test_ask_resolved_accepts_cancelled_shape():
     assert m.cancelled is True
     assert m.reason == "interrupted"
     assert m.answer is None
+
+
+def test_tool_result_status_matches_the_host_publish_shape():
+    """A client rendering from the wire alone has no ``ToolReturnPart`` to read a
+    denied/failed call off, so the outcome has to ride on ``tool.result``. Pin
+    the producer shape: the payload ``SessionHost`` publishes (``event_to_dict``
+    remapped through ``STREAM_EVENT_TYPES``) round-trips into ``ToolResult`` with
+    the status intact — and an older server that omits the field still parses, as
+    a plain success."""
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    from marim_harness.server.schema import STREAM_EVENT_TYPES
+    from marim_harness.stream_events import event_to_dict
+
+    for outcome, expected in (("success", "done"), ("failed", "failed"), ("denied", "denied")):
+        event = FunctionToolResultEvent(
+            part=ToolReturnPart(
+                tool_name="write_file",
+                content="x",
+                tool_call_id="c1",
+                outcome=outcome,  # pyright: ignore[reportArgumentType]
+            )
+        )
+        obj = event_to_dict(event)
+        assert obj is not None
+        model = parse_wire_event({"type": STREAM_EVENT_TYPES[str(obj.pop("type"))], **obj})
+        assert isinstance(model, ToolResult)
+        assert model.status == expected
+
+    legacy = parse_wire_event({"type": "tool.result", "id": "c1", "content": "ok"})
+    assert isinstance(legacy, ToolResult)
+    assert legacy.status == "done"
 
 
 def test_session_renamed_from_field():

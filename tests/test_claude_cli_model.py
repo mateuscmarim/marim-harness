@@ -410,22 +410,32 @@ async def test_consume_surfaces_tool_results():
 
 def test_stream_renderer_on_cli_activity_dispatches_each_event(monkeypatch):
     # StreamRenderer.on_cli_activity must route every side-channel event through
-    # the same dispatch path as the main turn, into a top-level sink.
+    # the same dispatch path as the main turn, into a top-level sink. Each event
+    # is converted to the wire vocabulary first (wire_from_event), so anything
+    # outside it is dropped rather than dispatched.
     import asyncio
     from types import SimpleNamespace
+
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
 
     from marim_harness.interfaces.tui.stream_render import StreamRenderer
 
     r = StreamRenderer(app=SimpleNamespace())
     dispatched = []
 
-    async def fake_dispatch(event, sink):
-        dispatched.append((event, type(sink).__name__))
+    async def fake_dispatch(wire, sink):
+        dispatched.append((wire.id, type(sink).__name__))
 
-    monkeypatch.setattr(r, "dispatch_stream_event", fake_dispatch)
+    monkeypatch.setattr(r, "dispatch_wire", fake_dispatch)
     monkeypatch.setattr(r, "app", SimpleNamespace(query_one=lambda *a, **k: object()))
 
-    asyncio.run(r.on_cli_activity(["e1", "e2", "e3"]))
+    events = [
+        FunctionToolCallEvent(
+            part=ToolCallPart(tool_name="read_file", args={}, tool_call_id=call_id)
+        )
+        for call_id in ("e1", "e2", "e3")
+    ]
+    asyncio.run(r.on_cli_activity([*events, object()]))  # the unsurfaced event is dropped
     assert [e for e, _ in dispatched] == ["e1", "e2", "e3"]
     assert all(sink == "_TopLevelSink" for _, sink in dispatched)
 
