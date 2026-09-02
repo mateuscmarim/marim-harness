@@ -8,6 +8,38 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-01
+
+### Added
+
+- **Single-owner session claims.** A session file is now owned by at most one
+  process at a time. The TUI, headless, and `serve` all claim the session
+  before building a harness on it, so two processes can no longer interleave
+  writes into the same history. A claim follows the active view — switching
+  or creating a session adopts the new one and releases the old — and is
+  released on teardown.
+- Refusals that make the ownership visible instead of silently losing work:
+  `serve` answers **409** for a session another process owns, the TUI refuses
+  to switch onto a claimed session with a notice naming the holder, and
+  deleting a claimed session is refused from both the CLI and HTTP.
+- `serve` publishes the daemon's bind address in `runtime.json` (IPv6 hosts
+  bracketed), so a client can find the daemon without assuming the configured
+  host is the one it actually bound.
+
+### Fixed
+
+- **A turn interrupted mid-reasoning no longer wedges the session.** Aborting
+  before the model emitted any text or tool call persisted a
+  `ModelResponse(state="interrupted")` carrying only `ThinkingPart`s, which
+  maps to an assistant message with `content: null` and no `tool_calls`.
+  Providers disagree about that shape — xAI accepts it, Alibaba (qwen)
+  rejects the request with *"The content field is a required field"* — so the
+  session could fail every subsequent turn, and the failure typically only
+  appeared on a later switch to a stricter model. Such responses are now
+  dropped before the request, at turn-start sanitize, and on the abort flush
+  (main agent and sub-agents), which both prevents new occurrences and heals
+  an already-wedged session.
+
 ## [0.5.1] - 2026-08-29
 
 ### Removed
