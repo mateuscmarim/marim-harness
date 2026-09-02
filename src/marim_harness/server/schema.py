@@ -80,16 +80,21 @@ class TrustIn(BaseModel):
 
 class AskAnswerIn(BaseModel):
     """POST answer for a parked ask. Approvals use approve/reason; ask_user
-    questions use answers (or cancel)."""
+    questions use answers (or cancel); plan cards use choice/feedback (or
+    cancel, which the host maps to "Keep planning")."""
 
     approve: bool | None = None
     reason: str | None = None
     answers: dict | None = None
+    choice: str | None = None
+    feedback: str | None = None
     cancel: bool = False
 
     def as_answer(self) -> dict:
         if self.answers is not None:
             return {"answers": self.answers}
+        if self.choice is not None:
+            return {"choice": self.choice, "feedback": self.feedback}
         if self.cancel:
             return {"cancel": True}
         return {"approve": bool(self.approve), "reason": self.reason}
