@@ -95,19 +95,11 @@ def _focus_target(panel: InteractionPanel) -> Any:
     return next((w for w in panel.query("*") if w.focusable), None)
 
 
-async def run_panel(app: App, panel: InteractionPanel) -> Any:
-    """Mount ``panel`` above the status bar, await its result, remove it.
-
-    Removal lives in a ``finally`` and is deliberately not awaited: when the
-    turn worker is cancelled the CancelledError propagates out of the result
-    await, and awaiting the removal here could be interrupted by that same
-    cancellation — scheduling it is enough. Focus goes to a still-pending
-    sibling panel if one exists, else to whatever had focus before this panel
-    appeared (the modals got the latter for free from screen push/pop).
-
-    Two things must happen before the mount, both because #status-bar and the
-    sub-agents viewer live in the *base* screen (index 0 of the stack), not
-    necessarily the top one:
+def _panel_placement(app: App) -> Any:
+    """Pre-mount prep shared by every panel mount. Two things must happen, both
+    because #status-bar and the sub-agents viewer live in the *base* screen
+    (index 0 of the stack), not necessarily the top one. Returns the widget
+    focused before the mount, so removal can restore it.
 
     - The base screen is targeted explicitly rather than via ``app.mount``,
       which delegates to ``app.screen`` (the top of the stack). The settings
@@ -118,7 +110,7 @@ async def run_panel(app: App, panel: InteractionPanel) -> Any:
       own layer — a panel mounted underneath it would be invisible yet still
       grab focus, and the viewer's Esc ("back") would land on it instead of
       cancelling/denying as intended. So an open viewer is closed first. This
-      is the one generic thing run_panel knows about the real app; test
+      is the one generic thing panel placement knows about the real app; test
       harnesses have no ``subagents`` collaborator, hence the guard.
     """
     subagents = getattr(app, "subagents", None)
@@ -127,32 +119,62 @@ async def run_panel(app: App, panel: InteractionPanel) -> Any:
     previous = app.focused
     base = app.screen_stack[0]
     bar = base.query_one("#status-bar")
+    return base, bar, previous
+
+
+async def mount_panel(app: App, panel: InteractionPanel) -> Any:
+    """Mount ``panel`` above the status bar WITHOUT awaiting its result — the
+    event-driven ask path (``ask.pending`` mounts, ``ask.resolved`` removes)
+    needs the two halves of ``run_panel`` split. Returns the widget focused
+    before the mount; hand it back to :func:`unmount_panel` on removal."""
+    base, bar, previous = _panel_placement(app)
     await base.mount(panel, before=bar)
+    return previous
+
+
+def unmount_panel(app: App, panel: InteractionPanel, previous: Any) -> None:
+    """Remove a mounted panel and restore focus (the removal half of
+    ``run_panel``; see there for why removal is scheduled, not awaited).
+    ``previous`` is what :func:`mount_panel` returned."""
+    panel.remove()
+    # A second panel can be pending: pydantic-ai runs tool calls
+    # concurrently (sequential defaults to False), and the trust prompt is
+    # not gated on turn_busy. Hand focus to it rather than to `previous` —
+    # app.on_descendant_focus declines to redirect focus while any
+    # InteractionPanel is mounted, so a panel that loses focus never gets it
+    # back: its a/d keys would type into the prompt and Esc would cancel the
+    # whole turn instead of answering it.
+    #
+    # `panel.remove()` above is scheduled, not awaited (see run_panel's
+    # docstring), so `panel` may still be in the DOM here — hence the
+    # identity guard. app.query returns DOM order, and each panel is mounted
+    # `before=bar`, so the first match is the OLDEST pending panel: with
+    # three panels up the focus order is deterministic and testable.
+    #
+    # _focus_target, not sibling.focus() directly: AskUserPanel/PlanCard
+    # aren't focusable themselves (they focus an OptionList/SelectionList
+    # descendant instead), so focusing the sibling widget would silently
+    # no-op for those two panel types and leave them just as unreachable.
+    sibling = next((p for p in app.query(InteractionPanel) if p is not panel), None)
+    target = _focus_target(sibling) if sibling is not None else None
+    if target is not None:
+        target.focus()
+    elif previous is not None and previous.is_attached:
+        previous.focus()
+
+
+async def run_panel(app: App, panel: InteractionPanel) -> Any:
+    """Mount ``panel`` above the status bar, await its result, remove it.
+
+    Removal lives in a ``finally`` and is deliberately not awaited: when the
+    turn worker is cancelled the CancelledError propagates out of the result
+    await, and awaiting the removal here could be interrupted by that same
+    cancellation — scheduling it is enough. Focus goes to a still-pending
+    sibling panel if one exists, else to whatever had focus before this panel
+    appeared (the modals got the latter for free from screen push/pop).
+    """
+    previous = await mount_panel(app, panel)
     try:
         return await panel.result
     finally:
-        panel.remove()
-        # A second panel can be pending: pydantic-ai runs tool calls
-        # concurrently (sequential defaults to False), and the trust prompt is
-        # not gated on turn_busy. Hand focus to it rather than to `previous` —
-        # app.on_descendant_focus declines to redirect focus while any
-        # InteractionPanel is mounted, so a panel that loses focus never gets it
-        # back: its a/d keys would type into the prompt and Esc would cancel the
-        # whole turn instead of answering it.
-        #
-        # `panel.remove()` above is scheduled, not awaited (see this function's
-        # docstring), so `panel` may still be in the DOM here — hence the
-        # identity guard. app.query returns DOM order, and each panel is mounted
-        # `before=bar`, so the first match is the OLDEST pending panel: with
-        # three panels up the focus order is deterministic and testable.
-        #
-        # _focus_target, not sibling.focus() directly: AskUserPanel/PlanCard
-        # aren't focusable themselves (they focus an OptionList/SelectionList
-        # descendant instead), so focusing the sibling widget would silently
-        # no-op for those two panel types and leave them just as unreachable.
-        sibling = next((p for p in app.query(InteractionPanel) if p is not panel), None)
-        target = _focus_target(sibling) if sibling is not None else None
-        if target is not None:
-            target.focus()
-        elif previous is not None and previous.is_attached:
-            previous.focus()
+        unmount_panel(app, panel, previous)

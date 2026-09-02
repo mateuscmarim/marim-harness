@@ -3,13 +3,15 @@
 
 from .approval import ApprovalPanel
 from .ask_user import AskUserPanel
-from .base import InteractionPanel, run_panel
+from .base import InteractionPanel, mount_panel, run_panel, unmount_panel
 from .plan_card import PlanCard
 from .trust_panel import TrustPanel
 
 __all__ = [
     "InteractionPanel",
     "run_panel",
+    "mount_panel",
+    "unmount_panel",
     "ApprovalPanel",
     "AskUserPanel",
     "PlanCard",

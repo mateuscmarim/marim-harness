@@ -88,6 +88,7 @@ class SessionHost:
         *,
         queue_limit: int = 8,
         claim: "SessionClaim | None" = None,
+        autonomous_wake: bool = True,
     ) -> None:
         self.harness = harness
         self.bus = bus
@@ -107,7 +108,13 @@ class SessionHost:
         jobs = harness.deps.jobs
         self._wake = WakeDriver(
             WakeController(harness.wake_depth_cap),
-            is_enabled=lambda: harness.autonomous_wake,
+            # The daemon owns its autonomous wake; the in-process TUI host does
+            # not — HarnessApp's ActivityMonitor drives wake there (posts the
+            # "Resumed" notice, arms its own depth counter, mounts the turn
+            # through the app). If both drivers were live, this one would
+            # silently eat job-finished digests and run turns that never reach
+            # the UI.
+            is_enabled=lambda: autonomous_wake and harness.autonomous_wake,
             # "a turn is in flight" — NOT status == "running": a turn parked on an
             # ask reports "waiting_ask" while its task is still live, and a wake
             # turn must not queue behind it.
