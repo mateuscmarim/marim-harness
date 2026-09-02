@@ -442,6 +442,7 @@ class HarnessApp(App):
             log = self.query_one("#log", VerticalScroll)
             await log.mount(UserMessage(text))
             self.stream.current_assistant = None
+            self.stream.text_open = False
             self._turn_worker = self.run_worker(self._run_turn(text, attachments), exclusive=True)
         finally:
             self._turn_starting = False
@@ -470,6 +471,7 @@ class HarnessApp(App):
         # exception escape into the slash-command dispatcher.
         try:
             self.stream.current_assistant = None
+            self.stream.text_open = False
             self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
         except Exception as exc:  # noqa: BLE001 — a failed spawn must not wedge the UI
             self._turn_worker = None

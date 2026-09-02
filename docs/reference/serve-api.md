@@ -718,7 +718,7 @@ surfaced):
 | `text.delta`     | `{"text": "<chunk>"}`                         |
 | `thinking.delta` | `{"text": "<chunk>"}`                         |
 | `tool.call`      | `{"name": "...", "args": {...}, "id": "..."}` |
-| `tool.result`    | `{"id": "...", "content": "<stringified>"}`   |
+| `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied"}` |
 
 Turn lifecycle:
 

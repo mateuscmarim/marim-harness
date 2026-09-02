@@ -453,9 +453,11 @@ class StreamRenderer:
         self.current_assistant: AssistantMessage | None = None
         self.current_thinking: ThinkingWidget | None = None
         # Whether current_assistant is still the OPEN text block for the
-        # top-level stream (see _StreamSink.get_text_open). The app closes a
-        # block by clearing current_assistant, so a stale True is harmless: a
-        # text.delta with no message opens a fresh one either way.
+        # top-level stream (see _StreamSink.get_text_open). A stale True left
+        # over from a prior run would make the next run's first text.delta
+        # append into that run's (already finalized) reply — see on_events'
+        # trailing comment and start_turn/start_system_turn, all of which clear
+        # this alongside current_assistant at every run boundary.
         self.text_open = False
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # Workflow RUN cards, keyed by the run_workflow tool_call_id. A
@@ -979,6 +981,12 @@ class StreamRenderer:
         # A new run starts a fresh run of consecutive tool calls.
         self.tool_group = None
         self.solo_tool = None
+        # A run boundary is always a part boundary: close any block left open by
+        # the prior run (e.g. one that ended on assistant text) so this run's
+        # first text.delta always opens a fresh message rather than appending
+        # into the previous turn's finalized reply — the old part-start path got
+        # this for free (a new run's text always arrived as a PartStartEvent).
+        self.text_open = False
         sink = _TopLevelSink(self, self._log_container())
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
@@ -1246,7 +1254,11 @@ class StreamRenderer:
             # provider shape the deferred mount exists for (a blank content delta
             # before the first reasoning delta): the events carried the part index
             # that reopened the block, the wire does not.
-            buffering = active_assistant is not None and not active_assistant.is_mounted
+            buffering = (
+                isinstance(wire, ThinkingDelta)
+                and active_assistant is not None
+                and not active_assistant.is_mounted
+            )
             if not buffering:
                 sink.set_text_open(False)
                 if active_assistant is not None:

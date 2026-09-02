@@ -15,7 +15,12 @@ import pytest
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.subagents import SubAgentWidget
-from marim_harness.interfaces.tui.widgets import AssistantMessage, ThinkingWidget, ToolCallWidget
+from marim_harness.interfaces.tui.widgets import (
+    AssistantMessage,
+    ThinkingWidget,
+    ToolCallWidget,
+    ToolGroupWidget,
+)
 from marim_harness.server.wire_events import parse_wire_event
 from tests.conftest import _make_deps
 
@@ -190,6 +195,35 @@ async def test_tool_call_finalizes_stale_assistant_text(tmp_path: Path):
         await pilot.pause()
 
         assert message._finalized is True
+
+
+@pytest.mark.anyio
+async def test_whitespace_opener_closes_across_a_tool_round_trip(tmp_path: Path):
+    """The unmounted-block "keep open" exception in ``_finalize_stale_blocks`` is
+    for a reasoning delta interrupting a still-buffering whitespace opener
+    (``test_blank_text_part_does_not_claim_the_slot_above_thinking``). It must NOT
+    also hold the block open across an intervening TOOL round-trip: that used to
+    let the second tool call rejoin the first tool's group, mounting c2 ABOVE the
+    reply that came between them."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_wire(_text(" "))  # whitespace-only opener, buffered
+        await app.stream.on_wire(_call("c1"))
+        await app.stream.on_wire(_result("c1"))
+        await app.stream.on_wire(_text("the answer"))
+        await app.stream.on_wire(_call("c2"))
+        await pilot.pause()
+
+        log = app.query_one("#log")
+        c1 = app.stream.tool_widgets["c1"]
+        c2 = app.stream.tool_widgets["c2"]
+        assert not list(app.query(ToolGroupWidget))  # c2 did NOT rejoin c1's group
+        assert [m.text for m in _replies(app)] == ["the answer"]  # whitespace discarded
+
+        reply = _replies(app)[0]
+        assert log.children.index(c1) < log.children.index(reply)
+        assert log.children.index(reply) < log.children.index(c2)
 
 
 @pytest.mark.anyio

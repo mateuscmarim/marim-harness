@@ -334,6 +334,39 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_on_events_closes_text_open_across_a_run_boundary(tmp_path: Path):
+    """A run that ends on assistant text must not leak its open block into the
+    NEXT run — e.g. HarnessApp.mount_wake_turn spawns a fresh ``_run_turn("")``
+    without clearing ``current_assistant`` (unlike start_turn/start_system_turn),
+    so on_events itself must close the block at the top of every run. Otherwise
+    the wake turn's first text.delta finds text_open=True and the still-live
+    pointer, and appends into the previous (already finalized) turn's message."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def turn_one():
+            yield PartStartEvent(index=0, part=TextPart(content="turn one reply"))
+
+        await app.stream.on_events(None, turn_one())
+        await pilot.pause()
+        assert app.stream.text_open is True  # left open as the resting reply
+
+        async def turn_two():
+            yield PartStartEvent(index=0, part=TextPart(content="WAKE TURN REPLY"))
+
+        await app.stream.on_events(None, turn_two())
+        await pilot.pause()
+
+        messages = [w for w in app.query_one("#log").children if isinstance(w, AssistantMessage)]
+        assert [m.text for m in messages] == ["turn one reply", "WAKE TURN REPLY"]
+
+
+@pytest.mark.anyio
 async def test_flush_refreshes_status_while_busy(tmp_path: Path):
     """The shared streaming flush tick repaints the status bar while busy, so the
     live token counter advances without waiting for the turn to finish."""

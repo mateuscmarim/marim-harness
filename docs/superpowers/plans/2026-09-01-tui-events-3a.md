@@ -691,6 +691,8 @@ c) `_dispatch_wire(self, wire)` routes every Task 1 model to the step-1 targets:
 - `AskPending`/`AskResolved` → Task 5's handlers (leave a `pass`/TODO-free stub that Task 5 replaces — no, do NOT stub: Task 5 adds the branches; here, ignore unknown-to-3a kinds silently).
 - `TurnStarted/TurnFinished/TurnError/SessionStatus/StreamGap` → no-op in 3a (3b owns completion/status; gap is remote-only). Leave a comment naming the phase.
 
+Task 3 fix-round note: `SubagentUsage.usage` on the wire is a dict (a `RunUsage` dump), not a live `RunUsage` — the pump must convert it with `usage.usage_from_dump` before handing it to `stream.on_subagent_usage`/`note_subagent_usage`, exactly like `on_subagent_wire` already does for the `usage` folded onto a subagent stream event; a raw dict reaches `.total_tokens` on the flush tick and `AttributeError`s. Separately, since the pump has no `on_events` call at all (that adapter is Task 4's own thing to delete), whichever handler marks a run/turn boundary (`TurnStarted` and/or `TurnFinished`) must also clear `self.stream.text_open` — mirroring `on_events`' own reset — or the cross-turn text-open leak fixed in Task 3's fix round reopens on the pure-wire pump.
+
 d) Turn call: in `_run_turn` (~493-544), replace
 
 ```python
