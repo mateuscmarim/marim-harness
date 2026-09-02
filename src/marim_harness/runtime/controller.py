@@ -235,6 +235,55 @@ def _drop_nameless_tool_calls(history: list[ModelMessage]) -> list[ModelMessage]
     return cleaned
 
 
+def _drop_contentless_responses(history: list[ModelMessage]) -> list[ModelMessage]:
+    """Return a history with every ``ModelResponse`` that carries no
+    assistant-visible content removed — one whose parts are *all* ThinkingParts,
+    or that has no parts at all.
+
+    Aborting a turn while the model is still reasoning — before it emits any text
+    or tool call — leaves exactly that: an ``interrupted`` response holding only
+    reasoning. pydantic-ai's OpenAI-chat mapping skips a zero-part response but
+    NOT a thinking-only one (the ThinkingPart still renders a ``reasoning`` /
+    ``reasoning_details`` field), so it goes out as
+    ``{"role": "assistant", "content": null}`` with no ``tool_calls``. Providers
+    disagree about that shape: xAI accepts it, Alibaba (qwen) rejects the request
+    outright with "The content field is a required field" — and since the offending
+    message is now buried in persisted history, EVERY later turn re-sends it and
+    fails identically. The session is wedged exactly like a dangling tool call
+    wedges it, which is why this rides alongside _repair_unanswered_tool_calls and
+    _drop_nameless_tool_calls at the same three sites (per-request capability,
+    turn-start sanitize, abort flush).
+
+    The predicate is deliberately "every part is a ThinkingPart" rather than the
+    looser "no TextPart":
+
+    - A reasoning model's *tool-calling* turn is thinking + ToolCallPart. It maps
+      to ``content: null`` too, but WITH ``tool_calls``, which providers accept —
+      and dropping it would strand the matching ToolReturnPart, trading this wedge
+      for the one _repair_unanswered_tool_calls exists to prevent.
+    - A TextPart with empty content maps to ``content: ""`` — present, not missing
+      — so it is a different, accepted shape and is left alone.
+    - Anything else a response can carry (a builtin tool call, a file, a compaction
+      marker) is real content and is never swept up here.
+
+    Dropping a thinking-only response loses no signable reasoning context: the
+    providers that require thinking be echoed back require it only for a turn that
+    also made a tool call, and those are kept. Returns the input list unchanged
+    when nothing is contentless, so callers can skip a redundant persist."""
+    from pydantic_ai.messages import ModelResponse, ThinkingPart
+
+    def contentless(message: ModelMessage) -> bool:
+        return isinstance(message, ModelResponse) and all(
+            isinstance(part, ThinkingPart) for part in message.parts
+        )
+
+    # Hot path: this runs before every model request and almost always finds
+    # nothing, so bail before rebuilding the list.
+    if not any(contentless(message) for message in history):
+        return history
+    return [message for message in history if not contentless(message)]
+
+
 def _turn_produced_response(history: list[ModelMessage], since: int) -> bool:
     """True if the turn that began at history index ``since`` produced at least one
     model response. A turn that failed before reaching a response leaves only its
@@ -609,7 +658,9 @@ class TurnController:
         propagate. The caller re-raises whatever triggered the flush."""
         try:
             recovered = _repair_unanswered_tool_calls(
-                _drop_nameless_tool_calls(list(captured) if captured else resumable)
+                _drop_contentless_responses(
+                    _drop_nameless_tool_calls(list(captured) if captured else resumable)
+                )
             )
             self.session.history = recovered
             await asyncio.wait_for(
@@ -1201,7 +1252,7 @@ class TurnController:
         # safe: it drains no one-shot consumables and precedes the checkpoint, so a
         # failure here leaks neither the hook context / jobs digest nor a dead
         # checkpoint (there is none yet).
-        sanitized = _drop_nameless_tool_calls(self.session.history)
+        sanitized = _drop_contentless_responses(_drop_nameless_tool_calls(self.session.history))
         repaired = _repair_unanswered_tool_calls(sanitized)
         if repaired is not self.session.history:
             self.session.history = repaired
