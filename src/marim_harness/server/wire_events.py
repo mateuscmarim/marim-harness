@@ -4,6 +4,9 @@ The bus and the HTTP layer stay dict-typed (transport); this module is the
 RENDERER contract — the TUI pump parses each wire dict once and every
 front-end handler consumes only these models. Unknown types parse to None
 (forward-compatible: a newer server can add events an older client skips).
+
+In phase 3a, daemon queue mechanics (steer.accepted, etc.) are intentionally
+NOT modeled here — they are transport-layer details not consumed by renderers.
 """
 
 from __future__ import annotations
@@ -68,7 +71,9 @@ class AskPending(BaseModel):
 class AskResolved(BaseModel):
     type: Literal["ask.resolved"]
     id: str
-    answer: dict
+    answer: dict | None = None
+    cancelled: bool = False
+    reason: str | None = None
 
 
 class SessionStatus(BaseModel):

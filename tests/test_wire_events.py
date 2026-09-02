@@ -1,5 +1,6 @@
 from marim_harness.server.wire_events import (
     AskPending,
+    AskResolved,
     TextDelta,
     ToolCall,
     TurnFinished,
@@ -51,6 +52,17 @@ def test_parse_every_known_type():
             "session.status",
         ),
         (
+            {"type": "session.renamed", "from": "old", "to": "new"},
+            "session.renamed",
+        ),
+        ({"type": "tasks.changed"}, "tasks.changed"),
+        ({"type": "jobs.changed"}, "jobs.changed"),
+        ({"type": "compaction.started"}, "compaction.started"),
+        (
+            {"type": "compaction.finished", "before": 1000, "after": 500},
+            "compaction.finished",
+        ),
+        (
             {
                 "type": "subagent.event",
                 "stream_id": "s1",
@@ -58,6 +70,71 @@ def test_parse_every_known_type():
             },
             "subagent.event",
         ),
+        (
+            {"type": "subagent.notice", "stream_id": "s1", "message": "started"},
+            "subagent.notice",
+        ),
+        (
+            {"type": "subagent.model", "stream_id": "s1", "model": "gpt-4"},
+            "subagent.model",
+        ),
+        (
+            {"type": "subagent.thinking", "stream_id": "s1", "level": "high"},
+            "subagent.thinking",
+        ),
+        (
+            {"type": "subagent.usage", "stream_id": "s1", "usage": {"input": 10}},
+            "subagent.usage",
+        ),
+        (
+            {
+                "type": "subagent.cli_activity",
+                "events": [{"type": "tool_use", "id": "tc1"}],
+            },
+            "subagent.cli_activity",
+        ),
+        (
+            {
+                "type": "workflow.spawned",
+                "stream_id": "w1",
+                "spawn_type": "agent",
+                "task": "research",
+                "parent_tool_call_id": "tc1",
+            },
+            "workflow.spawned",
+        ),
+        (
+            {
+                "type": "workflow.started",
+                "tool_call_id": "tc1",
+                "title": "Research Phase",
+            },
+            "workflow.started",
+        ),
+        (
+            {
+                "type": "workflow.logged",
+                "tool_call_id": "tc1",
+                "message": "Running search",
+            },
+            "workflow.logged",
+        ),
+        (
+            {
+                "type": "workflow.finished",
+                "tool_call_id": "tc1",
+                "outcome": "success",
+                "failed": False,
+            },
+            "workflow.finished",
+        ),
+        (
+            {"type": "workflow.spawn_finished", "stream_id": "w1", "report": "done"},
+            "workflow.spawn_finished",
+        ),
+        ({"type": "session.ttft", "seconds": 0.5}, "session.ttft"),
+        ({"type": "session.mode_changed", "mode": "auto"}, "session.mode_changed"),
+        ({"type": "session.notice", "message": "connected"}, "session.notice"),
         ({"type": "stream.gap", "resync": "history"}, "stream.gap"),
     ]
     for data, expected in cases:
@@ -94,3 +171,35 @@ def test_models_carry_fields():
     assert done.interrupted is True
     delta = parse_wire_event({"type": "text.delta", "text": "x"})
     assert isinstance(delta, TextDelta)
+
+
+def test_ask_resolved_accepts_answer_shape():
+    """AskResolved parses the normal answer-submission shape."""
+    m = parse_wire_event({"type": "ask.resolved", "id": "a1", "answer": {"ok": True}})
+    assert isinstance(m, AskResolved)
+    assert m.id == "a1"
+    assert m.answer == {"ok": True}
+    assert m.cancelled is False
+    assert m.reason is None
+
+
+def test_ask_resolved_accepts_cancelled_shape():
+    """AskResolved parses the interrupted/cancelled shape from host._cancel_pending."""
+    m = parse_wire_event(
+        {"type": "ask.resolved", "id": "a1", "cancelled": True, "reason": "interrupted"}
+    )
+    assert isinstance(m, AskResolved)
+    assert m.id == "a1"
+    assert m.cancelled is True
+    assert m.reason == "interrupted"
+    assert m.answer is None
+
+
+def test_session_renamed_from_field():
+    """SessionRenamed parses the 'from' keyword correctly via Field alias."""
+    m = parse_wire_event({"type": "session.renamed", "from": "session-a", "to": "session-b"})
+    from marim_harness.server.wire_events import SessionRenamed
+
+    assert isinstance(m, SessionRenamed)
+    assert m.from_ == "session-a"
+    assert m.to == "session-b"
