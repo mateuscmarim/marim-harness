@@ -14,6 +14,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -22,6 +23,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from marim_harness.runtime.harness import (
     Harness,
+    _drop_contentless_responses,
     _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
@@ -740,3 +742,118 @@ async def test_rollback_persist_failure_does_not_mask_cancel(tmp_path):
 
     with pytest.raises(asyncio.CancelledError):
         await harness.run_turn("change foo to bar")
+
+
+def test_drop_contentless_keeps_a_normal_history():
+    """Noop guard: a history whose responses all carry text or a tool call is
+    returned unchanged, so callers can skip a redundant persist."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[ThinkingPart(content="hmm"), TextPart(content="done")]),
+    ]
+    assert _drop_contentless_responses(history) is history
+
+
+def test_drop_contentless_removes_a_thinking_only_response():
+    """The wedge this exists for. Interrupting a turn while the model is still
+    reasoning — before any text or tool call — persists a ModelResponse whose
+    only parts are ThinkingParts. pydantic-ai maps that to
+    ``{"role": "assistant", "content": null}`` with no tool_calls, which Alibaba
+    (qwen) rejects with "The content field is a required field", wedging the
+    session for good: every later turn re-sends the same history."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(
+                    content="still reasoning when the user hit Esc",
+                    provider_name="openrouter",
+                    provider_details={"type": "reasoning.text", "index": 0},
+                )
+            ],
+            state="interrupted",
+        ),
+        ModelRequest(parts=[UserPromptPart(content="continue")]),
+    ]
+    cleaned = _drop_contentless_responses(history)
+    assert [type(m) for m in cleaned] == [ModelRequest, ModelRequest]
+
+
+def test_drop_contentless_removes_a_zero_part_response():
+    """A failed turn flushes a ModelResponse with no parts at all. pydantic-ai
+    happens to skip these when mapping, but they are still junk in the store and
+    render as an empty assistant turn — drop them on the same pass."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[], state="interrupted"),
+    ]
+    assert _drop_contentless_responses(history) == history[:1]
+
+
+def test_drop_contentless_keeps_a_thinking_plus_tool_call_response():
+    """Over-removal guard, and the reason the predicate is 'every part is a
+    ThinkingPart' rather than 'no TextPart': a reasoning model's tool-calling
+    turn is thinking + tool call, maps to content:null *with* tool_calls (which
+    providers accept), and dropping it would strand the matching ToolReturnPart."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content="I should look"),
+                ToolCallPart(tool_name="bash", args="{}", tool_call_id="tc1"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart(tool_name="bash", content="ok", tool_call_id="tc1")]),
+    ]
+    assert _drop_contentless_responses(history) is history
+
+
+def test_drop_contentless_keeps_an_empty_string_text_response():
+    """Narrowness guard: a TextPart with empty content maps to ``content: ""`` —
+    present, not missing — so it is a different (accepted) shape and must not be
+    swept up by this scrub."""
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(parts=[ThinkingPart(content="x"), TextPart(content="")]),
+    ]
+    assert _drop_contentless_responses(history) is history
+
+
+async def test_resume_strips_thinking_only_response_then_runs(tmp_path):
+    """End-to-end for the qwen wedge: a session whose history holds an interrupted
+    thinking-only response must resume on the next prompt, and the request the
+    provider sees must no longer contain it. Reproduces the reported timeline —
+    the user hit Esc mid-reasoning, kept working on a tolerant provider, then
+    switched back to qwen and every turn 400'd on "The content field is a
+    required field"."""
+    deps = _make_deps(tmp_path)
+    seen: dict = {}
+
+    def reply(messages, info):
+        seen["messages"] = list(messages)
+        return ModelResponse(parts=[TextPart(content="resumed")])
+
+    harness = _harness(FunctionModel(reply), deps)
+    harness.session.history = [
+        ModelRequest(parts=[UserPromptPart(content="go")]),
+        ModelResponse(
+            parts=[ThinkingPart(content="reasoning when the abort landed")],
+            state="interrupted",
+        ),
+    ]
+
+    output = await harness.run_turn("continue")  # must NOT raise
+
+    assert output.result == "resumed"
+    # Nothing the provider saw maps to a content-less assistant message.
+    contentless = [
+        m
+        for m in seen["messages"]
+        if isinstance(m, ModelResponse) and all(isinstance(p, ThinkingPart) for p in m.parts)
+    ]
+    assert contentless == []
+    # And it is gone from the persisted history too, not just the wire.
+    assert not any(
+        isinstance(m, ModelResponse) and all(isinstance(p, ThinkingPart) for p in m.parts)
+        for m in harness.session.history
+    )

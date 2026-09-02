@@ -54,6 +54,7 @@ from .context import (
 )
 from .controller import (  # noqa: F401 — _has_unanswered_tool_calls/_repair_unanswered_tool_calls re-exported for tests; _drop_nameless_tool_calls used locally by build_collaborators
     TurnController,
+    _drop_contentless_responses,
     _drop_nameless_tool_calls,
     _has_unanswered_tool_calls,
     _repair_unanswered_tool_calls,
@@ -349,6 +350,10 @@ def build_collaborators(
         #    never streamed (a flaky model/provider emits these live mid-turn);
         #    left in, every provider rejects the next request with "tool_calls[i]
         #    is missing a function name", failing the turn.
+        #  - _drop_contentless_responses strips a response left carrying only
+        #    reasoning by an abort; it maps to an assistant message with no
+        #    content and no tool_calls, which some providers (qwen) reject
+        #    outright, wedging every later turn in the session.
         #  - suggest_unknown_tool_retry enriches an unknown-tool rejection with the
         #    nearest registered name (e.g. agents_memory_smart_search for
         #    agentmemory_memory_smart_search) so the retry has a concrete target.
@@ -360,6 +365,7 @@ def build_collaborators(
         # capability (e.g. a pydantic-ai-harness module) transforms it.
         capabilities=[
             ProcessHistory(_drop_nameless_tool_calls),
+            ProcessHistory(_drop_contentless_responses),
             ProcessHistory(suggest_unknown_tool_retry),
             DiscoveredInstructionsCapability(mcp),
             *cast("list[AbstractCapability]", cfg.capabilities),

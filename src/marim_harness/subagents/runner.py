@@ -448,7 +448,7 @@ class SubagentRunner:
         # Imported lazily for the same reason as run_driver.py's own harness
         # import: agent.py imports this module, so a top-level import of the
         # harness would cycle.
-        from ..runtime.harness import _drop_nameless_tool_calls
+        from ..runtime.harness import _drop_contentless_responses, _drop_nameless_tool_calls
 
         capabilities: list[ProcessHistory[Deps]] = []
         if checkpoint is not None:
@@ -469,6 +469,10 @@ class SubagentRunner:
         # It runs before EVERY request, so it catches a call buried mid-history
         # that the transient-retry repair (only on the resume path) never sees.
         capabilities.append(ProcessHistory(_drop_nameless_tool_calls))
+        # Same reasoning, content axis: an aborted spawn can leave a response
+        # carrying only reasoning, which maps to an assistant message with no
+        # content and no tool_calls — a shape qwen rejects outright.
+        capabilities.append(ProcessHistory(_drop_contentless_responses))
         # One masker PER SPAWN (it holds the run's committed mask set, so sharing
         # would leak one run's masked tool_call_ids into another's requests); None
         # when masking is disabled.
