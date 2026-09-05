@@ -40,6 +40,7 @@ from pydantic_ai.usage import RequestUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.env import INSTALL_HINT, CodexUnavailable, codex_available
+from ..codex.quota import QuotaHint, quota_from
 from ..codex.server import (
     CodexServer,
     ThreadHandle,
@@ -145,7 +146,18 @@ class CodexCliModel(ExternalCliModel):
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
         self._server = server
+        # Two facts about an injected server, kept apart because they diverge
+        # for an ephemeral clone: `_injected` skips the ambient PATH/login
+        # probe (the injector chose its binary; see _ensure_server), while
+        # `_owns_server` says aclose() may close it. A clone shares its
+        # parent's injected server, so it is injected but NOT owned.
+        self._injected = server is not None
+        self._owns_server = server is not None
         self.thread: ThreadHandle | None = None
+        # The latest quota reading (`account/rateLimits/read`), refreshed
+        # once per turn; the TUI status bar renders it. None until the first
+        # turn completes, or whenever the read fails.
+        self.quota_hint: QuotaHint | None = None
         # Per-model catalog of reasoning efforts (model id -> efforts), filled
         # lazily from model/list on the first turn; drives effort_for.
         self._efforts: dict[str, list[str]] | None = None
@@ -162,6 +174,10 @@ class CodexCliModel(ExternalCliModel):
         it can't edit, no session ref so it can never resume — or hijack — the
         user's live thread."""
         clone = CodexCliModel(self._model_id, ephemeral=True, server=self._server)
+        # The clone borrows the parent's server (shared or privately injected)
+        # — its aclose() must drop only its own thread, never close a server
+        # the parent's session is still running on.
+        clone._owns_server = False
         clone.cwd = cwd
         clone.mode_getter = lambda: "plan"
         return clone
@@ -174,23 +190,25 @@ class CodexCliModel(ExternalCliModel):
 
     async def aclose(self) -> None:
         """A private server (a test, or an embedder wiring its own
-        ``CodexServer`` in directly) is fully owned here and closed
-        unconditionally. The process-wide shared singleton, though, may still
-        be serving other harnesses/spawns/ephemeral clones in the same
-        process (a daemon holds many concurrently) — closing it out from
-        under them would sever every other live thread, so this only drops
-        THIS model's own thread and lets ``close_shared_server_if_idle``
-        close the singleton once nothing else is registered on it (final
-        review Important #4)."""
+        ``CodexServer`` in directly) is owned by the model it was injected
+        into and closed unconditionally there. Anything else — the
+        process-wide shared singleton, or an ephemeral clone borrowing its
+        parent's private server — may still be serving other harnesses/
+        spawns/clones in the same process (a daemon holds many concurrently);
+        closing it out from under them would sever every other live thread,
+        so this only drops THIS model's own thread and, for the singleton,
+        lets ``close_shared_server_if_idle`` close it once nothing else is
+        registered on it (final review Important #4)."""
         if self._server is None:
             return
-        if not is_shared_server(self._server):
+        if self._owns_server and not is_shared_server(self._server):
             await self._server.aclose()
             return
         if self.thread is not None:
             self._server.drop_thread(self.thread)
             self.thread = None
-        await close_shared_server_if_idle()
+        if is_shared_server(self._server):
+            await close_shared_server_if_idle()
 
     # --- mode / policy ----------------------------------------------------------
     def _mode(self) -> Mode:
@@ -227,9 +245,13 @@ class CodexCliModel(ExternalCliModel):
         # binary if it's missing, so gating on the global probe too would
         # reject a perfectly good injected server just because "codex" isn't
         # on the ambient PATH. See task-8-report.md for the brief deviation.
-        if self._server is None and not codex_available():
-            raise CliModelError(f"codex CLI unavailable. {INSTALL_HINT}")
+        # The probe re-runs whenever the (non-injected) server would have to
+        # be (re)spawned, not just on the very first turn: a `codex logout`
+        # or uninstall between turns must surface as the actionable
+        # "unavailable" error, not as a bare spawn failure.
         server = self.server
+        if not self._injected and not server.alive and not codex_available():
+            raise CliModelError(f"codex CLI unavailable. {INSTALL_HINT}")
         try:
             await server.start()
         except CodexUnavailable as exc:
@@ -341,6 +363,7 @@ class CodexCliModel(ExternalCliModel):
                     parts.append(seg)
             elif isinstance(item, Notice):
                 logger.info("codex: %s", item.message)
+        await self._refresh_quota(server)
         usage = finish_turn(handle, state)
         return ModelResponse(
             parts=[TextPart(content="".join(parts))],
@@ -363,6 +386,7 @@ class CodexCliModel(ExternalCliModel):
         stream = CodexStreamedResponse(
             model_request_parameters=model_request_parameters,
             _items=turn_events(server, handle, state),
+            _after=lambda: self._refresh_quota(server),
             _finish=lambda: finish_turn(handle, state),
             _model_id=self.model_name,
             _ts=datetime.now(tz=timezone.utc),
@@ -375,6 +399,18 @@ class CodexCliModel(ExternalCliModel):
                 with contextlib.suppress(Exception):
                     await server.interrupt(handle)
                 handle.current_turn_id = None
+
+    # --- quota -------------------------------------------------------------------------
+    async def _refresh_quota(self, server: CodexServer) -> None:
+        """Poll ``account/rateLimits/read`` once, after a turn's events have
+        drained (so it runs on the consuming task's normal await path, never
+        inside a cancellation-time ``finally``), and keep the reading for the
+        status bar. Failures are ignored: the hint is informational, and a
+        server that died mid-turn already raised through ``turn_events``."""
+        try:
+            self.quota_hint = quota_from(await server.read_rate_limits())
+        except Exception as exc:  # noqa: BLE001 - best-effort status-line hint
+            logger.debug("codex account/rateLimits/read failed: %s", exc)
 
     # --- live controls ---------------------------------------------------------------
     def steer(self, text: str) -> bool:
@@ -403,6 +439,9 @@ class CodexStreamedResponse(StreamedResponse):
     when no UI is bound — the same two rendering modes as claude-cli."""
 
     _items: AsyncIterator[object] | None = None
+    # Awaited once the items drain, before _finish: the model's per-turn
+    # quota poll. Best-effort — it never raises into the stream.
+    _after: Callable[[], Awaitable[None]] | None = None
     _finish: Callable[[], RequestUsage] | None = None
     _model_id: str = "default"
     _ts: datetime | None = None
@@ -430,6 +469,14 @@ class CodexStreamedResponse(StreamedResponse):
             elif isinstance(item, (ActivityStart, ActivityEnd)):
                 async for ev in folder.emit_tool(item):
                     yield ev
+        await self._settle()
+
+    async def _settle(self) -> None:
+        """Runs once the items drain: the per-turn quota poll first (it is
+        best-effort and never raises into the stream), then fold the turn's
+        usage and mark the response finished."""
+        if self._after is not None:
+            await self._after()
         if self._finish is not None:
             self._usage = self._finish()
         self._finished = True

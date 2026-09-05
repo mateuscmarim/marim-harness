@@ -207,6 +207,11 @@ def test_turn_level_notifications():
     assert t.translate("thread/tokenUsage/updated", usage) == [
         UsageUpdate({"inputTokens": 10, "outputTokens": 2})
     ]
+    # `last` (the newest response's own usage) rides along with the total.
+    usage = {"tokenUsage": {"total": {"inputTokens": 10}, "last": {"inputTokens": 4}}}
+    assert t.translate("thread/tokenUsage/updated", usage) == [
+        UsageUpdate({"inputTokens": 10}, {"inputTokens": 4})
+    ]
     assert t.translate(
         "turn/completed", {"turn": {"id": "t", "status": "completed", "error": None}}
     ) == [TurnDone("completed", None)]

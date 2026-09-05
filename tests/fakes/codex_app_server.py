@@ -91,6 +91,7 @@ class Fake:
             "turn/steer": self.on_turn_steer,
             "thread/compact/start": self.on_compact,
             "model/list": self.on_model_list,
+            "account/rateLimits/read": self.on_rate_limits,
         }.get(method)
         if handler is None:
             self.send({"id": rid, "error": {"code": -32601, "message": f"unknown {method}"}})
@@ -150,6 +151,16 @@ class Fake:
                 },
             }
         )
+
+    def on_rate_limits(self, rid, params) -> None:
+        # Scenario key `rateLimits` = the RateLimitSnapshot to return; absent
+        # -> an error reply, so the default scenario exercises the
+        # failure-is-ignored path of the quota hint.
+        limits = self.scenario.get("rateLimits")
+        if limits is None:
+            self.send({"id": rid, "error": {"code": -32000, "message": "no rate limits"}})
+            return
+        self.send({"id": rid, "result": {"rateLimits": limits}})
 
     def on_compact(self, rid, params) -> None:
         self.send({"id": rid, "result": {}})

@@ -31,6 +31,9 @@ class TurnState:
 
     translator: ItemTranslator = field(default_factory=ItemTranslator)
     usage_total: dict = field(default_factory=dict)
+    # The turn's FIRST usage update, kept whole (total + last) so finish_turn
+    # can seed a resumed thread's baseline from it.
+    first_usage: UsageUpdate | None = None
     done: TurnDone | None = None
     failure: str | None = None
 
@@ -73,6 +76,8 @@ def _fold(item: object, state: TurnState) -> object | None:
     to yield."""
     if isinstance(item, UsageUpdate):
         state.usage_total = item.total
+        if state.first_usage is None:
+            state.first_usage = item
         return None
     if isinstance(item, TurnDone):
         state.done = item
@@ -116,6 +121,30 @@ async def turn_events(
         handle.current_turn_id = None
 
 
+def _seeded_baseline(handle: ThreadHandle, state: TurnState) -> dict:
+    """The usage baseline this turn's delta is measured from.
+
+    A thread started in this process has its baseline advanced turn by turn.
+    A RESUMED thread (``thread/resume`` after ``--resume``, or a spawn
+    resumed from its sidecar) starts with an empty baseline while Codex's
+    ``total`` still carries every earlier turn's tokens — measured naively,
+    the first turn after a resume would report the whole thread's history
+    as its own usage (and bill it into the session ledger). The wire gives
+    the fix for free: each usage update also carries ``last``, the newest
+    response's own usage, so ``total − last`` at the first update is the
+    thread's usage BEFORE this turn's first response — exactly the baseline
+    a fresh thread would have had. For a fresh thread ``total == last`` on
+    its first update, so the seed is all zeros and nothing changes.
+
+    Best-effort: if Codex ever emits a start-of-turn snapshot repeating the
+    previous ``last`` before the first new response, the seed over-reports
+    by that one response — still bounded, unlike the whole-history error it
+    replaces. Only ever applied when the baseline is empty."""
+    if handle.usage_baseline or state.first_usage is None or not state.first_usage.last:
+        return handle.usage_baseline
+    return delta_since(state.first_usage.total, state.first_usage.last)
+
+
 def finish_turn(handle: ThreadHandle, state: TurnState) -> RequestUsage:
     """Per-turn usage for a completed turn; raises ``CliModelError`` when the
     turn failed (or never reported completion). Advances the thread's usage
@@ -124,7 +153,7 @@ def finish_turn(handle: ThreadHandle, state: TurnState) -> RequestUsage:
     if done is None or done.status == "failed":
         msg = (done.error if done else None) or state.failure or "codex turn failed"
         raise CliModelError(f"codex: {msg}")
-    usage = usage_from_total(delta_since(state.usage_total, handle.usage_baseline))
+    usage = usage_from_total(delta_since(state.usage_total, _seeded_baseline(handle, state)))
     if state.usage_total:
         handle.usage_baseline = dict(state.usage_total)
     return usage

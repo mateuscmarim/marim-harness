@@ -274,13 +274,17 @@ class ProvidersPane(Vertical):
         # actually displayed, so the cards show live truth ('✓ connected ·
         # N models') matching what a save would show — skipped when there's
         # no MultiModelSource (embedding/tests) and for claude-cli (nothing
-        # to fetch). Once per pane lifetime: rail navigation away and back
-        # must not re-fire network calls (the cache repaints the verdicts).
+        # to fetch). codex-cli has no key but IS verifiable: its catalog
+        # fetch is a live `model/list` against the app-server, so the card
+        # can prove the CLI actually answers, not just that it is installed.
+        # Once per pane lifetime: rail navigation away and back must not
+        # re-fire network calls (the cache repaints the verdicts).
         if self._verified_once:
             return
         self._verified_once = True
         for spec in PROVIDER_SPECS:
-            if spec.write_key is not None and self._configured(spec):
+            verifiable = spec.write_key is not None or spec.name == "codex-cli"
+            if verifiable and self._configured(spec):
                 self._start_verify(spec.name)
 
     def _arm(self) -> None:
@@ -310,15 +314,16 @@ class ProvidersPane(Vertical):
             )
 
     def _status_text(self, spec: ProviderSpec, configured: bool) -> str:
-        if spec.name == "claude-cli":
+        if configured and spec.name in self._verify_results:
+            # A live verdict beats the static "configured"/"detected":
+            # repaints (the default marker moving between cards, another
+            # card's save) must not regress a ✓/✗ badge that verification
+            # already earned.
+            base = self._verify_results[spec.name]
+        elif spec.name == "claude-cli":
             base = "detected on PATH" if configured else "not found"
         elif spec.name == "codex-cli":
             base = "detected + logged in" if configured else "not found or not logged in"
-        elif configured and spec.name in self._verify_results:
-            # A live verdict beats the static "configured": repaints (the
-            # default marker moving between cards, another card's save) must
-            # not regress a ✓/✗ badge that verification already earned.
-            base = self._verify_results[spec.name]
         else:
             base = "configured" if configured else "not configured"
         if spec.name == current_default_provider():

@@ -423,7 +423,18 @@ class CodexServer:
     async def list_models(self) -> list[dict]:
         result = await self._rpc().request("model/list", {}, timeout=30.0)
         data = result.get("data")
-        return [m for m in data if isinstance(m, dict)] if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [m for m in data if isinstance(m, dict)]
+
+    async def read_rate_limits(self) -> dict | None:
+        """The account's ``RateLimitSnapshot`` (``account/rateLimits/read``),
+        or None when the response carries none. Raises like any RPC — the
+        caller decides whether a failure matters (the status-line quota hint
+        ignores it; see ``codex/quota.py``)."""
+        result = await self._rpc().request("account/rateLimits/read", {}, timeout=10.0)
+        limits = result.get("rateLimits")
+        return limits if isinstance(limits, dict) else None
 
 
 # --- shared instance --------------------------------------------------------

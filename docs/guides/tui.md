@@ -51,6 +51,10 @@ Fields are separated by `·`, left to right:
 - **ttft N.Ns** — time-to-first-token of the latest model request: how snappy
   the provider feels right now. It lingers while idle (it describes the last
   request) and clears on a session reset.
+- **quota 37% (5h) · 12% (1w)** — `codex-cli` only: the subscription's
+  primary and secondary rate-limit windows (percent used, window length),
+  refreshed once per turn from `account/rateLimits/read`. Absent for other
+  providers or when the read fails.
 - **working… Nm** — appears only while a turn runs, with the turn's elapsed
   time and an animated spinner in the header/tab title.
 
@@ -278,7 +282,8 @@ Two kinds of settings live here:
 
 - Mode (this session), model, theme
 - MCP server enable/disable
-- Provider credentials (Providers section)
+- Provider credentials (Providers section; keyed providers and a detected
+  `codex-cli` are verified live when the section opens)
 - Autonomous wake (session-only; mirrors `/jobs wake`)
 - Dynamic workflows (persists `MARIM_WORKFLOWS` *and* flips the live seam
   when possible)

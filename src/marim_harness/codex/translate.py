@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import shlex
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,13 @@ class ActivityEnd:
 
 @dataclass(frozen=True)
 class UsageUpdate:
+    """``thread/tokenUsage/updated``: ``total`` is the thread's cumulative
+    usage, ``last`` the most recent model response's own usage. Both are
+    required on the wire; ``last`` is what lets a resumed thread seed its
+    usage baseline (see ``turn.finish_turn``)."""
+
     total: dict
+    last: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -255,8 +261,8 @@ class ItemTranslator:
 
     # --- turn level ---------------------------------------------------------
     def _usage(self, params: dict) -> list[object]:
-        total = (params.get("tokenUsage") or {}).get("total") or {}
-        return [UsageUpdate(dict(total))]
+        usage = params.get("tokenUsage") or {}
+        return [UsageUpdate(dict(usage.get("total") or {}), dict(usage.get("last") or {}))]
 
     def _turn_completed(self, params: dict) -> list[object]:
         turn = params.get("turn") or {}

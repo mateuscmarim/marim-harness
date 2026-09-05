@@ -147,6 +147,17 @@ thread. The thread id is saved with the session, so `--resume` continues the
 same Codex thread; if Codex no longer has it, a fresh thread starts from the
 saved history.
 
+Per-turn usage on a resumed thread is seeded from Codex's own
+`thread/tokenUsage/updated` notification (its cumulative `total` minus the
+newest response's `last` at the turn's first update), so the first turn
+after `--resume` reports only its own tokens rather than the whole thread's
+history. After each turn marim also polls `account/rateLimits/read` once and
+shows the subscription quota in the status bar as `quota 37% (5h) · 12% (1w)`
+(primary and secondary windows); a failed read is ignored and the field
+simply stays absent. The Settings › Providers card verifies the CLI live on
+show (a `model/list` against the app-server) and reports
+`✓ connected · N models` like a keyed provider.
+
 ## Context window & compaction
 
 | Variable | Default | Purpose |

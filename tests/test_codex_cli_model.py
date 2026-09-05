@@ -716,3 +716,139 @@ async def test_streamed_response_defensive_defaults_without_items_or_finish():
     no_finish = CodexStreamedResponse(model_request_parameters=PARAMS, _items=_aiter([]))
     assert [ev async for ev in no_finish._get_event_iterator()] == []
     assert no_finish._finished is True
+
+
+def _usage_turn(text: str, total: dict, last: dict) -> list[dict]:
+    return [
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": text}},
+        {
+            "notify": "thread/tokenUsage/updated",
+            "params": {"tokenUsage": {"total": total, "last": last}},
+        },
+    ]
+
+
+async def test_resumed_thread_seeds_its_usage_baseline_from_last(tmp_path):
+    """After `thread/resume` the baseline is empty while Codex's `total` still
+    carries every earlier turn — the first turn must report only ITS usage
+    (`total − last` at the first update seeds the baseline), and the next
+    turn's delta must start from the advanced baseline."""
+    m = _model(
+        tmp_path,
+        {
+            "resumable": ["thread-9"],
+            "turns": [
+                _usage_turn(
+                    "a",
+                    {"inputTokens": 1000, "outputTokens": 500, "cachedInputTokens": 100},
+                    {"inputTokens": 12, "outputTokens": 5, "cachedInputTokens": 3},
+                ),
+                _usage_turn(
+                    "b",
+                    {"inputTokens": 1020, "outputTokens": 510, "cachedInputTokens": 104},
+                    {"inputTokens": 20, "outputTokens": 10, "cachedInputTokens": 4},
+                ),
+            ],
+        },
+    )
+    m.session_ref_getter = lambda: "codex-cli:thread-9"
+    try:
+        first = await m.request(_msgs("one"), None, PARAMS)
+        second = await m.request(_msgs("two"), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert (first.usage.input_tokens, first.usage.output_tokens) == (12, 5)
+    assert first.usage.cache_read_tokens == 3
+    assert (second.usage.input_tokens, second.usage.output_tokens) == (20, 10)
+    assert second.usage.cache_read_tokens == 4
+
+
+async def test_fresh_thread_usage_is_unchanged_by_baseline_seeding(tmp_path):
+    """On a brand-new thread the first update has total == last, so the seed
+    is all zeros and the turn reports the full total exactly as before."""
+    total = {"inputTokens": 12, "outputTokens": 5, "cachedInputTokens": 3}
+    m = _model(tmp_path, {"turns": [_usage_turn("a", total, dict(total))]})
+    try:
+        resp = await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert (resp.usage.input_tokens, resp.usage.output_tokens) == (12, 5)
+
+
+async def test_ephemeral_clone_aclose_keeps_the_parents_private_server(tmp_path):
+    """A clone borrows its parent's injected server: closing the clone drops
+    only the clone's thread. Closing the server itself is the parent's call
+    (an embedder's session must survive its own titler finishing)."""
+    m = _model(tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})
+    await m.request(_msgs(), None, PARAMS)
+    srv = m._server
+    assert srv is not None and m.thread is not None
+    clone = m.ephemeral_clone(cwd=str(tmp_path))
+    await clone.request(_msgs("title this"), None, PARAMS)
+    assert clone.thread is not None
+    assert srv.thread_ids == {m.thread.thread_id, clone.thread.thread_id}
+
+    await clone.aclose()
+    assert srv.alive
+    assert srv.thread_ids == {m.thread.thread_id}
+
+    await m.aclose()
+    assert not srv.alive
+
+
+async def test_availability_is_reprobed_only_when_the_server_must_respawn(tmp_path, monkeypatch):
+    """The PATH/login probe guards every (re)spawn of the shared server, not
+    just the first turn: a `codex logout` mid-session surfaces as the
+    actionable 'unavailable' error once the server has to come back, while a
+    live server keeps serving turns without re-probing."""
+    _login(monkeypatch, tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})
+    m = CodexCliModel("gpt-5.6-sol")  # no injected server -> the shared one
+    m.cwd = str(tmp_path)
+    try:
+        await m.request(_msgs("one"), None, PARAMS)
+        (tmp_path / "codex-home" / "auth.json").unlink()  # "logged out" from now on
+        resp = await m.request(_msgs("two"), None, PARAMS)  # server alive: no probe
+        assert resp.parts[0].content == "b"
+        await close_shared_server()  # the server is gone; the next turn must respawn
+        with pytest.raises(CliModelError, match="unavailable"):
+            await m.request(_msgs("three"), None, PARAMS)
+    finally:
+        await close_shared_server()
+
+
+RATE_LIMITS = {
+    "primary": {"usedPercent": 37, "resetsAt": 1, "windowDurationMins": 300},
+    "secondary": {"usedPercent": 12, "resetsAt": 2, "windowDurationMins": 10080},
+    "planType": "plus",
+}
+
+
+async def test_quota_hint_is_refreshed_once_per_turn(tmp_path):
+    m = _model(tmp_path, {"rateLimits": RATE_LIMITS, "turns": [_hello_turn(), _hello_turn()]})
+    assert m.quota_hint is None
+    try:
+        await m.request(_msgs("one"), None, PARAMS)
+        assert m.quota_hint is not None
+        assert m.quota_hint.render() == "quota 37% (5h) · 12% (1w)"
+        async with m.request_stream(_msgs("two"), None, PARAMS) as stream:
+            async for _ in stream:
+                pass
+    finally:
+        await m.aclose()
+    log = read_request_log(tmp_path)
+    assert sum(r["method"] == "account/rateLimits/read" for r in log) == 2
+    assert m.quota_hint is not None and m.quota_hint.primary is not None
+    assert m.quota_hint.primary.used_percent == 37
+
+
+async def test_quota_read_failure_is_ignored(tmp_path):
+    """The fake answers `account/rateLimits/read` with an error unless the
+    scenario carries `rateLimits` — the turn still completes and the hint
+    simply stays unset."""
+    m = _model(tmp_path, {"turns": [_hello_turn()]})
+    try:
+        resp = await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert resp.parts[0].content == "Hi there"
+    assert m.quota_hint is None

@@ -722,3 +722,50 @@ async def test_codex_card_reports_binary_detection():
     async with _PaneHost(codex_detected=False).run_test() as pilot:
         pane = pilot.app.query_one(ProvidersPane)
         assert "not found" in str(pane.query_one("#prov-status-codex-cli", Static).render())
+
+
+@pytest.mark.anyio
+async def test_codex_cli_card_verifies_on_show(isolated_env, monkeypatch, tmp_path):
+    """codex-cli has no key to save, but its catalog is a live `model/list`
+    against the app-server — so a detected CLI is verified on show and the
+    card earns the same '✓ connected · N models' verdict as a keyed provider
+    (instead of the static 'detected + logged in')."""
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config import model as _m
+    from marim_harness.config.model import MultiModelSource
+    from marim_harness.workspace import ModelEntry
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr(_m, "_claude_cli_available", lambda: False)
+    monkeypatch.setattr(_m, "_codex_cli_available", lambda: True)
+    monkeypatch.setenv("MARIM_PROVIDER", "codex-cli")
+    multi = MultiModelSource.from_env()
+    stub = AsyncMock(return_value=[ModelEntry(id="gpt-5.6-sol", name="Sol")])
+    monkeypatch.setattr(multi.sources["codex-cli"], "list_models", stub)
+    app = _PaneHost(model_source=multi, codex_detected=True)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        pane = app.query_one(ProvidersPane)
+        badge = str(pane.query_one("#prov-status-codex-cli", Static).render())
+        # A repaint (the default marker moving) must keep the earned verdict.
+        pane._paint_card(next(s for s in PROVIDER_SPECS if s.name == "codex-cli"))
+        repainted = str(pane.query_one("#prov-status-codex-cli", Static).render())
+    assert "✓ connected · 1 models" in badge and "default" in badge
+    assert "✓ connected · 1 models" in repainted
+    stub.assert_awaited_once_with(strict=True)
+
+
+@pytest.mark.anyio
+async def test_undetected_codex_cli_card_is_not_verified(isolated_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    app = _PaneHost(codex_detected=False)
+    async with app.run_test(size=(120, 45)) as pilot:
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        pane = app.query_one(ProvidersPane)
+        badge = str(pane.query_one("#prov-status-codex-cli", Static).render())
+    assert "not found or not logged in" in badge
+    assert "codex-cli" not in pane._verify_results

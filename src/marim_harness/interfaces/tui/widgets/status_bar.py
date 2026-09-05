@@ -81,6 +81,13 @@ class StatusBar(Static):
             self._cost, _ = resolve_cost(usage, model_id)
         return self._cost
 
+    def _quota_text(self) -> str:
+        """The current model's quota hint (``quota 37% (5h) · 12% (1w)``), or
+        empty for providers that have none."""
+        app: HarnessApp = self.app  # type: ignore[assignment]
+        hint = getattr(getattr(app.harness, "current_model", None), "quota_hint", None)
+        return hint.render() if hint is not None else ""
+
     def render(self) -> Content:
         app: HarnessApp = self.app  # type: ignore[assignment]
         cfg = getattr(app.harness, "model_label", "model")
@@ -110,6 +117,12 @@ class StatusBar(Static):
         # (it describes the last request, still true).
         if self.last_ttft is not None:
             fields.append(Content(f"ttft {self.last_ttft:.1f}s"))
+        # Subscription quota (codex-cli only): the model keeps its latest
+        # `account/rateLimits/read` reading, refreshed once per turn; read
+        # straight off the live model like the other harness-state fields.
+        quota = self._quota_text()
+        if quota:
+            fields.append(Content(quota))
         if self.busy:
             elapsed = format_duration(time.monotonic() - self.turn_start)
             fields.append(Content(f"working… {elapsed}"))
