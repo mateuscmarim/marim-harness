@@ -377,6 +377,14 @@ class SessionController:
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
+            ref = self.store.cli_thread_id
+            if ref and not ref.startswith(model_id.split(":", 1)[0] + ":"):
+                # A thread belongs to one external CLI. Switching provider
+                # orphans it — the new model would ignore the foreign
+                # prefix anyway, but a stale ref must not outlive the switch
+                # on disk (a later switch back would resume a thread whose
+                # history the session no longer matches).
+                self.store.cli_thread_id = None
             if self.store.path.exists():
                 # Metadata-only on-disk patch, NOT a full persist: a model
                 # switch can land mid-turn, when the in-memory history may end
@@ -421,6 +429,25 @@ class SessionController:
         clean persist."""
         if self.store is not None:
             self.store.thinking = value
+            if self.store.path.exists():
+                self.store.save_meta()
+            else:
+                self.persist(force=True)
+
+    @property
+    def saved_cli_thread_id(self) -> str | None:
+        """The external-CLI thread ref persisted with this session
+        ("<provider>:<id>"), or None if unset or no store."""
+        return self.store.cli_thread_id if self.store is not None else None
+
+    def set_cli_thread_id(self, value: str | None) -> None:
+        """Persist the external-CLI thread ref. Same metadata-only patch
+        rules as ``set_thinking``: the ref lands mid-turn (the thread is
+        created on the first request), when in-memory history must never
+        reach disk, so patch the header when a file exists, else force one
+        clean persist."""
+        if self.store is not None:
+            self.store.cli_thread_id = value
             if self.store.path.exists():
                 self.store.save_meta()
             else:

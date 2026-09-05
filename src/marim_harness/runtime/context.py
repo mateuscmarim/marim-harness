@@ -196,4 +196,10 @@ def actionable_error_note(exc: BaseException) -> str | None:
         )
     if isinstance(exc, UnexpectedModelBehavior):
         return f"{head} {_short(exc)}. Adjust your approach and continue."
+    from ..config.external_cli import CliModelError
+
+    if isinstance(exc, CliModelError):
+        # An external CLI turn (claude-cli / codex-cli) failed or was cut off;
+        # the CLI's message is the actionable part (usage limit, auth, crash).
+        return f"{head} The external CLI reported: {_short(exc)}. Adjust and continue."
     return None

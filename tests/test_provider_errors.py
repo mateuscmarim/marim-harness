@@ -197,6 +197,23 @@ def test_no_actionable_note_for_provider_5xx():
     assert _actionable_error_note(_api_error(_OPENROUTER_502)) is None
 
 
+def test_actionable_note_for_cli_model_error():
+    # A failed external-CLI turn (codex-cli/claude-cli) carries the CLI's own
+    # reason; the model can act on usage-limit/auth/cut-off messages.
+    from marim_harness.config.external_cli import CliModelError
+
+    note = _actionable_error_note(CliModelError("codex: usage limit reached"))
+    assert note is not None
+    assert "usage limit reached" in note
+
+
+def test_cli_model_error_note_is_capped():
+    from marim_harness.config.external_cli import CliModelError
+
+    note = _actionable_error_note(CliModelError("x" * 1000))
+    assert note is not None and len(note) < 400
+
+
 def test_is_context_overflow_detects_openai_code():
     err = _api_error({"error": {"code": "context_length_exceeded", "message": "too long"}})
     assert is_context_overflow_error(err) is True

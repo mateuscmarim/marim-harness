@@ -11,6 +11,7 @@ from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
 from ..advisor import ADVISOR_OFF, make_advisor
+from ..config.external_cli import ExternalCliModel
 from ..mcp.discovered_instructions_capability import DiscoveredInstructionsCapability
 
 if TYPE_CHECKING:
@@ -1018,8 +1019,6 @@ class Harness:
         provider's model. Public because ``bootstrap`` (the CLI preset) binds it
         once after build, before any UI attaches — the internal set_model/bind_ui
         callers use it too, so a UI attached later re-binds the fresh callbacks."""
-        from ..config.external_cli import ExternalCliModel
-
         if not isinstance(model, ExternalCliModel):
             return
         model.mode_getter = lambda: self.mode.value
@@ -1033,16 +1032,11 @@ class Harness:
         has_scratchpad = services is not None and services.get_scratchpad
         model.scratchpad_getter = services.get_scratchpad if has_scratchpad else (lambda: None)
         model.thinking_getter = lambda: self.thinking_level_id
-        # ``saved_cli_thread_id``/``set_cli_thread_id`` land on SessionController
-        # in Task 10; wrapped in closures (rather than bare ``getattr(...)``) so
-        # both seams stay non-None callables — and this task's own test green —
-        # before and after that method lands, simplifying to a direct attribute
-        # reference once it does.
         session = self.session
-        model.session_ref_getter = lambda: getattr(session, "saved_cli_thread_id", None)
-        model.on_session_ref = lambda ref: getattr(session, "set_cli_thread_id", lambda _r: None)(
-            ref
+        model.session_ref_getter = (
+            (lambda: session.saved_cli_thread_id) if session is not None else None
         )
+        model.on_session_ref = session.set_cli_thread_id if session is not None else None
 
     def _build_advisor_model(self, model_id: str) -> Model:
         """Build the advisor's model: through the active model source when one
@@ -1231,6 +1225,11 @@ class Harness:
             lsp = getattr(self, "lsp", None)
             if lsp is not None:
                 await lsp.aclose()
+            # The process-wide codex app-server (if any turn ever started
+            # one). Idempotent; a no-op when codex-cli was never used.
+            from ..codex import server as codex_server
+
+            await codex_server.close_shared_server()
         finally:
             # A discarded Harness must not leak the session it was driving.
             # release_claim() is idempotent and a no-op for the daemon (its
@@ -1264,7 +1263,13 @@ class Harness:
         await self.hooks.session_end(reason)
 
     def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
-        """Delegate to ``turn_controller.steer``."""
+        """Delegate to ``turn_controller.steer`` — unless an external-CLI
+        model owns the live turn and took the steer itself (codex-cli's
+        ``turn/steer``): the harness's buffer would otherwise replay the text
+        as a second user turn after Codex already acted on it."""
+        model = self.current_model
+        if not attachments and isinstance(model, ExternalCliModel) and model.steer(text):
+            return
         self.turn_controller.steer(text, attachments)
 
     def add_shell_result(self, command: str, output: str) -> None:
@@ -1299,4 +1304,13 @@ class Harness:
         checkpoint-invalidation wrapper stays the single place every compaction
         is funneled through — a bare ``session.maybe_compact`` here would skip it
         and leave stale checkpoints that a later /rewind would slice mid-pair."""
-        return await self.turn_controller.manual_compact(instructions=instructions)
+        ok = await self.turn_controller.manual_compact(instructions=instructions)
+        if ok and isinstance(self.current_model, ExternalCliModel):
+            # Best-effort: marim's history is compacted; ask the external CLI
+            # to compact its own thread too so both sides shrink together.
+            # A failure here must not undo the local compaction.
+            try:
+                await self.current_model.compact_remote()
+            except Exception as exc:  # noqa: BLE001 - remote compaction is advisory
+                logger.warning("remote compaction failed: %s", exc)
+        return ok
