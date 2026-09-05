@@ -80,23 +80,27 @@ later (filed as a Gitea follow-up).
 
 ## Architecture
 
-```
-                 ┌────────────── marim process ──────────────┐
-  TUI / headless │  Harness ── CodexCliModel (main loop)      │
-                 │      │           │  thread T0              │
-                 │  SubagentRunner ── CodexSpawnOrchestrator  │
-                 │      │           │  threads T1..Tn         │
-                 │      ▼           ▼                         │
-                 │   ┌──────── codex/ package ────────┐       │
-                 │   │ CodexServer (supervisor)       │       │
-                 │   │  └ JsonRpcClient (stdio)       │       │
-                 │   │ ItemTranslator  ApprovalBroker │       │
-                 │   └────────────────┬───────────────┘       │
-                 └────────────────────┼───────────────────────┘
-                                      │ stdin/stdout, one line = one JSON message
-                              ┌───────▼─────────┐
-                              │ codex app-server │  (one per marim process)
-                              └─────────────────┘
+```mermaid
+flowchart TD
+    subgraph marim["marim process"]
+        ui["TUI / headless<br/>(Deps.ui: approval panel, ask_user, activity cards)"]
+        harness["Harness"] --> model["config/codex_cli_model.py<br/>CodexCliModel (main loop, thread T0)"]
+        runner["SubagentRunner"] --> spawn["subagents/codex_spawn.py<br/>CodexSpawnOrchestrator (threads T1..Tn)"]
+        subgraph pkg["codex/ package"]
+            server["server.py — CodexServer<br/>(supervisor: lifecycle, thread registry, respawn)"]
+            rpc["rpc.py — JsonRpcClient"]
+            translate["translate.py — ItemTranslator"]
+            broker["approvals.py — ApprovalBroker"]
+            server --> rpc
+        end
+        model --> server
+        spawn --> server
+        server -->|"item/* , turn/* notifications"| translate
+        server -->|"server → client requests"| broker
+        translate -->|"text / thinking deltas, activity cards"| ui
+        broker <-->|"Mode, request_approval, ask_user"| ui
+    end
+    rpc <-->|"stdin/stdout, one JSON message per line"| codex["codex app-server<br/>(one per marim process)"]
 ```
 
 One `codex app-server` process per marim process, started lazily on first
