@@ -225,10 +225,13 @@ Differences that matter:
   (`sonnet`, `opus`, or a full id), passed straight to `--model`;
   `MARIM_CLAUDE_CLI_MODEL` is the env default. **Tiers do not apply** to
   claude-cli spawns.
-- An interrupted claude-cli spawn resumes through the CLI's own `--resume`:
-  the Claude session id is checkpointed into the spawn's sidecar meta, and
-  marim hands it back rather than replaying its own transcript (the CLI owns
-  its history).
+- An interrupted claude-cli spawn resumes through the CLI's own
+  `--resume <session id>` (checkpointed into the spawn's sidecar meta) — the
+  CLI regenerates the turn from its own session history, not from a replayed
+  prompt. marim separately prepends its own persisted sidecar transcript onto
+  the resumed record so the card and transcript pane keep the pre-interrupt
+  segment; that prefix is for marim's own display/checkpointing only, never
+  sent to the CLI as a prompt.
 - Claude's own Agent/Task sub-agents are demuxed out of the stream and
   rendered as first-class cards in the sub-agents screen, nested under their
   spawn.

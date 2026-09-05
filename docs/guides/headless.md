@@ -8,9 +8,10 @@ missing is the interactive surface. That makes headless the mode for shell
 pipelines, cron jobs, and CI.
 
 > Provider note: under the `claude-cli` main-loop provider, marim acts as a
-> launcher — the `claude` CLI runs its own tools and its own approval loop,
-> so marim's tools, approval modes, LSP, and MCP do not apply to those turns.
-> See [claude-cli differences](#the-claude-cli-provider) below.
+> launcher — Claude Code runs its own tools, LSP, and MCP servers, but every
+> tool call comes back to marim as a permission request, so `--mode` still
+> matters (headless has no approver, so only in-workspace `auto` edits go
+> through). See [claude-cli differences](#the-claude-cli-provider) below.
 
 ## Run a one-shot turn
 
