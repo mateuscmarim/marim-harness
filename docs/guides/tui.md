@@ -7,9 +7,10 @@ surface — keys, slash commands, approvals, the sub-agents screen, settings,
 and shell passthrough.
 
 > Provider note: under the `claude-cli` main-loop provider, marim acts as a
-> launcher — Claude Code runs its own tools and its own approval loop, so
-> marim's tools, approval modes, LSP, and MCP do not apply to those turns.
-> Caveats are flagged inline where they matter.
+> launcher — Claude Code runs its own tools, LSP and MCP servers, but every
+> tool call comes back to marim as a permission request, so approval modes,
+> the approval panel, and `ask_user` apply as with a native model. Caveats
+> are flagged inline where they matter.
 
 ## The screen at a glance
 
@@ -107,6 +108,9 @@ When no turn is running, the steer keys simply submit, exactly like `enter`.
 
 **Cancelling**: `esc` cancels the running turn. The turn is flushed in a
 resumable state, the queue pauses, and `turn cancelled` appears in the log.
+Under `claude-cli` a steer is delivered into Claude's running turn, and `esc`
+sends Claude an interrupt control request (the process is killed only if it
+does not stop within 2 s).
 
 Large pastes (over 3 lines or 600 characters) collapse into a
 `[Pasted text #N +…]` marker to keep the box readable; the full text is
@@ -125,11 +129,13 @@ and `bash` (and `run_workflow` when workflows are enabled). Cycle modes with
 - **plan** — mutations are denied; read-only `bash` commands are approved.
   The agent researches and presents a plan instead of editing.
 
-Under the `claude-cli` main-loop provider none of this applies — Claude Code
-runs its own tools and its own permission prompts. Under
-`codex-cli`, Codex runs its own tools but its approval requests are brokered
-into this same panel (with the Codex command or file diff), so `ask` mode
-still gates every privileged action and `plan` mode is read-only.
+Under the `claude-cli` main-loop provider, Claude Code runs its own tools,
+but its approval requests are brokered into this same panel (labelled for
+Claude), so `auto`/`ask`/`plan` keep their meaning and `ask_user` routes
+through the ask-user panel too. Under `codex-cli`, Codex runs its own tools
+but its approval requests are brokered into this same panel (with the Codex
+command or file diff), so `ask` mode still gates every privileged action and
+`plan` mode is read-only.
 
 ### The approval panel
 

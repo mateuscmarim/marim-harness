@@ -50,8 +50,9 @@ There are plenty of terminal coding agents. marim's angle:
 - **Any model, including free ones.** OpenRouter, Google, OpenCode Zen (free
   models available) and its flat-rate Go plan, any local OpenAI-compatible
   server (Ollama, LM Studio) — or delegate turns to Claude Code on a Claude
-  subscription via the `claude-cli` provider. No vendor lock-in, no required
-  API key.
+  subscription via the `claude-cli` provider (a long-lived `claude` process,
+  bidirectional stream-json, not a one-shot launch per turn). No vendor
+  lock-in, no required API key.
 - **Real editor-grade context.** Language-server integration (Python,
   TypeScript, C++, Java bundled; more via plugins) gives the agent go-to-
   definition, references, and diagnostics-on-edit — not just grep.
@@ -120,7 +121,8 @@ MARIM_API_KEY=local
 Then just run `marim` — the model picker discovers models from the server's
 `/v1/models` endpoint. With an `OPENROUTER_API_KEY` set instead, marim
 defaults to OpenRouter; a Claude Pro/Max subscription works via
-`MARIM_PROVIDER=claude-cli` (delegates turns to the `claude` CLI), and a
+`MARIM_PROVIDER=claude-cli` (a long-lived `claude` process, bidirectional
+stream-json, with approvals brokered through marim's own panel), and a
 ChatGPT/Codex subscription via `MARIM_PROVIDER=codex-cli` (delegates turns to
 `codex app-server`, with approvals brokered through marim's own panel).
 

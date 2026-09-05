@@ -330,17 +330,20 @@ pairs a client (e.g. the Android app) in one scan — see the
 
 ## The claude-cli provider
 
-With `MARIM_PROVIDER=claude-cli`, each headless turn is delegated to the
-`claude` CLI (a Claude subscription) as `claude -p`; Claude Code runs its
-own tools and its own permission system, so marim's tool set, approval
-modes, LSP, MCP, and `--think` do not apply to the turn. marim's `--mode`
-still matters at the boundary — it is mapped onto Claude Code's
-`--permission-mode`: `auto` becomes `acceptEdits`, and `plan` (or anything
-else, since headless can't answer prompts) becomes Claude's read-only
-`plan` mode. Output formats work the same shape-wise, but with a twist:
-without a UI attached, Claude Code's internal tool activity is folded into
-the assistant text as `▸` activity lines, so `stream-json` carries it in
-`text` events rather than `tool_call`/`tool_result` events.
+With `MARIM_PROVIDER=claude-cli`, marim keeps one long-lived `claude` process
+per conversation (a Claude subscription) and talks to it over its
+stream-json control protocol; Claude Code runs its own tools, LSP and MCP
+servers, but every tool call comes back to marim as a permission request, so
+`--mode` still matters. Under `claude-cli`, headless runs have no approver:
+`auto` mode lets Claude edit inside the workspace, and any tool that would
+need the approval panel (a write outside the workspace, anything in `ask`
+mode, `AskUserQuestion`) is denied with a message telling Claude to explain
+what it would have done instead. `--think` does not apply to the turn (the
+CLI's own reasoning settings are not reachable from marim). Output formats
+work the same shape-wise, but with a twist: without a UI attached, Claude
+Code's internal tool activity is folded into the assistant text as `▸`
+activity lines, so `stream-json` carries it in `text` events rather than
+`tool_call`/`tool_result` events.
 
 ## The codex-cli provider
 

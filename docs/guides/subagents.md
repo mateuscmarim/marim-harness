@@ -212,11 +212,11 @@ spawn's model settings untouched.
 
 ## The claude-cli backend
 
-A spec with `backend: claude-cli` runs its spawns as an external
-`claude -p` (Claude Code CLI) process in headless stream-json mode instead of
-the in-process loop — useful for delegating to a Claude subscription. Around
-the swapped engine, the harness wrapping is identical: same worktree
-isolation, hooks bracketing, output cap, transcript persistence, and
+`backend: claude-cli` runs the spawn on its own bidirectional `claude`
+process; each tool Claude runs is approved through marim's mode and panel
+(the panel names the sub-agent), and an interrupted spawn resumes by session
+id. Around the swapped engine, the harness wrapping is identical: same
+worktree isolation, hooks bracketing, output cap, transcript persistence, and
 background handling.
 
 Differences that matter:
@@ -226,14 +226,16 @@ Differences that matter:
   `MARIM_CLAUDE_CLI_MODEL` is the env default. **Tiers do not apply** to
   claude-cli spawns.
 - An interrupted claude-cli spawn resumes through the CLI's own `--resume`:
-  the CLI session id is checkpointed into the spawn's sidecar meta, and marim
-  hands it back rather than replaying its own transcript (the CLI owns its
-  history).
+  the Claude session id is checkpointed into the spawn's sidecar meta, and
+  marim hands it back rather than replaying its own transcript (the CLI owns
+  its history).
 - Claude's own Agent/Task sub-agents are demuxed out of the stream and
   rendered as first-class cards in the sub-agents screen, nested under their
   spawn.
-- One spawn is bounded by a wall-clock ceiling, `MARIM_CLAUDE_CLI_TIMEOUT`
-  (default 600 s); `MARIM_CLAUDE_CLI_BIN` picks the executable.
+- `MARIM_CLAUDE_CLI_TIMEOUT` (default 600 s) bounds seconds of *silence*
+  inside one open turn, not the spawn's total wall-clock time (it pauses
+  while an approval prompt is open); `MARIM_CLAUDE_CLI_BIN` picks the
+  executable.
 
 ## The codex-cli backend
 

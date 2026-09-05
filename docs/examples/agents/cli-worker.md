@@ -1,5 +1,5 @@
 ---
-description: Autonomous worker backed by the Claude Code CLI (claude -p).
+description: Autonomous worker backed by the Claude Code CLI (a long-lived `claude` process, bidirectional stream-json).
 backend: claude-cli
 model: sonnet
 tools: read_file, glob, grep, edit_file, write_file, bash
