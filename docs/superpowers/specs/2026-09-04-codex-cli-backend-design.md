@@ -277,6 +277,25 @@ spawn (`mcp:` in the spec) are **not** forwarded in v1; the `_mcp_note`
 mechanism tells the model they are unavailable, as it does for claude-cli
 spawns.
 
+**Resolved (live probe against codex 0.152.1, 2026-09-05).** The
+`thread/start.config` route does not work: Codex merges override tables
+into the user's, so an empty `mcp_servers` map clears nothing (all eight of
+the probe machine's servers loaded into a marim thread). What works is
+process-level `-c` overrides on the `app-server` launch:
+`mcp_servers.<name>.enabled=false` per server — the names come from
+`codex mcp list --json`, run just before the spawn — plus
+`features.plugins=false`, which empties the installed-plugin set (a
+per-plugin `plugins.<id>.enabled=false` had no effect), plus
+`features.apps=false`, which removes the built-in `codex_apps` connector
+server (`github.*` tools) that survives the plugins flag on its own. Quoted
+key segments are rejected by the override parser, so a server whose name is
+not a bare TOML key cannot be disabled and is logged instead; skills have
+no working knob (`features.skip_host_skill_discovery=true` left all 83
+user skills in `skills/list`) and still load. The marim-owned `CODEX_HOME`
+fallback was not needed. `mcpServerStatus/list` enumerates every configured
+server, disabled ones with `serverInfo: null` and no tools, so the live
+smoke asserts no *connected* server after a 3 s settle, not an empty list.
+
 ## Sub-agent backend
 
 `CodexSpawnOrchestrator` mirrors `CliSpawnOrchestrator`:

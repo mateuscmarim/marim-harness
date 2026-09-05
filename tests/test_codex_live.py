@@ -2,12 +2,14 @@
 
 Uses the developer's own Codex login (CODEX_HOME defaults back to ~/.codex
 here; the conftest isolation points it at nothing for every other test).
-Four probes, each one short turn: a main-loop reply, effort + thread reuse,
-an ask-mode file change that must be declined, and a codex-cli sub-agent.
+Five probes: a main-loop reply with effort + thread reuse, an ask-mode file
+change that must be declined, a codex-cli sub-agent, and (no turn at all)
+the app-server's own report that none of the user's MCP servers loaded.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -23,9 +25,15 @@ from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.settings import ModelSettings
 
-from marim_harness.codex.server import close_shared_server
+from marim_harness.codex.env import resolve_codex_binary
+from marim_harness.codex.server import (
+    close_shared_server,
+    configured_mcp_servers,
+    shared_server,
+)
 from marim_harness.config.codex_cli_model import CodexCliModel
 from marim_harness.runtime.permissions import Mode
+from marim_harness.session import SessionStore, TranscriptStore
 from tests.conftest import _make_deps, _make_harness
 
 pytestmark = [
@@ -96,6 +104,24 @@ async def test_ask_mode_file_change_is_brokered_and_declined(tmp_path: Path):
     assert not (tmp_path / "probe.txt").exists()
 
 
+async def test_user_mcp_servers_do_not_load():
+    """Isolation (spec §Isolation): the user's configured MCP servers are
+    disabled by launch override and the built-in apps connector is off, so
+    the live app-server reports no server connected — after a settle window,
+    since MCP connections are established asynchronously after startup.
+    Deterministic — no model turn — and meaningful only when the developer's
+    own config declares at least one server, which is asserted so a bare
+    CODEX_HOME cannot pass this vacuously."""
+    binary = resolve_codex_binary()
+    assert binary is not None
+    configured = await configured_mcp_servers(binary, None)
+    assert configured, "the live config declares no MCP servers; nothing to isolate from"
+    server = shared_server()
+    await server.start()
+    await asyncio.sleep(3)
+    assert await server.connected_mcp_servers() == []
+
+
 async def test_codex_cli_subagent_reports(tmp_path: Path):
     d = tmp_path / ".marim" / "agents"
     d.mkdir(parents=True)
@@ -107,7 +133,19 @@ async def test_codex_cli_subagent_reports(tmp_path: Path):
     async def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="unused")])
 
-    runner = _make_harness(FunctionModel(fn), _make_deps(tmp_path)).subagents
+    # A real session store: the sidecar meta (and the codex thread id in it)
+    # is persisted only when there is a session to persist into —
+    # SpawnTranscripts.save is a no-op without one, so a storeless harness
+    # would read None here no matter what the spawn did.
+    store = SessionStore(
+        path=tmp_path / "sessions" / "live.json",
+        workspace_root=tmp_path,
+        session_id="live-session",
+        name="live",
+    )
+    runner = _make_harness(FunctionModel(fn), _make_deps(tmp_path), store=store).subagents
     out = await runner.run("codex-worker", "Reply with exactly the word: pong", stream_id="live1")
     assert "pong" in out.lower()
-    assert runner._transcripts.read_meta("live1")["codex_thread_id"]
+    meta = TranscriptStore(store.path, store.session_id).read_meta("live1")
+    assert meta is not None and meta["codex_thread_id"]
+    assert meta["status"] == "finished" and meta["backend"] == "codex-cli"

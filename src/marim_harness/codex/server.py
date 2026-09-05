@@ -7,6 +7,15 @@ Threads are the unit of isolation: each caller gets a ``ThreadHandle`` whose
 is respawned lazily on the next ``start()`` after it dies; the death itself
 is broadcast to every open handle as a ``CLOSED`` pseudo-notification so an
 in-flight turn fails cleanly (the model layer turns it into ``CliModelError``).
+
+The process is launched with config overrides that keep it from loading the
+user's own Codex extensions (spec §Isolation): every MCP server the user's
+config declares is disabled by name — enumerated first through
+``codex mcp list --json`` — and the plugin system plus the built-in apps
+connector are switched off. See ``env.isolation_overrides`` for why it has
+to be per server. Disabled servers still APPEAR in ``mcpServerStatus/list``
+(with no ``serverInfo`` and no tools), so "loaded" is measured by
+``connected_mcp_servers``, not by presence in that list.
 """
 
 from __future__ import annotations
@@ -26,6 +35,8 @@ from .env import (
     CodexUnavailable,
     check_min_version,
     codex_timeout,
+    isolation_overrides,
+    parse_mcp_server_names,
     resolve_codex_binary,
 )
 from .rpc import JsonRpcClient, RpcError, ServerRequestHandler
@@ -36,16 +47,45 @@ CLOSED = "__closed__"
 _STDERR_TAIL_LINES = 40
 _INIT_TIMEOUT = 30.0
 _KILL_GRACE = 2.0
+# `codex mcp list --json` is a config read (~0.1 s); anything longer is a
+# wedged CLI, and the app-server start should not hang on it.
+_MCP_LIST_TIMEOUT = 10.0
 # Methods whose params name the thread under ``thread.id`` instead of ``threadId``.
 _THREAD_OBJ_METHODS = frozenset({"thread/started"})
 
 
-def thread_config() -> dict:
-    """``thread/start.config`` overrides that stop the thread from loading the
-    user's global Codex MCP servers/plugins (marim owns tool reach; see spec
-    §Isolation). PROVISIONAL until Task 0 confirms the key names — if no
-    config key works, the fallback is a marim-owned CODEX_HOME (Step 7)."""
-    return {"mcp_servers": {}}
+async def configured_mcp_servers(binary: str, env: dict[str, str] | None) -> list[str]:
+    """Names of the MCP servers the user's Codex config would load, read
+    through the CLI's own ``mcp list --json`` so marim never parses
+    ``config.toml`` itself. Best-effort: any failure yields ``[]`` with a
+    warning — the app-server then starts with only the plugin override and
+    the isolation gap is visible in the log rather than fatal."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            binary,
+            "mcp",
+            "list",
+            "--json",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+    except OSError as exc:
+        logger.warning("codex mcp list could not launch: %s", exc)
+        return []
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), _MCP_LIST_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning("codex mcp list timed out after %.0fs", _MCP_LIST_TIMEOUT)
+        return []
+    if proc.returncode != 0:
+        tail = err.decode("utf-8", "replace").strip()[-400:]
+        logger.warning("codex mcp list exited %s: %s", proc.returncode, tail)
+        return []
+    return parse_mcp_server_names(out)
 
 
 @dataclass
@@ -145,13 +185,30 @@ class CodexServer:
             if binary is None or not os.path.exists(binary):
                 raise CodexUnavailable(f"codex binary not found. {INSTALL_HINT}")
             self._threads.clear()
-            await self._spawn(binary)
+            await self._spawn(binary, await self._isolation_argv(binary))
             await self._handshake()
 
-    async def _spawn(self, binary: str) -> None:
+    async def _isolation_argv(self, binary: str) -> list[str]:
+        names = await configured_mcp_servers(binary, self._env)
+        argv, skipped = isolation_overrides(names)
+        if skipped:
+            logger.warning(
+                "codex MCP servers whose names are not bare TOML keys cannot be "
+                "disabled by override and WILL load in marim threads: %s",
+                ", ".join(skipped),
+            )
+        logger.info(
+            "codex app-server isolation: plugins/apps off, %d of %d MCP server(s) disabled",
+            len(names) - len(skipped),
+            len(names),
+        )
+        return argv
+
+    async def _spawn(self, binary: str, overrides: list[str]) -> None:
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 binary,
+                *overrides,
                 "app-server",
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
@@ -331,7 +388,6 @@ class CodexServer:
                 "ephemeral": options.ephemeral,
                 "sandbox": options.sandbox,
                 "approvalPolicy": options.approval_policy,
-                "config": thread_config(),
             }
         )
         result = await self._rpc().request("thread/start", params, timeout=self._timeout)
@@ -349,7 +405,6 @@ class CodexServer:
                 "ephemeral": options.ephemeral,
                 "sandbox": options.sandbox,
                 "approvalPolicy": options.approval_policy,
-                "config": thread_config(),
             }
         )
         try:
@@ -426,6 +481,27 @@ class CodexServer:
         if not isinstance(data, list):
             return []
         return [m for m in data if isinstance(m, dict)]
+
+    async def connected_mcp_servers(self) -> list[str]:
+        """Names of the MCP servers the LIVE app-server actually connected
+        (``mcpServerStatus/list``, first page) — the ground truth the launch
+        overrides are measured against; the live smoke asserts it is empty.
+
+        The list enumerates every configured server, disabled ones included:
+        a disabled entry carries ``serverInfo: null`` and an empty ``tools``
+        table, a connected one has both populated. Presence alone therefore
+        proves nothing; only entries with server info or tools count."""
+        result = await self._rpc().request("mcpServerStatus/list", {}, timeout=30.0)
+        data = result.get("data")
+        if not isinstance(data, list):
+            return []
+        return [
+            str(entry["name"])
+            for entry in data
+            if isinstance(entry, dict)
+            and "name" in entry
+            and (entry.get("serverInfo") or entry.get("tools"))
+        ]
 
     async def read_rate_limits(self) -> dict | None:
         """The account's ``RateLimitSnapshot`` (``account/rateLimits/read``),

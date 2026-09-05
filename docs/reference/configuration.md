@@ -124,12 +124,22 @@ Under the `codex-cli` provider marim delegates each turn to `codex app-server`
 module-level singleton shared by the main-loop model and every `codex-cli`
 spawn, not one process per session (a `marim serve` daemon holding many
 sessions shares a single app-server). Codex runs its own tools inside its
-own sandbox, so marim's tools and LSP do not apply. Each thread starts with
-an empty `mcp_servers` config, so marim's own MCP servers and Codex's
-user-level MCP servers are not expected to load; this isolation is exercised
-by the env-gated live smoke (`tests/test_codex_live.py`), not by the unit
-suite, and the additional `CODEX_HOME` redirection some setups would need
-for full isolation is not yet implemented. Unlike `claude-cli`, Codex *asks*
+own sandbox, so marim's tools and LSP do not apply. The app-server is
+launched with config overrides that isolate it from the user's own Codex
+setup: every MCP server in the user's Codex config is disabled by name
+(`codex mcp list` enumerates them, each gets
+`-c mcp_servers.<name>.enabled=false`), the plugin system is switched off
+(`-c features.plugins=false`) and so is the built-in apps connector
+(`-c features.apps=false`, the `codex_apps` server with the `github.*`
+tools), so a marim-started thread loads neither marim's own MCP servers nor
+Codex's user-level ones, nor Codex plugins or connectors. Two residuals:
+Codex *skills* (`$CODEX_HOME/skills`, `~/.agents/skills`, `.codex/skills`)
+have no working override and still load, and a server whose name is not a
+bare TOML key (anything outside `[A-Za-z0-9_-]`) cannot be disabled this
+way — marim logs it at WARNING and it loads. The env-gated live smoke
+(`tests/test_codex_live.py`) checks the server's own `mcpServerStatus/list`
+reports no connected server (disabled servers are still listed there,
+without server info or tools). Unlike `claude-cli`, Codex *asks*
 before privileged actions and marim answers: approvals go through the same
 approval panel native tools use. The modes map as follows.
 

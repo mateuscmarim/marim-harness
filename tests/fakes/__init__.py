@@ -27,6 +27,12 @@ def fake_codex_bin(tmp_path: Path, scenario: dict) -> str:
     return str(wrapper)
 
 
+def read_argv(tmp_path: Path) -> list[str]:
+    """The argv the fake ``app-server`` process was launched with."""
+    path = tmp_path / "codex-requests.jsonl.argv"
+    return json.loads(path.read_text()) if path.exists() else []
+
+
 def read_request_log(tmp_path: Path) -> list[dict]:
     path = tmp_path / "codex-requests.jsonl"
     if not path.exists():

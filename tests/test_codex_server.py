@@ -11,9 +11,8 @@ from marim_harness.codex.server import (
     ThreadHandle,
     ThreadOptions,
     TurnOptions,
-    thread_config,
 )
-from tests.fakes import fake_codex_bin, read_request_log
+from tests.fakes import fake_codex_bin, read_argv, read_request_log
 
 pytestmark = pytest.mark.anyio
 
@@ -113,7 +112,9 @@ async def test_thread_and_turn_events_route_to_handle(tmp_path):
         log = read_request_log(tmp_path)
         start = next(m for m in log if m.get("method") == "thread/start")
         assert start["params"]["developerInstructions"] == "be brief"
-        assert start["params"]["config"] == thread_config()
+        # Isolation is a launch-time override, not a per-thread config map
+        # (which Codex would merge into the user's table anyway).
+        assert "config" not in start["params"]
         assert start["params"]["ephemeral"] is False
         turn = next(m for m in log if m.get("method") == "turn/start")
         assert turn["params"]["effort"] == "medium"
@@ -505,5 +506,57 @@ async def test_thread_ids_tracks_registered_threads(tmp_path):
             request_handler=_decline,
         )
         assert server.thread_ids == frozenset({handle.thread_id})
+    finally:
+        await server.aclose()
+
+
+async def test_start_disables_user_mcp_servers_and_plugins(tmp_path):
+    """The app-server is launched with plugins and the apps connector off and
+    one `enabled=false` override per MCP server `codex mcp list` reports, in
+    the CLI's order — and although the disabled servers still APPEAR in its
+    status list, none counts as connected."""
+    binary = fake_codex_bin(
+        tmp_path, {"mcpServers": ["playwright", "twm-action-items"], "mcpServersConnected": []}
+    )
+    server = CodexServer(binary=binary)
+    await server.start()
+    try:
+        assert read_argv(tmp_path) == [
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "mcp_servers.playwright.enabled=false",
+            "-c",
+            "mcp_servers.twm-action-items.enabled=false",
+            "app-server",
+        ]
+        assert await server.connected_mcp_servers() == []
+    finally:
+        await server.aclose()
+
+
+async def test_start_survives_mcp_list_failure(tmp_path, caplog):
+    """A failing `codex mcp list` must not block the app-server: it starts
+    with only the feature overrides, and the gap is logged."""
+    binary = fake_codex_bin(
+        tmp_path, {"mcpListFails": True, "mcpServers": ["quiet"], "mcpServersConnected": ["leaked"]}
+    )
+    server = CodexServer(binary=binary)
+    with caplog.at_level("WARNING", logger="marim_harness.codex.server"):
+        await server.start()
+    try:
+        assert server.alive
+        assert read_argv(tmp_path) == [
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "app-server",
+        ]
+        assert "mcp list exited 1" in caplog.text
+        # `quiet` is listed but idle (no serverInfo/tools) and must not count.
+        assert await server.connected_mcp_servers() == ["leaked"]
     finally:
         await server.aclose()

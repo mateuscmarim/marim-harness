@@ -256,11 +256,12 @@ turn.
   `thinking:` → the session level) and maps to Codex reasoning effort.
 - **Resume** reopens the persisted Codex thread (`codex_thread_id` in the
   spawn's sidecar) and sends the continuation prompt as a new turn.
-- Each thread starts with an empty `mcp_servers` config, so MCP grants are
-  not expected to reach the spawn (marim's own MCP servers and Codex's
-  user-level ones alike) — validated by the env-gated live smoke, not the
-  unit suite. A non-empty grant list is noted in the output anyway, as with
-  `claude-cli`.
+- The shared app-server is launched with the user's Codex MCP servers
+  disabled by name and plugins and the apps connector off (see the provider
+  notes in the configuration reference), so MCP grants do not reach the
+  spawn — marim's
+  own MCP servers and Codex's user-level ones alike. A non-empty grant list
+  is noted in the output anyway, as with `claude-cli`.
 
 See [`docs/examples/agents/codex-worker.md`](../examples/agents/codex-worker.md).
 

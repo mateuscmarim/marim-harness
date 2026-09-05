@@ -97,3 +97,30 @@ def test_env_blocklist_hides_codex_knobs():
     assert "MARIM_CODEX_CLI_BIN" in _PROJECT_ENV_BLOCKLIST
     assert "MARIM_CODEX_CLI_TIMEOUT" in _PROJECT_ENV_BLOCKLIST
     assert "CODEX_HOME" in _PROJECT_ENV_BLOCKLIST
+
+
+def test_parse_mcp_server_names_tolerates_garbage():
+    raw = '[{"name": "a", "enabled": true}, {"name": "b"}, {"x": 1}, "junk", {"name": 3}]'
+    assert cenv.parse_mcp_server_names(raw) == ["a", "b"]
+    assert cenv.parse_mcp_server_names(b"not json") == []
+    assert cenv.parse_mcp_server_names('{"name": "object-not-list"}') == []
+    assert cenv.parse_mcp_server_names("") == []
+
+
+def test_isolation_overrides_disable_bare_names_and_report_the_rest():
+    argv, skipped = cenv.isolation_overrides(["playwright", "twm-action-items", "we ird", "a.b"])
+    assert argv == [
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.apps=false",
+        "-c",
+        "mcp_servers.playwright.enabled=false",
+        "-c",
+        "mcp_servers.twm-action-items.enabled=false",
+    ]
+    assert skipped == ["we ird", "a.b"]
+    assert cenv.isolation_overrides([]) == (
+        ["-c", "features.plugins=false", "-c", "features.apps=false"],
+        [],
+    )

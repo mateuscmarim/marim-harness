@@ -20,6 +20,11 @@ pre-1.0, minor versions may contain breaking changes.
   `outputSchema` enforcement, resumable via the persisted thread id.
 - Settings > Providers shows a `codex-cli` card (binary + `codex login`
   detection) and the model picker lists Codex models from `model/list`.
+- The shared `codex app-server` is launched isolated from the user's own
+  Codex setup: every MCP server in their Codex config is disabled by name
+  (`codex mcp list` enumerates them), and plugins and the built-in apps
+  connector are switched off, so a marim thread runs with marim's tool
+  reach only.
 
 ## [0.6.0] - 2026-09-01
 

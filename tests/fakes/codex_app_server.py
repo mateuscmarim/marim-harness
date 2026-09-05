@@ -92,6 +92,7 @@ class Fake:
             "thread/compact/start": self.on_compact,
             "model/list": self.on_model_list,
             "account/rateLimits/read": self.on_rate_limits,
+            "mcpServerStatus/list": self.on_mcp_status_list,
         }.get(method)
         if handler is None:
             self.send({"id": rid, "error": {"code": -32601, "message": f"unknown {method}"}})
@@ -149,6 +150,28 @@ class Fake:
                     "data": self.scenario.get("models", DEFAULT_MODELS),
                     "nextCursor": None,
                 },
+            }
+        )
+
+    def on_mcp_status_list(self, rid, params) -> None:
+        # Mirrors the real shape: EVERY configured server (`mcpServers`) is
+        # listed, disabled ones with `serverInfo: null` and no tools; the names
+        # in `mcpServersConnected` carry server info + a tool, like a server
+        # the launch overrides failed to disable.
+        connected = set(self.scenario.get("mcpServersConnected") or [])
+        names = list(dict.fromkeys(list(self.scenario.get("mcpServers") or []) + sorted(connected)))
+        data = [
+            {
+                "name": n,
+                "serverInfo": {"name": n, "version": "1.0"} if n in connected else None,
+                "tools": {"echo": {"name": "echo"}} if n in connected else {},
+            }
+            for n in names
+        ]
+        self.send(
+            {
+                "id": rid,
+                "result": {"data": data, "nextCursor": None},
             }
         )
 
@@ -265,6 +288,25 @@ class Fake:
             self.handle(msg)
 
 
+def _strip_overrides(argv: list[str]) -> list[str]:
+    """Drop leading ``-c key=value`` pairs (the real CLI accepts them before
+    any subcommand); the full argv is recorded separately for assertions."""
+    while argv[:1] == ["-c"] and len(argv) >= 2:
+        argv = argv[2:]
+    return argv
+
+
+def _mcp_list(scenario: dict) -> None:
+    """``codex mcp list --json``: scenario key ``mcpServers`` = configured
+    server names; ``mcpListFails`` makes the subcommand exit nonzero."""
+    if scenario.get("mcpListFails"):
+        sys.stderr.write("fake codex: mcp list unavailable\n")
+        sys.exit(1)
+    names = scenario.get("mcpServers") or []
+    json.dump([{"name": n, "enabled": True} for n in names], sys.stdout)
+    sys.exit(0)
+
+
 def main() -> None:
     scenario_path = os.environ.get("MARIM_CODEX_FAKE_SCENARIO")
     scenario = {}
@@ -272,9 +314,17 @@ def main() -> None:
         with open(scenario_path) as f:
             scenario = json.load(f)
     log_path = os.environ.get("MARIM_CODEX_FAKE_LOG") or os.devnull
-    if sys.argv[1:] != ["app-server"]:
+    argv = _strip_overrides(sys.argv[1:])
+    if argv == ["mcp", "list", "--json"]:
+        _mcp_list(scenario)
+    if argv != ["app-server"]:
         sys.stderr.write(f"fake codex: unsupported argv {sys.argv[1:]!r}\n")
         sys.exit(2)
+    if log_path != os.devnull:
+        # The launch argv lives in a sidecar, not the request log: tests index
+        # the log by message position (`log[0]` is `initialize`).
+        with open(log_path + ".argv", "w") as f:
+            json.dump(sys.argv[1:], f)
     Fake(scenario, log_path).serve()
 
 
