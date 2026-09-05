@@ -25,6 +25,9 @@ pre-1.0, minor versions may contain breaking changes.
   (`codex mcp list` enumerates them), and plugins and the built-in apps
   connector are switched off, so a marim thread runs with marim's tool
   reach only.
+- Tiered CLI worker examples: `docs/examples/agents/{claude,codex}-{fast,general,deep}.md`
+  (haiku/sonnet/opus and gpt-5.6-luna/terra/sol) with a "Tiered CLI workers"
+  section in the sub-agents guide; parsed in CI.
 
 ## [0.6.0] - 2026-09-01
 
