@@ -19,7 +19,6 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -42,40 +41,21 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
+from ..claude.env import (
+    CLI_BINARY_ENV,  # noqa: F401 — re-exported for tests
+    CLI_MODEL_ENV,  # noqa: F401 — re-exported for tests
+    CLI_TIMEOUT_ENV,  # noqa: F401 — re-exported for tests
+    CliUnavailable,  # noqa: F401 — re-exported: cli_spawn imports this here
+    resolve_cli_binary,  # noqa: F401 — re-exported for tests/config/settings
+)
+from ..claude.env import DEFAULT_CLI_TIMEOUT as _DEFAULT_CLI_TIMEOUT  # noqa: F401 — re-exported
+from ..claude.env import cli_timeout as _cli_timeout
 from ..ndjson import iter_ndjson_lines
 
 if TYPE_CHECKING:
     from .cli_demux import CliSubagentDemux, RoutedEvent
 
 logger = logging.getLogger(__name__)
-
-CLI_BINARY_ENV = "MARIM_CLAUDE_CLI_BIN"
-CLI_MODEL_ENV = "MARIM_CLAUDE_CLI_MODEL"
-CLI_TIMEOUT_ENV = "MARIM_CLAUDE_CLI_TIMEOUT"
-
-# Wall-clock ceiling for one CLI spawn. `claude -p` inherits stdin, so a network
-# hang, an unexpected interactive prompt, or a wedged tool would otherwise never
-# EOF: run() would never return, and the spawn would hold its concurrency slot
-# forever, starving every later spawn. This bounds the whole run. It is generous
-# (a real sub-agent task legitimately takes minutes) and overridable via
-# MARIM_CLAUDE_CLI_TIMEOUT (seconds); a non-positive / unparseable override falls
-# back to the default rather than disabling the guard.
-_DEFAULT_CLI_TIMEOUT = 600.0
-
-
-def _cli_timeout() -> float:
-    """The per-spawn wall-clock timeout in seconds (``MARIM_CLAUDE_CLI_TIMEOUT``,
-    else ``_DEFAULT_CLI_TIMEOUT``). Garbage / non-positive values fall back to the
-    default so a bad env can never remove the ceiling."""
-    raw = os.environ.get(CLI_TIMEOUT_ENV)
-    if raw is None:
-        return _DEFAULT_CLI_TIMEOUT
-    try:
-        value = float(raw.strip())
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; using default.", CLI_TIMEOUT_ENV, raw)
-        return _DEFAULT_CLI_TIMEOUT
-    return value if value > 0 else _DEFAULT_CLI_TIMEOUT
 
 
 def _kill_process_group(proc) -> None:
@@ -152,10 +132,6 @@ def normalize_cc_tool(name: str, args: dict) -> tuple[str, dict]:
     return harness, args
 
 
-class CliUnavailable(Exception):
-    """No `claude` binary could be found to back a claude-cli spawn."""
-
-
 class CliRunError(Exception):
     """The CLI ran but produced no terminal result event (crash / bad output)."""
 
@@ -174,14 +150,6 @@ class CliResult:
     # The Claude session id captured from the stream's init event — the resume
     # key for `claude -p --resume`. None when the stream never reported one.
     session_id: str | None = None
-
-
-def resolve_cli_binary() -> str | None:
-    """The Claude Code executable to spawn: ``$MARIM_CLAUDE_CLI_BIN`` if set, else
-    ``claude`` on PATH. Returns an absolute path, or None when nothing is found so
-    the caller reports a clean error instead of crashing."""
-    name = os.environ.get(CLI_BINARY_ENV) or "claude"
-    return shutil.which(name)
 
 
 def cli_permission_mode(allow_gated: bool) -> str:

@@ -29,7 +29,7 @@ blocked keys are honored only from the shell environment or the global config:
 - `MARIM_PROVIDER`, `MARIM_BASE_URL`, `MARIM_SEARXNG_URL`
 - `MARIM_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
   `OPENCODE_API_KEY`
-- `MARIM_CLAUDE_CLI_BIN`, `MARIM_CLAUDE_CLI_TIMEOUT`
+- `MARIM_CLAUDE_CLI_BIN`, `MARIM_CLAUDE_CLI_TIMEOUT`, `MARIM_CLAUDE_CLI_IDLE_TIMEOUT`
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME` (a project `.env` redirecting the XDG
   dirs could relocate the "trusted" global config into the clone itself)
 
@@ -71,7 +71,8 @@ non-positive values and fall back to the default (exceptions are noted).
 | `GEMINI_API_KEY` | unset | Alternative Google key; checked after `GOOGLE_API_KEY`, before `MARIM_API_KEY`. |
 | `MARIM_CLAUDE_CLI_BIN` | `claude` (resolved on PATH) | Claude Code executable to launch for the `claude-cli` provider and `backend: claude-cli` spawns. |
 | `MARIM_CLAUDE_CLI_MODEL` | unset (CLI's own default) | Claude Code model for `backend: claude-cli` **sub-agent** spawns (alias like `sonnet` or a full id). |
-| `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Wall-clock ceiling in seconds for one claude-cli spawn. |
+| `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Seconds of silence (no stream object) allowed inside one open claude-cli turn, excluding time an approval prompt is waiting in the panel; on expiry marim interrupts, waits 2 s, then kills the process. |
+| `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` | `600` | Seconds a main-loop `claude` process may sit with no turn open before marim closes it; the next turn resumes the same Claude session by id. `0` disables reaping. Spawns and aux clones never idle (their process closes at run end). |
 | `MARIM_CODEX_CLI_BIN` | `codex` (resolved on PATH) | Path to the `codex` binary when it is not on PATH (used by the `codex-cli` provider and `backend: codex-cli` sub-agents). |
 | `MARIM_CODEX_CLI_TIMEOUT` | `600` | Seconds a Codex turn may sit idle (no notification) before marim interrupts it. Default `600`. |
 | `MARIM_CODEX_CLI_MODEL` | unset (CLI's own default) | Default model for `backend: codex-cli` sub-agents (a Codex model id such as `gpt-5.4-mini`). The spec's `model:` and a spawn's `model=` override it. |

@@ -92,6 +92,10 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # it huge would blunt that safety limit, so it too comes only from the shell
         # env / trusted global config.
         "MARIM_CLAUDE_CLI_TIMEOUT",
+        # The idle reaper for a main-loop `claude` process: a project must not be
+        # able to pin a ~200 MB node process open forever (0) or reap it under
+        # every turn (tiny value) — machine-level, like the silence timeout.
+        "MARIM_CLAUDE_CLI_IDLE_TIMEOUT",
         # Codex CLI binary and timeout settings — same trust boundary as claude-cli
         # (provider selection, binary pointer, timeout override). Honored only from
         # the shell env or the trusted global config.

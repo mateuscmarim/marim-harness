@@ -29,10 +29,10 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Input, RadioSet, Static
 
+from ...claude.env import resolve_cli_binary
 from ...codex.env import codex_available
 from ...config import ModelConfig, MultiModelSource
 from ...runtime.permissions import Mode
-from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
 from .providers import CliDetection, ProvidersPane, current_default_provider
 from .settings_env import (
