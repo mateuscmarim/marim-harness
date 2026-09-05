@@ -95,6 +95,16 @@ class ThreadHandle:
     request_handler: ServerRequestHandler
     usage_baseline: dict = field(default_factory=dict)
     current_turn_id: str | None = None
+    last_completed_turn_id: str | None = None
+
+    def note_turn_completed(self, params: dict) -> None:
+        """Bookkeeping for ``turn/completed``: the turn is no longer current,
+        and its id is remembered so ``start_turn`` can tell that the turn it
+        just got the response for has ALREADY finished (see there)."""
+        self.current_turn_id = None
+        turn = params.get("turn")
+        if isinstance(turn, dict) and turn.get("id"):
+            self.last_completed_turn_id = str(turn["id"])
 
 
 @dataclass(frozen=True)
@@ -355,7 +365,7 @@ class CodexServer:
             logger.debug("codex notification %r for unknown thread %s dropped", method, tid)
             return
         if method == "turn/completed":
-            handle.current_turn_id = None
+            handle.note_turn_completed(params)
         handle.events.put_nowait((method, params))
 
     async def _on_server_request(self, method: str, params: dict) -> dict:
@@ -432,7 +442,13 @@ class CodexServer:
         )
         result = await self._rpc().request("turn/start", params, timeout=self._timeout)
         turn_id = str(result["turn"]["id"])
-        handle.current_turn_id = turn_id
+        # The reader resolves this response's future and keeps draining the
+        # pipe before this coroutine resumes, so a turn that finishes fast
+        # can have its `turn/completed` dispatched BEFORE we get here. Marking
+        # it current then would leave a stale id behind (an interrupt would
+        # target a finished turn) — the handle remembers what completed.
+        if handle.last_completed_turn_id != turn_id:
+            handle.current_turn_id = turn_id
         return turn_id
 
     async def interrupt(self, handle: ThreadHandle) -> None:

@@ -42,18 +42,41 @@ async def _drain_until(
             return got
 
 
+async def _wait_for_log(tmp_path, count: int, timeout: float = 5.0) -> list[dict]:
+    """The fake logs a message when it READS it; a notification the client
+    fires and forgets (`initialized`) can still be in the pipe when the
+    awaited response before it has already returned — poll briefly."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        log = read_request_log(tmp_path)
+        if len(log) >= count or asyncio.get_running_loop().time() > deadline:
+            return log
+        await asyncio.sleep(0.02)
+
+
 async def test_start_initializes_and_checks_version(tmp_path):
     binary = fake_codex_bin(tmp_path, {})
     server = CodexServer(binary=binary)
     await server.start()
     try:
         assert server.alive
-        log = read_request_log(tmp_path)
+        log = await _wait_for_log(tmp_path, 2)
         assert log[0]["method"] == "initialize"
         assert log[0]["params"]["clientInfo"]["name"] == "marim-harness"
         assert log[1] == {"method": "initialized"}
     finally:
         await server.aclose()
+
+
+def test_handle_remembers_the_completed_turn():
+    """The bookkeeping `start_turn` relies on when the completion beat it."""
+    handle = ThreadHandle(thread_id="t", events=asyncio.Queue(), request_handler=_decline)
+    handle.current_turn_id = "turn-9"
+    handle.note_turn_completed({"threadId": "t", "turn": {"id": "turn-9", "status": "completed"}})
+    assert handle.current_turn_id is None
+    assert handle.last_completed_turn_id == "turn-9"
+    handle.note_turn_completed({"threadId": "t"})  # malformed: no turn object
+    assert handle.last_completed_turn_id == "turn-9"
 
 
 async def test_start_rejects_old_version(tmp_path):
@@ -108,7 +131,10 @@ async def test_thread_and_turn_events_route_to_handle(tmp_path):
         events = await _drain_until(handle, "turn/completed")
         methods = [m for m, _ in events]
         assert "item/agentMessage/delta" in methods and "warning" in methods
-        assert handle.current_turn_id is None  # cleared on turn/completed
+        # Cleared on turn/completed — whichever of the turn/start response and
+        # the completion notification the client processed first.
+        assert handle.current_turn_id is None
+        assert handle.last_completed_turn_id == "turn-1"
         log = read_request_log(tmp_path)
         start = next(m for m in log if m.get("method") == "thread/start")
         assert start["params"]["developerInstructions"] == "be brief"
