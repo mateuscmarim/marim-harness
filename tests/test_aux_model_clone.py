@@ -19,7 +19,9 @@ from tests.conftest import _make_deps
 
 def test_aux_model_for_clones_a_claude_cli_model():
     raw = ClaudeCliModel("opus")
-    raw.session_id = "LIVE-SESSION-123"  # the user's real Claude conversation
+    # the user's real Claude conversation, as the session persists it
+    raw.session_ref_getter = lambda: "claude-cli:LIVE-SESSION-123"
+    assert raw.session_id == "LIVE-SESSION-123"
     aux = aux_model_for(raw, cwd="/ws")
     assert aux is not raw
     assert isinstance(aux, ClaudeCliModel)
@@ -71,7 +73,7 @@ def test_update_model_builds_aux_agents_on_a_clone_for_claude_cli(tmp_path, monk
     )
 
     raw = ClaudeCliModel("opus")
-    raw.session_id = "LIVE-SESSION-123"
+    raw.session_ref_getter = lambda: "claude-cli:LIVE-SESSION-123"
     ctrl.update_model(raw)
 
     for role in ("summarizer", "titler"):

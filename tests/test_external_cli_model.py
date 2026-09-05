@@ -155,19 +155,40 @@ async def test_text_folder_emit_text_cards_mode_skips_bootstrap_on_the_same_part
     assert pm.calls == [("text-0", ""), ("text-0", "a"), ("text-0", "b")]
 
 
-async def test_text_folder_emit_text_fold_mode_joins_with_blank_lines():
+async def test_text_folder_emit_text_fold_mode_concatenates_prose_deltas():
     pm = _FakePartsManager()
     folder = _folder(pm, cards=False)
-    _ = [e async for e in folder.emit_text("first")]
+    _ = [e async for e in folder.emit_text("fir")]
     assert folder.folded_any is True
-    _ = [e async for e in folder.emit_text("second")]
-    # both chunks land on the SAME part id ("text-0"), and the second is
-    # blank-line-separated from what's already folded in.
+    _ = [e async for e in folder.emit_text("st")]
+    # Both chunks land on the SAME part id ("text-0") and join with NOTHING
+    # between them: prose arrives a few characters per delta, so a separator
+    # here would shred every sentence.
     assert pm.calls == [
         ("text-0", ""),
-        ("text-0", "first"),
-        ("text-0", "\n\nsecond"),
+        ("text-0", "fir"),
+        ("text-0", "st"),
     ]
+
+
+async def test_text_folder_emit_text_fold_mode_blank_line_separates_a_tool_line():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "▸ Bash ls")
+    _ = [e async for e in folder.emit_text("be")]
+    _ = [e async for e in folder.emit_tool("cmd")]
+    assert folder.after_tool is True  # armed: the next prose starts a new block
+    _ = [e async for e in folder.emit_text("af")]
+    _ = [e async for e in folder.emit_text("ter")]
+    # Only the delta that FOLLOWS a folded ▸ line is blank-line separated; the
+    # ones after it continue the same block.
+    assert pm.calls == [
+        ("text-0", ""),
+        ("text-0", "be"),
+        ("text-0", "▸ Bash ls"),
+        ("text-0", "\n\naf"),
+        ("text-0", "ter"),
+    ]
+    assert folder.after_tool is False
 
 
 async def test_text_folder_emit_tool_cards_mode_pushes_activity_and_bumps_part_n_for_calls():

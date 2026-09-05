@@ -1013,9 +1013,9 @@ class Harness:
         """Bind the late-bound seams an ``ExternalCliModel`` (claude-cli,
         codex-cli) needs — live approval mode, the real workspace (or worktree)
         cwd, the TUI tool-card and sub-agents side-channels, interactive gating
-        (request_approval/ask_user — brokered by codex-cli, unused by
-        claude-cli), the scratchpad, the live thinking level and the persisted
-        provider-side conversation reference. A no-op for every other
+        (request_approval/ask_user — brokered by both CLIs), the scratchpad,
+        the live thinking level and the persisted provider-side conversation
+        reference. A no-op for every other
         provider's model. Public because ``bootstrap`` (the CLI preset) binds it
         once after build, before any UI attaches — the internal set_model/bind_ui
         callers use it too, so a UI attached later re-binds the fresh callbacks."""
