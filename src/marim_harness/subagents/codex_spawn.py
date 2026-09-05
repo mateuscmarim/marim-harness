@@ -202,6 +202,12 @@ class CodexSpawnRequest:
     output_schema: dict | None = None
     thinking: str | None = None
     resume_thread_id: str | None = None
+    # (messages, thread_id) -> None, called once the handle exists (well before
+    # the first turn) and again as the transcript grows, so an interrupted
+    # spawn's sidecar carries its `codex_thread_id` — see `execute`'s
+    # `_checkpoint`. None when the caller (a direct `run_codex` test, or any
+    # backend-agnostic caller) has no sidecar to checkpoint into.
+    checkpoint: Callable[[list, str | None], None] | None = None
 
 
 def _efforts_for(models: list[dict], model_id: str | None) -> list[str] | None:
@@ -256,6 +262,7 @@ class CodexSpawnOrchestrator:
         hook_task = original_task or task
         t0 = time.perf_counter()
         meta: dict[str, Any] = {}
+        checkpoint: Callable[[list, str | None], None] | None = None
         if stream_id:
             meta = {
                 "stream_id": stream_id,
@@ -270,9 +277,23 @@ class CodexSpawnOrchestrator:
                 "backend": BACKEND,
                 "codex_thread_id": resume_thread_id,
             }
-            self._transcripts.save(
-                stream_id, list(transcript_prefix or []), meta=meta, cap_reasoning=True
-            )
+
+            def _checkpoint(messages: list, thread_id: str | None, _meta=meta) -> None:
+                # Same shape as CliSpawnOrchestrator._checkpoint (cli_spawn.py):
+                # patch the real thread id into the shared meta dict as soon as
+                # it's known — right after start_thread/resume_thread returns,
+                # well before the first turn — so a spawn cancelled before
+                # completion is still resumable (Important #3 of the final
+                # review). `_meta` is the same dict object `final_meta` below
+                # spreads, so this mutation is visible there too.
+                if thread_id:
+                    _meta["codex_thread_id"] = thread_id
+                self._transcripts.save(
+                    stream_id, (transcript_prefix or []) + messages, meta=_meta, cap_reasoning=True
+                )
+
+            checkpoint = _checkpoint
+            checkpoint([], None)
         await self.hooks.subagent_start(defn.name, hook_task)
         resumed = resume_thread_id is not None
 
@@ -287,6 +308,7 @@ class CodexSpawnOrchestrator:
                     output_schema=output_schema,
                     thinking=thinking,
                     resume_thread_id=resume_thread_id,
+                    checkpoint=checkpoint,
                 )
             )
             full_transcript = list(transcript_prefix or []) + result.transcript
@@ -390,6 +412,12 @@ class CodexSpawnOrchestrator:
                 )
         else:
             handle = await server.start_thread(options=options, request_handler=broker.handle)
+        if request.checkpoint is not None:
+            # The handle exists now, well before turn/start — checkpoint the
+            # real thread id immediately so an interruption anywhere from here
+            # on (including before the first turn even starts) leaves a
+            # resumable sidecar (Important #3 of the final review).
+            request.checkpoint([], handle.thread_id)
         cbs = self.deps.ui
         if stream_id and cbs.on_subagent_model is not None:
             await cbs.on_subagent_model(stream_id, f"{BACKEND}:{model_name or 'default'}")
@@ -399,6 +427,7 @@ class CodexSpawnOrchestrator:
             models = []
         state = TurnState()
         tx = _Transcript()
+        last_ckpt_len = 0
         try:
             await server.start_turn(
                 handle,
@@ -412,7 +441,15 @@ class CodexSpawnOrchestrator:
                 ),
             )
             async for item in turn_events(server, handle, state):
-                for event in tx.feed(item):
+                events = tx.feed(item)
+                # Checkpoint whenever the transcript grows (mirrors
+                # cli_backend._process_line's growth-gated checkpoint) so a
+                # cancellation mid-turn loses at most the segment since the
+                # last item, not the whole run.
+                if request.checkpoint is not None and len(tx.messages) != last_ckpt_len:
+                    last_ckpt_len = len(tx.messages)
+                    request.checkpoint(tx.messages, None)
+                for event in events:
                     if stream_id and cbs.on_subagent_event is not None:
                         await cbs.on_subagent_event(stream_id, event, None)
             req_usage = finish_turn(handle, state)

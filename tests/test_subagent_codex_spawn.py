@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,56 @@ async def test_run_codex_resumes_a_persisted_thread(tmp_path: Path, monkeypatch)
     log = read_request_log(tmp_path)
     assert any(r["method"] == "thread/resume" for r in log)
     assert not any(r["method"] == "thread/start" for r in log)
+
+
+async def test_cancelled_spawn_checkpoints_the_thread_id_before_the_turn_completes(
+    tmp_path: Path, monkeypatch
+):
+    """Important #3 (final review): the sidecar must carry `codex_thread_id`
+    as soon as the thread exists, not only once a turn finishes — otherwise a
+    spawn cancelled mid-turn (e.g. the user aborts a hung tool call) is left
+    with no thread id and can never be resumed. The scenario's first turn
+    emits one content delta before hanging, so the transcript has something to
+    flush once the id is known; the SAME thread id is then proven live by
+    actually resuming it for a real continuation turn."""
+    _login(
+        monkeypatch,
+        tmp_path,
+        {
+            "resumable": ["thread-1"],
+            "turns": [
+                [
+                    {
+                        "notify": "item/agentMessage/delta",
+                        "params": {"itemId": "m1", "delta": "partial"},
+                    },
+                    {"hang": True},
+                ],
+                _report_turn("resumed after cancel"),
+            ],
+        },
+    )
+    _write_codex_agent(tmp_path)
+    store = _session_store(tmp_path)
+    harness = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store)
+
+    task = asyncio.create_task(harness.subagents.run("codex-worker", "go", stream_id="s1"))
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    ts = TranscriptStore(store.path, store.session_id)
+    meta = ts.read_meta("s1")
+    assert meta is not None
+    assert meta["codex_thread_id"] == "thread-1"
+    assert meta["status"] == "running"
+
+    # The recorded thread id is not just present, it actually resumes.
+    job_id, message = await harness.subagents.resume_spawn("s1")
+    assert job_id is not None, message
+    report = await harness.deps.jobs.wait(job_id)
+    assert "resumed after cancel" in report
 
 
 async def test_resume_refuses_without_a_thread_id(tmp_path: Path, monkeypatch):
