@@ -1009,20 +1009,40 @@ class Harness:
         self.wire_cli_model(model)
 
     def wire_cli_model(self, model: Model) -> None:
-        """Bind the late-bound hooks a ``ClaudeCliModel`` needs — live approval
-        mode, the real workspace (or worktree) cwd, the TUI tool-card side-channel,
-        and the sub-agents-screen side-channels for Claude's own Agent/Task spawns.
-        A no-op for every other provider's model. Public because ``bootstrap``
-        (the CLI preset) binds it once after build, before any UI attaches — the
-        internal set_model/bind_ui callers use it too."""
-        from ..config.claude_cli_model import ClaudeCliModel
+        """Bind the late-bound seams an ``ExternalCliModel`` (claude-cli,
+        codex-cli) needs — live approval mode, the real workspace (or worktree)
+        cwd, the TUI tool-card and sub-agents side-channels, interactive gating
+        (request_approval/ask_user — brokered by codex-cli, unused by
+        claude-cli), the scratchpad, the live thinking level and the persisted
+        provider-side conversation reference. A no-op for every other
+        provider's model. Public because ``bootstrap`` (the CLI preset) binds it
+        once after build, before any UI attaches — the internal set_model/bind_ui
+        callers use it too, so a UI attached later re-binds the fresh callbacks."""
+        from ..config.external_cli import ExternalCliModel
 
-        if isinstance(model, ClaudeCliModel):
-            model.mode_getter = lambda: self.mode.value
-            model.cwd = str(self.deps.workspace.root)
-            model.on_activity = self.deps.ui.on_cli_activity
-            model.on_subagent = self.deps.ui.on_subagent_event
-            model.on_subagent_model = self.deps.ui.on_subagent_model
+        if not isinstance(model, ExternalCliModel):
+            return
+        model.mode_getter = lambda: self.mode.value
+        model.cwd = str(self.deps.workspace.root)
+        model.on_activity = self.deps.ui.on_cli_activity
+        model.on_subagent = self.deps.ui.on_subagent_event
+        model.on_subagent_model = self.deps.ui.on_subagent_model
+        model.request_approval = self.deps.ui.request_approval
+        model.ask_user = self.deps.ui.ask_user
+        services = self.deps.services
+        has_scratchpad = services is not None and services.get_scratchpad
+        model.scratchpad_getter = services.get_scratchpad if has_scratchpad else (lambda: None)
+        model.thinking_getter = lambda: self.thinking_level_id
+        # ``saved_cli_thread_id``/``set_cli_thread_id`` land on SessionController
+        # in Task 10; wrapped in closures (rather than bare ``getattr(...)``) so
+        # both seams stay non-None callables — and this task's own test green —
+        # before and after that method lands, simplifying to a direct attribute
+        # reference once it does.
+        session = self.session
+        model.session_ref_getter = lambda: getattr(session, "saved_cli_thread_id", None)
+        model.on_session_ref = lambda ref: getattr(session, "set_cli_thread_id", lambda _r: None)(
+            ref
+        )
 
     def _build_advisor_model(self, model_id: str) -> Model:
         """Build the advisor's model: through the active model source when one

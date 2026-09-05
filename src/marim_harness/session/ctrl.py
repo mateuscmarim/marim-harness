@@ -43,18 +43,18 @@ logger = logging.getLogger(__name__)
 def aux_model_for(model: Model, *, cwd: str) -> Model:
     """The model the aux agents (summarizer/titler) should run on.
 
-    A ``ClaudeCliModel`` carries the live ``session_id``, so an aux agent sharing
-    it would resume — and reply into — the user's real Claude session (dropping
-    its own instructions). Such a model is swapped for a stateless, read-only
-    ``ephemeral_clone`` that never resumes or stores a session; every other
-    provider reuses the one model unchanged.
+    An ``ExternalCliModel`` (claude-cli, codex-cli) carries the live provider
+    session/thread, so an aux agent sharing it would resume — and reply into —
+    the user's real conversation (dropping its own instructions). Such a model
+    is swapped for a stateless, read-only ``ephemeral_clone`` that never resumes
+    or stores a session; every other provider reuses the one model unchanged.
 
     This is the SINGLE source of that decision: both bootstrap (initial build)
     and ``update_model`` (runtime ``/model`` switch) route the model through here,
     so the clone can never be dropped on one path but kept on the other."""
-    from ..config.claude_cli_model import ClaudeCliModel
+    from ..config.external_cli import ExternalCliModel
 
-    if isinstance(model, ClaudeCliModel):
+    if isinstance(model, ExternalCliModel):
         return model.ephemeral_clone(cwd=cwd)
     return model
 
