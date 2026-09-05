@@ -304,6 +304,50 @@ async def test_crash_delivers_closed_with_stderr_and_respawns(tmp_path):
         await server.aclose()
 
 
+async def test_reap_cancels_reader_before_new_generation_registers(tmp_path):
+    """Regression: `_reap()` must fully interrupt a reader stuck in
+    `_run_reader`'s stderr-grace wait before returning, so a respawn's
+    freshly-registered thread can never receive a stale CLOSED meant for the
+    generation that died.
+
+    This exercises `_run_reader`/`_reap` directly against a stub client
+    rather than through the fake binary: the race depends on `_reap()`
+    observing the reader mid-grace-wait, a window too narrow (a handful of
+    microseconds around a real subprocess's stdout EOF) to hit
+    deterministically end-to-end.
+    """
+
+    async def _noop_handler(method: str, params: dict) -> dict:
+        return {}
+
+    class _EofImmediately:
+        """Stands in for a JsonRpcClient whose ``run()`` has already seen
+        EOF -- the state ``_run_reader`` is in the instant a process dies."""
+
+        async def run(self) -> None:
+            return
+
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {}))
+    try:
+        old_handle = server._register({"id": "thread-old"}, _noop_handler)
+        server._client = _EofImmediately()  # type: ignore[assignment]
+        # A stderr pump that never finishes on its own, forcing
+        # `_run_reader`'s finally into its 0.5s grace wait -- exactly the
+        # window `_reap()` must cancel through rather than race past.
+        server._stderr_task = asyncio.create_task(asyncio.sleep(100))
+        server._reader_task = asyncio.create_task(server._run_reader(server._client))
+        await asyncio.sleep(0)  # let the reader task start and enter the grace wait
+
+        await server._reap()
+        new_handle = server._register({"id": "thread-new"}, _noop_handler)
+        await asyncio.sleep(0.05)  # give a wrongly-surviving reader a chance to run
+
+        assert new_handle.events.empty(), "a respawned thread must never see a stale CLOSED"
+        assert old_handle.events.qsize() <= 1
+    finally:
+        await server.aclose()
+
+
 async def test_list_models_and_compact(tmp_path):
     server = CodexServer(binary=fake_codex_bin(tmp_path, {}))
     await server.start()

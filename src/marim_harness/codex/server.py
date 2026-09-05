@@ -163,8 +163,14 @@ class CodexServer:
             # The stderr pump can lag the stdout EOF by a tick, so give it a
             # short grace window before reading the tail — otherwise the last
             # line or two (often the one explaining the crash) is dropped.
+            # Only the *timeout* is swallowed here: a genuine task-level
+            # cancellation (delivered by `_reap()` when a respawn races a
+            # reader still stuck in this wait) must keep propagating, so this
+            # coroutine exits here instead of running on to broadcast a stale
+            # CLOSED into `self._threads` after it may already hold the next
+            # generation's handles.
             if self._stderr_task is not None:
-                with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(asyncio.shield(self._stderr_task), 0.5)
             tail = "\n".join(self._stderr_tail)
             for handle in list(self._threads.values()):
@@ -177,10 +183,25 @@ class CodexServer:
             self._stderr_tail.append(raw.decode("utf-8", "replace").rstrip("\n"))
 
     async def _reap(self) -> None:
-        """Forget a dead process (and its tasks) before spawning a new one."""
-        for task in (self._reader_task, self._stderr_task):
-            if task is not None and not task.done():
+        """Forget a dead process (and its tasks) before spawning a new one.
+
+        Firing `.cancel()` and moving on isn't enough: cancellation only
+        lands at a task's *next* suspension point, so returning immediately
+        would let `start()` go on to spawn a new process and register new
+        threads while the previous generation's `_run_reader` is still
+        mid-flight inside its own stderr-grace wait (see that method).
+        Awaiting the cancelled tasks to completion closes that window — by
+        the time `_reap()` returns, the old reader has either finished its
+        broadcast or been genuinely cancelled out of it, so a freshly
+        registered thread on the new process can never receive a stale
+        CLOSED meant for the generation that died.
+        """
+        tasks = [t for t in (self._reader_task, self._stderr_task) if t is not None]
+        for task in tasks:
+            if not task.done():
                 task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._reader_task = self._stderr_task = None
         self._client = None
         self._proc = None
