@@ -51,6 +51,7 @@ def test_provider_specs_env_keys():
         "zen-go",
         "local",
         "claude-cli",
+        "codex-cli",
     ]
     assert specs["openrouter"].write_key == "OPENROUTER_API_KEY"
     assert specs["openrouter"].drop_keys == ("OPENROUTER_API_KEY",)
@@ -79,6 +80,9 @@ def test_provider_specs_env_keys():
     # claude-cli stores nothing.
     assert specs["claude-cli"].write_key is None
     assert specs["claude-cli"].drop_keys == ()
+    # codex-cli stores nothing either: `codex login` owns auth.
+    assert specs["codex-cli"].write_key is None
+    assert specs["codex-cli"].drop_keys == ()
 
 
 def test_spec_configured_reads_any_key(isolated_env, monkeypatch):
@@ -102,10 +106,11 @@ def test_current_default_provider(isolated_env, monkeypatch):
 class _PaneHost(App):
     """Minimal host mirroring what SettingsScreen passes the pane."""
 
-    def __init__(self, *, model_source=None, cli_detected=False):
+    def __init__(self, *, model_source=None, cli_detected=False, codex_detected=False):
         super().__init__()
         self._model_source = model_source
         self._cli_detected = cli_detected
+        self._codex_detected = codex_detected
         self.statuses: list[str] = []
         self.badges: list[str] = []
 
@@ -115,12 +120,13 @@ class _PaneHost(App):
             status=self.statuses.append,
             set_badge=self.badges.append,
             cli_detected=self._cli_detected,
+            codex_detected=self._codex_detected,
         )
 
 
 @pytest.mark.anyio
 async def test_pane_mounts_all_cards_without_writing_env(isolated_env, monkeypatch, tmp_path):
-    """Mounting paints all six cards and must not write .env (mount-time
+    """Mounting paints all seven cards and must not write .env (mount-time
     widget events are gated, like the settings screen's _ready flag)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setenv("MARIM_PROVIDER", "openrouter")
@@ -128,7 +134,7 @@ async def test_pane_mounts_all_cards_without_writing_env(isolated_env, monkeypat
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
-        for name in ("openrouter", "google", "zen", "zen-go", "local", "claude-cli"):
+        for name in ("openrouter", "google", "zen", "zen-go", "local", "claude-cli", "codex-cli"):
             assert pane.query_one(f"#prov-card-{name}") is not None
         # Key inputs are password fields that start empty.
         key = pane.query_one("#prov-key-openrouter", Input)
@@ -700,3 +706,15 @@ async def test_repaint_during_reverify_keeps_verifying_badge(isolated_env, monke
         await pilot.pause()
         badge = str(pane.query_one("#prov-status-openrouter", Static).render())
         assert "✓ connected · 0 models" in badge
+
+
+@pytest.mark.anyio
+async def test_codex_card_reports_binary_detection():
+    async with _PaneHost(codex_detected=True).run_test() as pilot:
+        pane = pilot.app.query_one(ProvidersPane)
+        status = pane.query_one("#prov-status-codex-cli", Static).render()
+        assert "detected" in str(status)
+        assert "codex login" in str(pane.query_one("#prov-note-codex-cli", Static).render())
+    async with _PaneHost(codex_detected=False).run_test() as pilot:
+        pane = pilot.app.query_one(ProvidersPane)
+        assert "not found" in str(pane.query_one("#prov-status-codex-cli", Static).render())

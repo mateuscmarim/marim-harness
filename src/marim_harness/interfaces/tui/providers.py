@@ -1,6 +1,6 @@
-"""The settings screen's Providers section: stacked cards for the six built-in
-providers (openrouter / google / zen / zen-go / local / claude-cli), a default-provider radio,
-live apply, implicit verification, and key removal.
+"""The settings screen's Providers section: stacked cards for the seven built-in
+providers (openrouter / google / zen / zen-go / local / claude-cli / codex-cli), a
+default-provider radio, live apply, implicit verification, and key removal.
 
 Credentials save to the GLOBAL .env only (a project .env may not set these keys
 at all — see _PROJECT_ENV_BLOCKLIST in config/env.py), and ``save_env_settings``
@@ -91,8 +91,14 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ),
     # claude-cli stores nothing: the CLI owns auth; status is binary detection.
     ProviderSpec("claude-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
+    # codex-cli stores nothing either: `codex login` owns auth; status is
+    # binary + login detection.
+    ProviderSpec("codex-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
+# Providers whose "configured" state is the presence of an external binary
+# (plus its own login), not a stored key.
+_BINARY_PROVIDERS = frozenset({"claude-cli", "codex-cli"})
 
 _DEFAULT_LOCAL_URL = "http://localhost:11434/v1"
 
@@ -159,6 +165,7 @@ class ProvidersPane(Vertical):
         status: Callable[[str], None],
         set_badge: Callable[[str], None],
         cli_detected: bool,
+        codex_detected: bool = False,
         id: str | None = None,
     ) -> None:
         super().__init__(id=id)
@@ -166,6 +173,7 @@ class ProvidersPane(Vertical):
         self._status = status
         self._set_badge = set_badge
         self._cli_detected = cli_detected
+        self._codex_detected = codex_detected
         # Gate commits until mounted: widget events fired while the initial
         # tree mounts (e.g. the RadioSet preselect) must not persist anything.
         self._ready = False
@@ -222,7 +230,17 @@ class ProvidersPane(Vertical):
                     yield Static("API key")
                     yield Input(password=True, id=f"prov-key-{name}")
             if name == "claude-cli":
-                yield Static("(auth handled by the claude CLI itself)", classes="prov-note")
+                yield Static(
+                    "(auth handled by the claude CLI itself)",
+                    classes="prov-note",
+                    id="prov-note-claude-cli",
+                )
+            elif name == "codex-cli":
+                yield Static(
+                    "(auth handled by `codex login`; needs codex ≥ 0.152)",
+                    classes="prov-note",
+                    id="prov-note-codex-cli",
+                )
             elif name == "zen-go":
                 yield Static(
                     "Same key as zen — removing it deconfigures both.",
@@ -259,6 +277,8 @@ class ProvidersPane(Vertical):
     def _configured(self, spec: ProviderSpec) -> bool:
         if spec.name == "claude-cli":
             return self._cli_detected
+        if spec.name == "codex-cli":
+            return self._codex_detected
         return spec_configured(spec)
 
     def _paint_card(self, spec: ProviderSpec) -> None:
@@ -280,6 +300,8 @@ class ProvidersPane(Vertical):
     def _status_text(self, spec: ProviderSpec, configured: bool) -> str:
         if spec.name == "claude-cli":
             base = "detected on PATH" if configured else "not found"
+        elif spec.name == "codex-cli":
+            base = "detected + logged in" if configured else "not found or not logged in"
         elif configured and spec.name in self._verify_results:
             # A live verdict beats the static "configured": repaints (the
             # default marker moving between cards, another card's save) must

@@ -23,6 +23,8 @@ _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 # None ⇒ let the claude CLI use its own configured default model.
 _DEFAULT_CLAUDE_CLI_MODEL: str | None = None
+# None ⇒ let the codex CLI use its own configured default model.
+_DEFAULT_CODEX_CLI_MODEL: str | None = None
 _DEFAULT_ZEN_MODEL = "mimo-v2.5-free"
 # OpenCode Zen's OpenAI-compatible endpoint root. Fixed, not MARIM_BASE_URL —
 # that env belongs to the `local` provider and both can be active at once.
@@ -37,7 +39,9 @@ _ZEN_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli", "zen", "zen-go"})
+KNOWN_PROVIDERS = frozenset(
+    {"openrouter", "local", "google", "claude-cli", "codex-cli", "zen", "zen-go"}
+)
 
 
 def parse_qualified(
@@ -387,6 +391,14 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
             api_key=None,  # the CLI owns auth (the Claude subscription)
             **common,
         )
+    if provider == "codex-cli":
+        return ModelConfig(
+            provider="codex-cli",
+            model=os.getenv("MARIM_MODEL", _DEFAULT_CODEX_CLI_MODEL),
+            base_url=None,
+            api_key=None,  # the CLI owns auth (`codex login`)
+            **common,
+        )
     return ModelConfig(
         provider="openrouter",
         model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
@@ -404,6 +416,15 @@ def _claude_cli_available() -> bool:
     return resolve_cli_binary() is not None
 
 
+def _codex_cli_available() -> bool:
+    """True when a ``codex`` binary resolves AND ``codex login`` has run
+    (auth.json under CODEX_HOME). Both, unlike claude-cli's binary-only
+    check: an unauthenticated app-server fails only on the first turn."""
+    from ..codex.env import codex_available
+
+    return codex_available()
+
+
 def _provider_has_creds(provider: str) -> bool:
     if provider == "openrouter":
         return bool(os.getenv("OPENROUTER_API_KEY"))
@@ -418,6 +439,8 @@ def _provider_has_creds(provider: str) -> bool:
         return bool(os.getenv("OPENCODE_API_KEY"))
     if provider == "claude-cli":
         return _claude_cli_available()
+    if provider == "codex-cli":
+        return _codex_cli_available()
     return False
 
 
@@ -533,6 +556,11 @@ def build_model(cfg: ModelConfig):
 
         return ClaudeCliModel(cfg.model)
 
+    if cfg.provider == "codex-cli":
+        from .codex_cli_model import CodexCliModel
+
+        return CodexCliModel(cfg.model)
+
     from .openrouter_cost import build_openrouter_model
 
     assert cfg.model is not None  # openrouter always has a model id
@@ -583,6 +611,10 @@ class ModelSource:
                 ModelEntry(id="opus", name="opus", provider="claude-cli"),
                 ModelEntry(id="haiku", name="haiku", provider="claude-cli"),
             ]
+        if self.cfg.provider == "codex-cli":
+            from ..codex import catalog as codex_catalog
+
+            return await codex_catalog.list_codex_models(strict=strict)
         return []
 
 

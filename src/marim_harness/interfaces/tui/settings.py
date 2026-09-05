@@ -29,6 +29,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Input, RadioSet, Static
 
+from ...codex.env import codex_available
 from ...config import ModelConfig, MultiModelSource
 from ...runtime.permissions import Mode
 from ...subagents.cli_backend import resolve_cli_binary
@@ -222,6 +223,7 @@ class SettingsScreen(Screen[None]):
                     status=self._status,
                     set_badge=self._set_providers_badge,
                     cli_detected=resolve_cli_binary() is not None,
+                    codex_detected=codex_available(),
                     id="section-providers",
                 )
                 with Vertical(id="section-theme"):
