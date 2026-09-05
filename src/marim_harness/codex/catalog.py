@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 
 from ..workspace.catalog import ModelEntry
-from .server import CodexServer, shared_server
+from .server import CodexServer, peek_shared_server
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,22 @@ async def list_codex_models(
 ) -> list[ModelEntry]:
     """Live catalog, or ``STATIC_MODELS`` on any failure (``strict=True``
     re-raises instead — provider verification needs to tell "connected, 0
-    models" from "failed to connect")."""
-    srv = server if server is not None else shared_server()
+    models" from "failed to connect").
+
+    Server lifecycle (final review Important #5): an injected ``server`` is
+    the caller's to open and close — used as-is. Absent that, an
+    already-running process-wide singleton is reused as-is too, since
+    something else in this process depends on it and closing it here would
+    sever that. Only when NEITHER exists (a one-shot catalog probe —
+    ``marim models list``, a provider-detection sweep — run before anything
+    else has touched codex-cli) does this function spin up its own private,
+    throwaway ``CodexServer`` and close it again once done, so a bare catalog
+    listing never leaks a live app-server process."""
+    owns_server = False
+    srv = server if server is not None else peek_shared_server()
+    if srv is None:
+        srv = CodexServer()
+        owns_server = True
     try:
         await srv.start()
         entries = entries_from(await srv.list_models())
@@ -64,3 +78,6 @@ async def list_codex_models(
             raise
         logger.info("codex model/list unavailable (%s); using the static catalog", exc)
         return list(STATIC_MODELS)
+    finally:
+        if owns_server:
+            await srv.aclose()

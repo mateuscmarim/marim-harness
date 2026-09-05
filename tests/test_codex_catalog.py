@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from marim_harness.codex.catalog import STATIC_MODELS, entries_from, list_codex_models
-from marim_harness.codex.server import CodexServer
-from tests.fakes import fake_codex_bin
+from marim_harness.codex.server import CodexServer, close_shared_server, peek_shared_server
+from tests.fakes import fake_codex_bin, read_request_log
 
 pytestmark = pytest.mark.anyio
 
@@ -61,6 +61,52 @@ async def test_list_codex_models_empty_live_response_falls_back_when_not_strict(
     finally:
         await server.aclose()
     assert entries == list(STATIC_MODELS)
+
+
+async def test_list_codex_models_with_no_server_given_starts_and_closes_its_own(
+    tmp_path, monkeypatch
+):
+    """Final review Important #5: with no injected server AND no process-wide
+    singleton already running (the `marim models list` / provider-detection
+    shape), `list_codex_models` must not leak a live app-server — it starts
+    its OWN private server, uses it, and closes it again, never touching (or
+    creating) the shared singleton at all."""
+    assert peek_shared_server() is None  # nothing else in this test has started codex-cli
+    monkeypatch.setenv("MARIM_CODEX_CLI_BIN", fake_codex_bin(tmp_path, {}))
+    closed: list[bool] = []
+    orig_aclose = CodexServer.aclose
+
+    async def spy_aclose(self):
+        closed.append(True)
+        await orig_aclose(self)
+
+    monkeypatch.setattr(CodexServer, "aclose", spy_aclose)
+
+    entries = await list_codex_models()
+    assert [e.id for e in entries] == ["gpt-5.6-sol", "gpt-5.4-mini"]
+    # No shared instance was created as a side effect...
+    assert peek_shared_server() is None
+    # ...even though a real (private) process WAS spawned, used, and reaped.
+    assert any(r["method"] == "model/list" for r in read_request_log(tmp_path))
+    assert closed == [True]
+
+
+async def test_list_codex_models_reuses_an_already_running_shared_server(tmp_path, monkeypatch):
+    """The other half of Important #5: when a shared singleton is ALREADY
+    running (something else in this process depends on it), a catalog probe
+    must reuse it rather than spin up a redundant second process — and must
+    not be the one to close it."""
+    from marim_harness.codex.server import shared_server
+
+    monkeypatch.setenv("MARIM_CODEX_CLI_BIN", fake_codex_bin(tmp_path, {}))
+    srv = shared_server()
+    await srv.start()
+    try:
+        entries = await list_codex_models()
+        assert [e.id for e in entries] == ["gpt-5.6-sol", "gpt-5.4-mini"]
+        assert peek_shared_server() is srv and srv.alive  # reused, not closed
+    finally:
+        await close_shared_server()
 
 
 async def test_list_codex_models_empty_live_response_is_not_masked_when_strict(tmp_path):
