@@ -603,3 +603,67 @@ async def test_start_survives_mcp_list_failure(tmp_path, caplog):
         assert await server.connected_mcp_servers() == ["leaked"]
     finally:
         await server.aclose()
+
+
+async def test_idle_is_false_while_a_thread_start_is_in_flight():
+    """`thread_ids` is empty until `thread/start` answers, so the idle-closer
+    must also see the request in flight (review lead: a daemon starting a
+    session while another harness closes could lose the new thread)."""
+    from marim_harness.codex import server as server_mod
+
+    server = CodexServer(binary="unused")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class _Rpc:
+        async def request(self, method, params, timeout):
+            assert method == "thread/start"
+            entered.set()
+            await release.wait()
+            return {"thread": {"id": "t-1"}}
+
+    server._rpc = lambda: _Rpc()  # type: ignore[method-assign]
+    assert server.idle
+    opts = ThreadOptions(
+        cwd="/w",
+        developer_instructions=None,
+        model=None,
+        sandbox="read-only",
+        approval_policy="never",
+        ephemeral=True,
+    )
+    task = asyncio.create_task(server.start_thread(options=opts, request_handler=_decline))
+    await entered.wait()
+    assert not server.idle and server.thread_ids == frozenset()
+    # The singleton closer honours it: nothing is torn down mid-start.
+    server_mod._shared = server
+    try:
+        await server_mod.close_shared_server_if_idle()
+        assert server_mod._shared is server
+        release.set()
+        handle = await task
+        assert not server.idle and server.thread_ids == {handle.thread_id}
+        server.drop_thread(handle)
+        assert server.idle
+    finally:
+        server_mod._shared = None
+
+
+async def test_close_if_idle_releases_the_singleton_before_closing():
+    """A harness resolving the singleton DURING the close must get a fresh
+    server, not the one being SIGTERMed — so the slot is cleared first."""
+    from marim_harness.codex import server as server_mod
+
+    class _Observing(CodexServer):
+        saw_reset = False
+
+        async def aclose(self) -> None:
+            self.saw_reset = server_mod._shared is None
+            await super().aclose()
+
+    server = _Observing(binary="unused")
+    server_mod._shared = server
+    try:
+        await server_mod.close_shared_server_if_idle()
+        assert server.saw_reset and server_mod._shared is None
+    finally:
+        server_mod._shared = None

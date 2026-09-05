@@ -174,6 +174,7 @@ class CodexServer:
         self._stderr_task: asyncio.Task | None = None
         self._stderr_tail: collections.deque[str] = collections.deque(maxlen=_STDERR_TAIL_LINES)
         self._threads: dict[str, ThreadHandle] = {}
+        self._starting = 0  # thread/start + thread/resume requests in flight
         self._start_lock = asyncio.Lock()
 
     @property
@@ -194,6 +195,15 @@ class CodexServer:
         """Threads registered with the LIVE process (cleared on respawn), so a
         model can tell a stale handle from a usable one."""
         return frozenset(self._threads)
+
+    @property
+    def idle(self) -> bool:
+        """No thread registered AND none being started. A thread is only
+        registered once ``thread/start``/``thread/resume`` answers, so
+        ``thread_ids`` alone reads as empty while a caller is mid-request —
+        exactly when ``close_shared_server_if_idle`` must NOT pull the
+        process out from under it (a daemon starts sessions concurrently)."""
+        return not self._threads and self._starting == 0
 
     # --- lifecycle ----------------------------------------------------------
     async def start(self) -> None:
@@ -410,7 +420,7 @@ class CodexServer:
                 "approvalPolicy": options.approval_policy,
             }
         )
-        result = await self._rpc().request("thread/start", params, timeout=self._timeout)
+        result = await self._request_thread("thread/start", params)
         return self._register(result["thread"], request_handler)
 
     async def resume_thread(
@@ -428,11 +438,20 @@ class CodexServer:
             }
         )
         try:
-            result = await self._rpc().request("thread/resume", params, timeout=self._timeout)
+            result = await self._request_thread("thread/resume", params)
         except RpcError as exc:
             logger.info("codex thread %s not resumable: %s", thread_id, exc)
             return None
         return self._register(result["thread"], request_handler)
+
+    async def _request_thread(self, method: str, params: dict) -> dict:
+        """A thread-creating request, counted so ``idle`` stays False until
+        the thread is registered (or the request failed)."""
+        self._starting += 1
+        try:
+            return await self._rpc().request(method, params, timeout=self._timeout)
+        finally:
+            self._starting -= 1
 
     def drop_thread(self, handle: ThreadHandle) -> None:
         self._threads.pop(handle.thread_id, None)
@@ -597,6 +616,10 @@ async def close_shared_server_if_idle() -> None:
     already relied on when there was only ever one user of the singleton.
     """
     global _shared
-    if _shared is not None and not _shared.thread_ids:
-        await _shared.aclose()
-        _shared = None
+    if _shared is None or not _shared.idle:
+        return
+    # Release the slot BEFORE the (awaiting) close: a harness resolving the
+    # singleton meanwhile gets a fresh server instead of joining this dying
+    # one — its `thread/start` would otherwise land on a process mid-SIGTERM.
+    dying, _shared = _shared, None
+    await dying.aclose()
