@@ -1,0 +1,130 @@
+"""One Codex turn, driven to completion.
+
+The event loop shared by the main-loop model (``config/codex_cli_model.py``)
+and the sub-agent backend (``subagents/codex_spawn.py``): pull notifications
+off the thread's queue, translate them, hand text/activity items to the
+caller, and fold usage + completion into a ``TurnState``. Cancellation
+interrupts the turn but keeps the thread (the next turn reuses it); a dead
+server surfaces as ``CliModelError`` carrying the stderr tail; idling past the
+server's timeout interrupts the turn and raises.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+
+from pydantic_ai.usage import RequestUsage
+
+from ..config.external_cli import CliModelError
+from .server import CLOSED, CodexServer, ThreadHandle
+from .translate import ItemTranslator, TurnDone, TurnFailure, UsageUpdate
+
+_USAGE_KEYS = ("inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens")
+
+
+@dataclass
+class TurnState:
+    """What one ``turn/start`` accumulates while its notifications stream."""
+
+    translator: ItemTranslator = field(default_factory=ItemTranslator)
+    usage_total: dict = field(default_factory=dict)
+    done: TurnDone | None = None
+    failure: str | None = None
+
+
+def text_input(text: str) -> dict:
+    """A ``turn/start``/``turn/steer`` text input item."""
+    return {"type": "text", "text": text, "text_elements": []}
+
+
+def usage_from_total(total: dict) -> RequestUsage:
+    return RequestUsage(
+        input_tokens=int(total.get("inputTokens") or 0),
+        output_tokens=int(total.get("outputTokens") or 0),
+        cache_read_tokens=int(total.get("cachedInputTokens") or 0),
+    )
+
+
+def delta_since(total: dict, baseline: dict) -> dict:
+    """Codex reports cumulative thread totals; marim wants per-turn usage."""
+    return {k: int(total.get(k) or 0) - int(baseline.get(k) or 0) for k in _USAGE_KEYS}
+
+
+def _is_stale_completion(method: str, params: dict, turn_id: str | None) -> bool:
+    """True for a ``turn/completed`` notification belonging to a turn other
+    than the one ``turn_events`` is currently driving.
+
+    An interrupted turn's own completion can still be in flight (queued
+    behind the interrupt ack) when the NEXT turn starts on the same thread —
+    both share ``handle.events``. Left unfiltered, that stale completion
+    would end the new turn instantly with the wrong (usually empty) turn's
+    result; the caller drops it and keeps waiting for its own."""
+    if method != "turn/completed":
+        return False
+    return str((params.get("turn") or {}).get("id")) != str(turn_id)
+
+
+def _fold(item: object, state: TurnState) -> object | None:
+    """Fold a translated item into ``state`` when it's turn/usage bookkeeping
+    (usage totals, completion, failure); otherwise return it for the caller
+    to yield."""
+    if isinstance(item, UsageUpdate):
+        state.usage_total = item.total
+        return None
+    if isinstance(item, TurnDone):
+        state.done = item
+        return None
+    if isinstance(item, TurnFailure):
+        state.failure = item.message
+        if not item.will_retry:
+            state.done = TurnDone("failed", item.message)
+        return None
+    return item
+
+
+async def turn_events(
+    server: CodexServer, handle: ThreadHandle, state: TurnState
+) -> AsyncIterator[object]:
+    """Yield translated items (TextDelta/ThinkingDelta/ActivityStart/ActivityEnd/
+    Notice) for the current turn until it completes. Usage and completion are
+    folded into ``state`` rather than yielded."""
+    turn_id = handle.current_turn_id
+    try:
+        while state.done is None:
+            method, params = await asyncio.wait_for(handle.events.get(), server.timeout)
+            if method == CLOSED:
+                tail = str(params.get("stderr") or "").strip()
+                raise CliModelError(f"codex app-server exited mid-turn: {tail or 'no stderr'}")
+            if _is_stale_completion(method, params, turn_id):
+                continue
+            for item in state.translator.translate(method, params):
+                kept = _fold(item, state)
+                if kept is not None:
+                    yield kept
+    except asyncio.TimeoutError as exc:
+        with contextlib.suppress(Exception):
+            await server.interrupt(handle)
+        raise CliModelError(f"codex turn idle for {server.timeout:.0f}s; interrupted") from exc
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await server.interrupt(handle)
+        raise
+    finally:
+        handle.current_turn_id = None
+
+
+def finish_turn(handle: ThreadHandle, state: TurnState) -> RequestUsage:
+    """Per-turn usage for a completed turn; raises ``CliModelError`` when the
+    turn failed (or never reported completion). Advances the thread's usage
+    baseline so the next turn's delta starts from here."""
+    done = state.done
+    if done is None or done.status == "failed":
+        msg = (done.error if done else None) or state.failure or "codex turn failed"
+        raise CliModelError(f"codex: {msg}")
+    usage = usage_from_total(delta_since(state.usage_total, handle.usage_baseline))
+    if state.usage_total:
+        handle.usage_baseline = dict(state.usage_total)
+    return usage

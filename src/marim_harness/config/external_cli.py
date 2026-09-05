@@ -126,8 +126,21 @@ class TextFolder:
         self._is_call = is_call
         self.part_n = 0
         self.folded_any = False
+        self._started_ids: set[str] = set()
 
     async def _emit(self, content: str, part_id: str):
+        # pydantic_ai's parts manager reports a brand-new vendor_part_id's
+        # first call as a PartStartEvent (the part's initial content), never
+        # a PartDeltaEvent — even when that first call carries real text. A
+        # consumer that only accumulates PartDeltaEvent.delta (the common,
+        # and here required, shape for live streaming) would silently drop
+        # a fresh part's first chunk. Bootstrap the part with an empty delta
+        # so the manager treats it as already-started; the real content then
+        # arrives as a proper delta on the very next call.
+        if part_id not in self._started_ids:
+            self._started_ids.add(part_id)
+            for event in self._parts_manager.handle_text_delta(vendor_part_id=part_id, content=""):
+                yield event
         for event in self._parts_manager.handle_text_delta(vendor_part_id=part_id, content=content):
             yield event
 

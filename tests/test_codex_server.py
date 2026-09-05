@@ -290,6 +290,7 @@ async def test_crash_delivers_closed_with_stderr_and_respawns(tmp_path):
         assert not server.alive
         await server.start()  # respawn
         assert server.alive
+        assert handle.thread_id not in server.thread_ids  # respawn clears the old generation
         again = await server.start_thread(
             cwd="/w",
             developer_instructions=None,
@@ -375,3 +376,27 @@ async def test_aclose_is_idempotent(tmp_path):
     await server.aclose()
     await server.aclose()
     assert not server.alive
+
+
+async def test_timeout_property_reflects_configured_value(tmp_path):
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {}), timeout=42.0)
+    assert server.timeout == 42.0
+
+
+async def test_thread_ids_tracks_registered_threads(tmp_path):
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {}))
+    await server.start()
+    try:
+        assert server.thread_ids == frozenset()
+        handle = await server.start_thread(
+            cwd="/w",
+            developer_instructions=None,
+            model=None,
+            ephemeral=True,
+            sandbox="read-only",
+            approval_policy="never",
+            request_handler=_decline,
+        )
+        assert server.thread_ids == frozenset({handle.thread_id})
+    finally:
+        await server.aclose()

@@ -93,6 +93,16 @@ class CodexServer:
             and not self._client.closed.is_set()
         )
 
+    @property
+    def timeout(self) -> float:
+        return self._timeout
+
+    @property
+    def thread_ids(self) -> frozenset[str]:
+        """Threads registered with the LIVE process (cleared on respawn), so a
+        model can tell a stale handle from a usable one."""
+        return frozenset(self._threads)
+
     # --- lifecycle ----------------------------------------------------------
     async def start(self) -> None:
         async with self._start_lock:
@@ -102,6 +112,7 @@ class CodexServer:
             binary = self._binary or resolve_codex_binary()
             if binary is None or not os.path.exists(binary):
                 raise CodexUnavailable(f"codex binary not found. {INSTALL_HINT}")
+            self._threads.clear()
             await self._spawn(binary)
             await self._handshake()
 
