@@ -459,15 +459,64 @@ async def test_server_property_lazily_creates_the_shared_server(tmp_path, monkey
         assert m._server is shared_server()  # cached the process-wide instance, not a fresh one
     finally:
         await m.aclose()
-        # This test is the only one that touches the process-wide shared
-        # server (everything else injects its own) — tear it down so it
-        # doesn't leak its subprocess into whichever test runs next.
+        # Belt-and-suspenders: aclose() above already closes the singleton
+        # (this model held its only thread), but every test that touches the
+        # process-wide server tears it down explicitly so it never leaks its
+        # subprocess into whichever test runs next.
         await close_shared_server()
 
 
 async def test_aclose_without_ever_touching_a_server_is_a_noop():
     m = CodexCliModel("gpt-5.6-sol")  # `.server` never accessed -> self._server stays None
     await m.aclose()  # must not raise (e.g. by attribute-erroring on a None server)
+
+
+async def test_aclose_on_a_private_server_closes_it_unconditionally(tmp_path):
+    """A model constructed with an explicit `server=` (a test, or an embedder
+    wiring its own CodexServer) owns it outright — aclose() must close it
+    even though nothing calls `close_shared_server_if_idle` for a server
+    that was never the process-wide singleton."""
+    m = _model(tmp_path, {"turns": [_hello_turn()]})
+    await m.request(_msgs(), None, PARAMS)
+    srv = m._server
+    assert srv is not None and srv.alive
+    await m.aclose()
+    assert not srv.alive
+
+
+async def test_aclose_drops_only_its_own_thread_while_the_shared_server_has_others(
+    tmp_path, monkeypatch
+):
+    """Two `CodexCliModel`s sharing the process-wide singleton — the daemon's
+    shape: many `Harness`es, one app-server per process. Closing one must
+    drop only its own thread and leave the server (and the sibling's thread)
+    running; only once the LAST thread is gone does the singleton actually
+    close (final review Important #4 — a per-harness `aclose()` used to close
+    the shared server unconditionally, severing every other session's turn)."""
+    _login(monkeypatch, tmp_path, {"turns": [_hello_turn(), _hello_turn()]})
+    m1 = CodexCliModel("gpt-5.6-sol")
+    m2 = CodexCliModel("gpt-5.6-sol")
+    m1.cwd = str(tmp_path)
+    m2.cwd = str(tmp_path)
+    try:
+        await m1.request(_msgs(), None, PARAMS)
+        await m2.request(_msgs(), None, PARAMS)
+        srv = shared_server()
+        assert m1.thread is not None and m2.thread is not None
+        assert srv.thread_ids == {m1.thread.thread_id, m2.thread.thread_id}
+
+        await m1.aclose()
+        assert srv.thread_ids == {m2.thread.thread_id}
+        assert srv.alive  # m2's thread is still live on it
+
+        await m2.aclose()
+        assert not srv.thread_ids
+
+        import marim_harness.codex.server as codex_server_mod
+
+        assert codex_server_mod._shared is None  # the last thread closed the singleton
+    finally:
+        await close_shared_server()
 
 
 async def test_invalid_mode_string_falls_back_to_plan(tmp_path):

@@ -61,10 +61,12 @@ class ThreadHandle:
 class ThreadOptions:
     """The fields ``thread/start`` and ``thread/resume`` share, bundled so
     each RPC method takes one value object instead of five-to-six loose
-    keyword arguments (a ``PLR0913`` the ratchet gate flags). ``resume_thread``
-    ignores ``ephemeral`` — Codex has no notion of resuming into an ephemeral
-    thread — but taking the same type keeps both call sites uniform rather
-    than growing a second, almost-identical options class."""
+    keyword arguments (a ``PLR0913`` the ratchet gate flags). Both RPCs now
+    forward ``ephemeral`` symmetrically (final review Minor #7) even though
+    no caller resumes into an ephemeral thread today (ephemeral models never
+    persist a ref to resume) — keeping the params in sync now means whoever
+    adds a resumable ephemeral path later isn't bitten by a silently-dropped
+    field."""
 
     cwd: str
     developer_instructions: str | None
@@ -344,6 +346,7 @@ class CodexServer:
                 "cwd": options.cwd,
                 "developerInstructions": options.developer_instructions,
                 "model": options.model,
+                "ephemeral": options.ephemeral,
                 "sandbox": options.sandbox,
                 "approvalPolicy": options.approval_policy,
                 "config": thread_config(),
@@ -439,5 +442,46 @@ def shared_server() -> CodexServer:
 async def close_shared_server() -> None:
     global _shared
     if _shared is not None:
+        await _shared.aclose()
+        _shared = None
+
+
+def peek_shared_server() -> CodexServer | None:
+    """The process-wide singleton if one already exists, or ``None`` —
+    unlike ``shared_server()``, never creates one as a side effect of
+    merely asking. Used by callers (``codex/catalog.py``'s ``list_codex_models``)
+    that must reuse an already-running singleton without becoming its owner,
+    while still falling back to a private, throwaway server when none
+    exists yet."""
+    return _shared
+
+
+def is_shared_server(server: CodexServer) -> bool:
+    """True when ``server`` is the current process-wide singleton, whether or
+    not it has any threads registered — used by ``CodexCliModel.aclose()`` to
+    tell "my own private CodexServer" (a test, or an embedder wiring one up
+    directly) from "the shared one every codex-cli harness/spawn/ephemeral
+    clone in this process resolves to", without ever calling
+    ``shared_server()`` itself (which would create one as a side effect of
+    merely asking)."""
+    return server is _shared
+
+
+async def close_shared_server_if_idle() -> None:
+    """Close the shared app-server only once no thread is registered on it.
+
+    ``close_shared_server()`` closes unconditionally — right for tests and
+    explicit teardown (live-smoke), wrong for a single ``Harness.aclose()``
+    to call, because the shared server is process-wide: a daemon holds many
+    concurrent ``Harness``es (and their sub-agent spawns, and ephemeral aux
+    clones) over ONE app-server, so closing it whenever any one of them
+    exits would sever every other session's thread mid-flight. A harness
+    should drop its own thread first (``server.drop_thread(handle)``), then
+    call this — the server goes away only once every last thread using it
+    is gone, same lifecycle promise ``close_shared_server()``'s callers
+    already relied on when there was only ever one user of the singleton.
+    """
+    global _shared
+    if _shared is not None and not _shared.thread_ids:
         await _shared.aclose()
         _shared = None

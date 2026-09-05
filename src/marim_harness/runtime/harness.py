@@ -1225,11 +1225,19 @@ class Harness:
             lsp = getattr(self, "lsp", None)
             if lsp is not None:
                 await lsp.aclose()
-            # The process-wide codex app-server (if any turn ever started
-            # one). Idempotent; a no-op when codex-cli was never used.
-            from ..codex import server as codex_server
+            # The process-wide codex app-server is shared by every codex-cli
+            # harness/spawn/ephemeral clone in the process — `marim serve`
+            # holds many `SessionHost`s over one app-server, and one being
+            # idle-evicted must not tear it down out from under the others'
+            # in-flight turns. So this drops only THIS harness's own thread
+            # (if codex-cli was ever this session's model) and lets the
+            # server close itself once nothing else is registered on it —
+            # see `CodexCliModel.aclose`/`close_shared_server_if_idle` (final
+            # review Important #4). A no-op when codex-cli was never used.
+            from ..config.codex_cli_model import CodexCliModel
 
-            await codex_server.close_shared_server()
+            if isinstance(self.current_model, CodexCliModel):
+                await self.current_model.aclose()
         finally:
             # A discarded Harness must not leak the session it was driving.
             # release_claim() is idempotent and a no-op for the daemon (its

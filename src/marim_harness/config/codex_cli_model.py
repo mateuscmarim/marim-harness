@@ -40,7 +40,15 @@ from pydantic_ai.usage import RequestUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.env import INSTALL_HINT, CodexUnavailable, codex_available
-from ..codex.server import CodexServer, ThreadHandle, ThreadOptions, TurnOptions, shared_server
+from ..codex.server import (
+    CodexServer,
+    ThreadHandle,
+    ThreadOptions,
+    TurnOptions,
+    close_shared_server_if_idle,
+    is_shared_server,
+    shared_server,
+)
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..runtime.permissions import Mode
@@ -165,10 +173,24 @@ class CodexCliModel(ExternalCliModel):
         return self._server
 
     async def aclose(self) -> None:
-        """Tests own their server; production closes the shared one via
-        ``Harness.aclose`` -> ``close_shared_server`` (Task 10)."""
-        if self._server is not None:
+        """A private server (a test, or an embedder wiring its own
+        ``CodexServer`` in directly) is fully owned here and closed
+        unconditionally. The process-wide shared singleton, though, may still
+        be serving other harnesses/spawns/ephemeral clones in the same
+        process (a daemon holds many concurrently) — closing it out from
+        under them would sever every other live thread, so this only drops
+        THIS model's own thread and lets ``close_shared_server_if_idle``
+        close the singleton once nothing else is registered on it (final
+        review Important #4)."""
+        if self._server is None:
+            return
+        if not is_shared_server(self._server):
             await self._server.aclose()
+            return
+        if self.thread is not None:
+            self._server.drop_thread(self.thread)
+            self.thread = None
+        await close_shared_server_if_idle()
 
     # --- mode / policy ----------------------------------------------------------
     def _mode(self) -> Mode:

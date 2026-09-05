@@ -310,6 +310,33 @@ async def test_resume_thread_unknown_returns_none(tmp_path):
         await server.aclose()
 
 
+async def test_resume_thread_forwards_ephemeral_like_start_thread(tmp_path):
+    """Minor #7 of the final review: `resume_thread`'s wire params must carry
+    `ephemeral` symmetrically with `start_thread`'s, so a future resumable
+    ephemeral path isn't silently dropped."""
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {"resumable": ["thread-42"]}))
+    await server.start()
+    try:
+        handle = await server.resume_thread(
+            "thread-42",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
+            request_handler=_decline,
+        )
+        assert handle is not None
+        log = read_request_log(tmp_path)
+        resume = next(r for r in log if r["method"] == "thread/resume")
+        assert resume["params"]["ephemeral"] is True
+    finally:
+        await server.aclose()
+
+
 async def test_crash_delivers_closed_with_stderr_and_respawns(tmp_path):
     server = CodexServer(binary=fake_codex_bin(tmp_path, {"turns": [[{"exit": 1}], []]}))
     await server.start()
