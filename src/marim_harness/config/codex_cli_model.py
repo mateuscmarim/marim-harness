@@ -146,13 +146,23 @@ class CodexCliModel(ExternalCliModel):
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
         self._server = server
-        # Two facts about an injected server, kept apart because they diverge
-        # for an ephemeral clone: `_injected` skips the ambient PATH/login
-        # probe (the injector chose its binary; see _ensure_server), while
-        # `_owns_server` says aclose() may close it. A clone shares its
-        # parent's injected server, so it is injected but NOT owned.
+        # Two facts, kept apart because they diverge for an ephemeral clone.
+        # `_injected`: the caller chose the binary, so the ambient PATH/login
+        # probe is skipped (see _ensure_server) and `self._server` is pinned;
+        # a NON-injected model instead follows the process-wide singleton (see
+        # `server`). `_owns_server`: aclose() may close a non-singleton
+        # server outright — true for every model except a clone, which only
+        # borrows its parent's server (shared or private) and must never
+        # close it out from under the parent's session.
         self._injected = server is not None
-        self._owns_server = server is not None
+        self._owns_server = True
+        # Clones made by ephemeral_clone(); closed with their parent, because
+        # nothing else holds them (Harness.aclose knows only the session's
+        # current model, the aux titler/summarizer/advisor keep theirs inside
+        # a pydantic-ai Agent). An aux clone keeps ONE long-lived thread, and
+        # a thread nobody drops pins the shared app-server open for good —
+        # close_shared_server_if_idle could never fire.
+        self._clones: list[CodexCliModel] = []
         self.thread: ThreadHandle | None = None
         # The latest quota reading (`account/rateLimits/read`), refreshed
         # once per turn; the TUI status bar renders it. None until the first
@@ -176,15 +186,25 @@ class CodexCliModel(ExternalCliModel):
         clone = CodexCliModel(self._model_id, ephemeral=True, server=self._server)
         # The clone borrows the parent's server (shared or privately injected)
         # — its aclose() must drop only its own thread, never close a server
-        # the parent's session is still running on.
+        # the parent's session is still running on. It also inherits whether
+        # that server was injected: a clone of a shared-server parent must
+        # keep probing availability like its parent (a logged-out aux agent
+        # should fail with the actionable message, not a bare spawn error).
+        clone._injected = self._injected
         clone._owns_server = False
+        self._clones.append(clone)
         clone.cwd = cwd
         clone.mode_getter = lambda: "plan"
         return clone
 
     @property
     def server(self) -> CodexServer:
-        if self._server is None:
+        # A non-injected model follows the singleton. If that was reset out
+        # from under us (another harness's aclose found it momentarily idle,
+        # or an explicit close_shared_server), re-resolve it rather than
+        # restart the stale object: restarting would spawn a second
+        # `codex app-server` that no aclose path would ever reach again.
+        if self._server is None or (not self._injected and not is_shared_server(self._server)):
             self._server = shared_server()
         return self._server
 
@@ -198,17 +218,27 @@ class CodexCliModel(ExternalCliModel):
         closing it out from under them would sever every other live thread,
         so this only drops THIS model's own thread and, for the singleton,
         lets ``close_shared_server_if_idle`` close it once nothing else is
-        registered on it (final review Important #4)."""
-        if self._server is None:
+        registered on it (final review Important #4). Clones go first — a
+        clone may have resolved a server before its parent ever ran, and
+        its thread counts against the singleton's idleness."""
+        for clone in self._clones:
+            await clone.aclose()
+        self._clones.clear()
+        server = self._server
+        if server is None:
             return
-        if self._owns_server and not is_shared_server(self._server):
-            await self._server.aclose()
-            return
-        if self.thread is not None:
-            self._server.drop_thread(self.thread)
-            self.thread = None
-        if is_shared_server(self._server):
+        if is_shared_server(server):
+            self._drop_own_thread(server)
             await close_shared_server_if_idle()
+        elif self._owns_server:
+            await server.aclose()
+        else:
+            self._drop_own_thread(server)
+
+    def _drop_own_thread(self, server: CodexServer) -> None:
+        if self.thread is not None:
+            server.drop_thread(self.thread)
+            self.thread = None
 
     # --- mode / policy ----------------------------------------------------------
     def _mode(self) -> Mode:
@@ -472,14 +502,15 @@ class CodexStreamedResponse(StreamedResponse):
         await self._settle()
 
     async def _settle(self) -> None:
-        """Runs once the items drain: the per-turn quota poll first (it is
-        best-effort and never raises into the stream), then fold the turn's
-        usage and mark the response finished."""
-        if self._after is not None:
-            await self._after()
+        """Runs once the items drain: fold the turn's usage and mark the
+        response finished FIRST, then the per-turn quota poll — it awaits,
+        and a cancellation landing in that await must not cost the turn its
+        usage. The poll is best-effort and never raises into the stream."""
         if self._finish is not None:
             self._usage = self._finish()
         self._finished = True
+        if self._after is not None:
+            await self._after()
 
     @property
     def model_name(self) -> str:

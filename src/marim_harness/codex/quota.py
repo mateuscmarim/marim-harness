@@ -52,11 +52,14 @@ def format_window(mins: int | None) -> str:
 
 
 def _window(raw: object) -> QuotaWindow | None:
-    if not isinstance(raw, dict) or raw.get("usedPercent") is None:
+    if not isinstance(raw, dict):
+        return None
+    used = raw.get("usedPercent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)):
         return None
     mins = raw.get("windowDurationMins")
     return QuotaWindow(
-        used_percent=int(raw["usedPercent"]),
+        used_percent=int(used),
         window_mins=int(mins) if isinstance(mins, int) and mins > 0 else None,
     )
 

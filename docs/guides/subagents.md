@@ -239,8 +239,9 @@ Differences that matter:
 
 `backend: codex-cli` runs the agent as one thread on the shared
 `codex app-server` process (the same one the `codex-cli` main-loop provider
-uses; it is started on first use and closed once the last thread on it is
-released). The agent's prompt becomes the thread's developer instructions;
+uses; it is started on first use and stays up for the marim process — a
+`codex-cli` session model closing with no thread left on the server closes
+it, spawns alone never do). The agent's prompt becomes the thread's developer instructions;
 the task is the first
 turn.
 

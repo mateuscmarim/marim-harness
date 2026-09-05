@@ -34,3 +34,11 @@ def test_quota_from_tolerates_missing_windows_and_garbage():
     assert only == QuotaHint(QuotaWindow(99, None), None)
     assert only.render() == "quota 99%"
     assert QuotaHint(None, None).render() == ""
+    # usedPercent must be a number — a string/bool/None window is dropped,
+    # not coerced (and never raised on: the model's poll is best-effort).
+    assert quota_from({"primary": {"usedPercent": "37"}}) is None
+    assert quota_from({"primary": {"usedPercent": True}}) is None
+    assert quota_from({"primary": {"usedPercent": None, "windowDurationMins": 300}}) is None
+    assert quota_from({"secondary": {"usedPercent": 12.6}}) == QuotaHint(
+        None, QuotaWindow(12, None)
+    )

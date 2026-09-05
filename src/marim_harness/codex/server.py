@@ -432,7 +432,9 @@ class CodexServer:
         or None when the response carries none. Raises like any RPC — the
         caller decides whether a failure matters (the status-line quota hint
         ignores it; see ``codex/quota.py``)."""
-        result = await self._rpc().request("account/rateLimits/read", {}, timeout=10.0)
+        # Short: this runs between the last token and the turn completing,
+        # so a wedged app-server must not add a long tail to every turn.
+        result = await self._rpc().request("account/rateLimits/read", {}, timeout=3.0)
         limits = result.get("rateLimits")
         return limits if isinstance(limits, dict) else None
 

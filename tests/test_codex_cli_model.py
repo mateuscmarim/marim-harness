@@ -22,7 +22,12 @@ from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.settings import ModelSettings
 
 from marim_harness.codex.env import CodexUnavailable
-from marim_harness.codex.server import CodexServer, close_shared_server, shared_server
+from marim_harness.codex.server import (
+    CodexServer,
+    close_shared_server,
+    is_shared_server,
+    shared_server,
+)
 from marim_harness.config.codex_cli_model import (
     CliModelError,
     CodexCliModel,
@@ -779,7 +784,7 @@ async def test_ephemeral_clone_aclose_keeps_the_parents_private_server(tmp_path)
     """A clone borrows its parent's injected server: closing the clone drops
     only the clone's thread. Closing the server itself is the parent's call
     (an embedder's session must survive its own titler finishing)."""
-    m = _model(tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})
+    m = _model(tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b"), _hello_turn("c")]})
     await m.request(_msgs(), None, PARAMS)
     srv = m._server
     assert srv is not None and m.thread is not None
@@ -792,8 +797,14 @@ async def test_ephemeral_clone_aclose_keeps_the_parents_private_server(tmp_path)
     assert srv.alive
     assert srv.thread_ids == {m.thread.thread_id}
 
+    # A clone nobody closes (the aux titler lives inside an Agent) goes with
+    # its parent.
+    forgotten = m.ephemeral_clone(cwd=str(tmp_path))
+    await forgotten.request(_msgs("summarize"), None, PARAMS)
+    assert forgotten.thread is not None and forgotten.thread.thread_id in srv.thread_ids
     await m.aclose()
     assert not srv.alive
+    assert forgotten.thread is None and not srv.thread_ids
 
 
 async def test_availability_is_reprobed_only_when_the_server_must_respawn(tmp_path, monkeypatch):
@@ -852,3 +863,58 @@ async def test_quota_read_failure_is_ignored(tmp_path):
         await m.aclose()
     assert resp.parts[0].content == "Hi there"
     assert m.quota_hint is None
+
+
+async def test_parent_aclose_releases_clone_threads_on_the_shared_server(tmp_path, monkeypatch):
+    """The aux clone's thread counts against the singleton's idleness: a
+    session model closing must release it too, or the shared app-server
+    would outlive every session in a daemon."""
+    _login(monkeypatch, tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})
+    m = CodexCliModel("gpt-5.6-sol")
+    m.cwd = str(tmp_path)
+    clone = m.ephemeral_clone(cwd=str(tmp_path))  # made BEFORE the parent has a server
+    try:
+        await clone.request(_msgs("title"), None, PARAMS)
+        await m.request(_msgs("one"), None, PARAMS)
+        srv = shared_server()
+        assert len(srv.thread_ids) == 2
+        await m.aclose()
+        assert not srv.alive and not srv.thread_ids
+        assert not is_shared_server(srv)
+    finally:
+        await close_shared_server()
+
+
+async def test_reset_singleton_is_re_resolved_not_restarted_as_an_orphan(tmp_path, monkeypatch):
+    """When the singleton is reset out from under a live model (an explicit
+    close, or another harness finding it idle), the model must pick up the
+    NEW singleton — restarting the stale object would leave a second
+    app-server running that no aclose path ever reaches."""
+    _login(monkeypatch, tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})
+    m = CodexCliModel("gpt-5.6-sol")
+    m.cwd = str(tmp_path)
+    try:
+        await m.request(_msgs("one"), None, PARAMS)
+        stale = m.server
+        await close_shared_server()
+        resp = await m.request(_msgs("two"), None, PARAMS)
+        assert resp.parts[0].content == "a"  # a NEW process: the fake replays its script
+        assert m.server is not stale and is_shared_server(m.server)
+        assert not stale.alive
+        await m.aclose()
+        assert not m.server.alive
+    finally:
+        await close_shared_server()
+
+
+async def test_clone_of_a_shared_parent_still_probes_availability(tmp_path, monkeypatch):
+    _login(monkeypatch, tmp_path, {"turns": [_hello_turn("a")]})
+    m = CodexCliModel("gpt-5.6-sol")
+    m.cwd = str(tmp_path)
+    clone = m.ephemeral_clone(cwd=str(tmp_path))
+    (tmp_path / "codex-home" / "auth.json").unlink()
+    try:
+        with pytest.raises(CliModelError, match="unavailable"):
+            await clone.request(_msgs("title"), None, PARAMS)
+    finally:
+        await close_shared_server()
