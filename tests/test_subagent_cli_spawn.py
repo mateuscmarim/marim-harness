@@ -1,5 +1,3 @@
-import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -7,23 +5,11 @@ from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
 
 from tests.conftest import _make_deps, _make_harness
-
-_FAKE_CLI = """#!{python}
-import json, sys
-for o in [
-    {{"type": "assistant", "message": {{"content": [{{"type": "text", "text": "hi"}}]}}}},
-    {{"type": "result", "subtype": "success", "result": "Done: report body",
-      "num_turns": 1, "usage": {{"input_tokens": 7, "output_tokens": 4}}}},
-]:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
+from tests.fakes import fake_claude_bin
 
 
 def _fake_cli(tmp_path: Path) -> str:
-    p = tmp_path / "fake_claude.py"
-    p.write_text(_FAKE_CLI.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+    return fake_claude_bin(tmp_path, {"turns": [[{"text": "hi"}, {"text": "Done: report body"}]]})
 
 
 def _write_cli_agent(tmp_path: Path) -> None:
@@ -118,30 +104,57 @@ async def test_cli_backend_skips_usage_callback_without_stream_id(tmp_path: Path
     assert received == []
 
 
-_FAKE_CLI_CHILD = """#!{python}
-import json, sys
-for o in [
-    {{"type": "assistant", "message": {{"id": "m1", "content": [
-        {{"type": "tool_use", "id": "tsub", "name": "Agent",
-          "input": {{"description": "d", "subagent_type": "Explore", "prompt": "p"}}}},
-    ]}}}},
-    {{"type": "system", "subtype": "task_started", "tool_use_id": "tsub"}},
-    {{"type": "assistant", "parent_tool_use_id": "tsub",
-      "message": {{"id": "m2", "content": [{{"type": "text", "text": "4"}}]}}}},
-    {{"type": "system", "subtype": "task_notification", "tool_use_id": "tsub",
-      "status": "completed", "summary": "4"}},
-    {{"type": "result", "subtype": "success", "result": "Done", "num_turns": 1,
-      "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
-]:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
-
-
 def _fake_cli_child(tmp_path: Path) -> str:
-    p = tmp_path / "fake_claude_child.py"
-    p.write_text(_FAKE_CLI_CHILD.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+    return fake_claude_bin(
+        tmp_path,
+        {
+            "turns": [
+                [
+                    {
+                        "raw": {
+                            "type": "assistant",
+                            "message": {
+                                "id": "m1",
+                                "content": [
+                                    {
+                                        "type": "tool_use",
+                                        "id": "tsub",
+                                        "name": "Agent",
+                                        "input": {
+                                            "description": "d",
+                                            "subagent_type": "Explore",
+                                            "prompt": "p",
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    },
+                    {"raw": {"type": "system", "subtype": "task_started", "tool_use_id": "tsub"}},
+                    {
+                        "raw": {
+                            "type": "assistant",
+                            "parent_tool_use_id": "tsub",
+                            "message": {
+                                "id": "m2",
+                                "content": [{"type": "text", "text": "4"}],
+                            },
+                        }
+                    },
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "task_notification",
+                            "tool_use_id": "tsub",
+                            "status": "completed",
+                            "summary": "4",
+                        }
+                    },
+                    {"text": "Done"},
+                ]
+            ]
+        },
+    )
 
 
 @pytest.mark.anyio
@@ -167,28 +180,25 @@ async def test_cli_backend_persists_child_transcripts(tmp_path: Path, monkeypatc
 
 @pytest.mark.anyio
 async def test_cli_runner_times_out_on_hung_cli(tmp_path: Path, monkeypatch):
-    # A `claude -p` that never EOFs (network hang, an interactive prompt on the
-    # inherited stdin) must not pin its concurrency slot forever: the wall-clock
-    # timeout SIGKILLs the group and fails the spawn promptly. A fake CLI that just
-    # sleeps (emitting no result) can only be ended by the timeout.
+    # A `claude` that goes silent mid-turn (network hang, a prompt nobody
+    # answers) must not pin its concurrency slot forever: the silence timeout
+    # interrupts the turn, then kills the process, and fails the spawn promptly.
+    # A fake that just sleeps (emitting nothing) can only be ended that way.
     import time as _time
 
     from marim_harness.subagents.cli_backend import ClaudeCliRunner, CliRunError
 
-    script = tmp_path / "hang.py"
-    script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n", encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
+    binary = fake_claude_bin(tmp_path, {"turns": [[{"sleep": 30}]]})
     monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "0.3")
 
     runner = ClaudeCliRunner(None, None)
     start = _time.monotonic()
     with pytest.raises(CliRunError) as exc:
         await runner.run(
-            binary=str(script),
+            binary=binary,
             prompt="p",
             system_prompt="s",
             cwd=str(tmp_path),
-            allow_gated=False,
             allowed_tools=[],
             model=None,
             stream_id="s1",

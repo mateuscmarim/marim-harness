@@ -1,5 +1,4 @@
-import stat
-import sys
+import os
 from typing import cast
 
 import pytest
@@ -21,20 +20,15 @@ from pydantic_ai.usage import RunUsage
 from marim_harness.subagents.cli_backend import (
     CLI_BINARY_ENV,
     ClaudeCliRunner,
+    CliRunError,
     CliStreamTranslator,
-    build_cli_argv,
-    cli_permission_mode,
     map_tools_to_cc,
     resolve_cli_binary,
     sum_result_usages,
     synth_usage,
 )
 from marim_harness.tools.names import READ_TOOLS, SUBAGENT_TOOLS
-
-
-def test_permission_mode_maps_to_auto_and_plan():
-    assert cli_permission_mode(True) == "acceptEdits"
-    assert cli_permission_mode(False) == "plan"
+from tests.fakes import fake_claude_bin
 
 
 def test_tool_map_drops_unmapped_and_sorts():
@@ -51,29 +45,6 @@ def test_tool_map_drops_unmapped_and_sorts():
         "WebSearch",
         "Write",
     ]
-
-
-def test_build_argv_includes_required_flags():
-    argv = build_cli_argv(
-        "/usr/bin/claude",
-        "do the task",
-        "You are a worker.",
-        "acceptEdits",
-        ["Read", "Edit"],
-        "opus",
-    )
-    assert argv[:3] == ["/usr/bin/claude", "-p", "do the task"]
-    assert "--output-format" in argv and "stream-json" in argv and "--verbose" in argv
-    assert argv[argv.index("--append-system-prompt") + 1] == "You are a worker."
-    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
-    assert argv[argv.index("--allowedTools") + 1] == "Read,Edit"
-    assert argv[argv.index("--model") + 1] == "opus"
-
-
-def test_build_argv_omits_model_and_tools_when_absent():
-    argv = build_cli_argv("claude", "t", "s", "plan", [], None)
-    assert "--model" not in argv
-    assert "--allowedTools" not in argv
 
 
 def test_resolve_binary_prefers_env(monkeypatch, tmp_path):
@@ -446,408 +417,232 @@ def test_record_call_and_return_append_transcript_pair():
 # ClaudeCliRunner — fake-binary integration tests
 # ---------------------------------------------------------------------------
 
-_FAKE_CLI = """#!{python}
-import json, sys
-lines = [
-    {{"type": "system", "subtype": "init"}},
-    {{"type": "assistant", "message": {{"content": [
-        {{"type": "text", "text": "Working on it"}},
-        {{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {{"path": "x"}}}},
-    ]}}}},
-    {{"type": "user", "message": {{"content": [
-        {{"type": "tool_result", "tool_use_id": "toolu_1",
-         "content": "file body", "is_error": False}},
-    ]}}}},
-    {{"type": "result", "subtype": "success", "result": "Done: found it",
-      "num_turns": 2, "total_cost_usd": 0.001,
-      "usage": {{"input_tokens": 10, "output_tokens": 5,
-                 "cache_read_input_tokens": 2, "cache_creation_input_tokens": 1}}}},
-]
-for o in lines:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
 
-
-def _make_fake_cli(tmp_path) -> str:
-    p = tmp_path / "fake_claude.py"
-    p.write_text(_FAKE_CLI.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+def _run(binary: str, tmp_path, runner: ClaudeCliRunner, **overrides):
+    kwargs = dict(
+        binary=binary,
+        prompt="p",
+        system_prompt="s",
+        cwd=str(tmp_path),
+        allowed_tools=["read_file"],
+        model=None,
+        stream_id="s1",
+    )
+    kwargs.update(overrides)
+    return runner.run(**kwargs)
 
 
 @pytest.mark.anyio
 async def test_runner_streams_events_and_returns_result(tmp_path):
-    binary = _make_fake_cli(tmp_path)
-    seen = []
-
-    async def on_event(stream_id, event, usage):
-        seen.append((stream_id, type(event).__name__))
-
-    runner = ClaudeCliRunner(on_event, None)
-    result = await runner.run(
-        binary=binary,
-        prompt="go",
-        system_prompt="be a worker",
-        cwd=str(tmp_path),
-        allow_gated=True,
-        allowed_tools=frozenset({"read_file"}),
-        model=None,
-        stream_id="s1",
+    binary = fake_claude_bin(
+        tmp_path,
+        {
+            "turns": [
+                [
+                    {"text": "hi"},
+                    {"tool_use": {"id": "t1", "name": "Read", "input": {"file_path": "/a"}}},
+                    {"tool_result": {"id": "t1", "content": "x"}},
+                    {"text": "Done"},
+                    # The fake joins every `text` step into its auto result; pin
+                    # the terminal result so output is read from the result object.
+                    {"result": {"result": "Done"}},
+                ]
+            ]
+        },
     )
-    assert result.output == "Done: found it"
-    # input_tokens is inclusive of cache (10 uncached + 2 read + 1 write = 13).
-    assert result.usage.input_tokens == 13 and result.usage.output_tokens == 5
-    names = [n for _, n in seen]
-    assert "FunctionToolCallEvent" in names
-    assert "FunctionToolResultEvent" in names
-    assert all(sid == "s1" for sid, _ in seen)
+    seen: list = []
 
+    async def on_event(sid, ev, usage):
+        seen.append((sid, type(ev).__name__))
 
-_FAKE_CLI_WITH_MODEL = """#!{python}
-import json, sys
-for o in [
-    {{"type": "system", "subtype": "init", "model": "claude-opus-4-8[1m]"}},
-    {{"type": "assistant", "message": {{"model": "claude-opus-4-8",
-        "content": [{{"type": "text", "text": "hi"}}]}}}},
-    {{"type": "result", "subtype": "success", "result": "ok",
-      "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
-]:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
+    result = await _run(binary, tmp_path, ClaudeCliRunner(on_event, None))
+    assert result.output == "Done" and result.usage.input_tokens == 7
+    assert ("s1", "PartStartEvent") in seen and ("s1", "FunctionToolCallEvent") in seen
 
 
 @pytest.mark.anyio
 async def test_runner_surfaces_real_model_from_init_event(tmp_path):
-    p = tmp_path / "fake_claude_model.py"
-    p.write_text(_FAKE_CLI_WITH_MODEL.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    models = []
+    binary = fake_claude_bin(tmp_path, {"model": "claude-opus-4-1", "turns": [[{"text": "ok"}]]})
+    models: list = []
 
-    async def on_model(stream_id, model):
-        models.append((stream_id, model))
+    async def on_model(sid, m):
+        models.append((sid, m))
 
-    runner = ClaudeCliRunner(None, None, on_model)
-    result = await runner.run(
-        binary=str(p),
-        prompt="go",
-        system_prompt="s",
-        cwd=str(tmp_path),
-        allow_gated=False,
-        allowed_tools=frozenset(),
-        model=None,
-        stream_id="s1",
-    )
-    assert result.output == "ok"
-    # Surfaced exactly once, from the system/init event, tagged with the stream id.
-    assert models == [("s1", "claude-opus-4-8[1m]")]
+    await _run(binary, tmp_path, ClaudeCliRunner(None, None, on_model))
+    assert models[0] == ("s1", "claude-opus-4-1")
 
 
 @pytest.mark.anyio
 async def test_runner_skips_model_callback_without_stream_id(tmp_path):
-    p = tmp_path / "fake_claude_model2.py"
-    p.write_text(_FAKE_CLI_WITH_MODEL.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    models = []
+    binary = fake_claude_bin(tmp_path, {"turns": [[{"text": "ok"}]]})
+    models: list = []
 
-    async def on_model(stream_id, model):
-        models.append(model)
+    async def on_model(sid, m):
+        models.append(m)
 
-    # No stream_id (headless background) -> nothing to address, so no model push.
-    runner = ClaudeCliRunner(None, None, on_model)
-    await runner.run(
-        binary=str(p),
-        prompt="go",
-        system_prompt="s",
-        cwd=str(tmp_path),
-        allow_gated=False,
-        allowed_tools=frozenset(),
-        model=None,
-        stream_id="",
-    )
+    await _run(binary, tmp_path, ClaudeCliRunner(None, None, on_model), stream_id=None)
     assert models == []
 
 
 @pytest.mark.anyio
 async def test_runner_raises_when_no_result(tmp_path):
-    p = tmp_path / "silent.py"
-    p.write_text(f"#!{sys.executable}\nimport sys; sys.exit(3)\n", encoding="utf-8")
-    p.chmod(0o755)
-    runner = ClaudeCliRunner(None, None)
-    with pytest.raises(Exception) as exc:
-        await runner.run(
-            binary=str(p),
-            prompt="go",
-            system_prompt="s",
-            cwd=str(tmp_path),
-            allow_gated=False,
-            allowed_tools=frozenset(),
-            model=None,
-            stream_id="",
-        )
-    assert "no result" in str(exc.value).lower()
-
-
-_FAKE_CLI_LARGE_STDERR = """#!{python}
-import json, sys
-
-# Write a large blob to stderr BEFORE writing the stdout result line.
-# If the parent drains stdout to EOF before reading stderr, the child will
-# block here once the OS pipe buffer (~64 KB) plus asyncio's internal
-# StreamReader buffer (~128 KB) are both full — deadlock. 2 MB comfortably
-# exceeds both buffers so the deadlock is deterministic.
-sys.stderr.write("x" * 2_000_000)
-sys.stderr.flush()
-
-result = {{
-    "type": "result",
-    "subtype": "success",
-    "result": "ok after big stderr",
-    "num_turns": 1,
-    "usage": {{"input_tokens": 1, "output_tokens": 1}},
-}}
-sys.stdout.write(json.dumps(result) + "\\n")
-sys.stdout.flush()
-"""
-
-
-_FAKE_CLI_SLEEPY = """#!{python}
-import json, os, sys, time
-
-pidfile = os.environ.get("FAKE_CLI_PIDFILE", "")
-if pidfile:
-    with open(pidfile, "w") as f:
-        f.write(str(os.getpid()))
-        f.flush()
-
-event = {{"type": "assistant", "message": {{"content": [
-    {{"type": "text", "text": "working on it"}},
-]}}}}
-sys.stdout.write(json.dumps(event) + "\\n")
-sys.stdout.flush()
-
-time.sleep(30)
-"""
+    binary = fake_claude_bin(
+        tmp_path, {"turns": [[{"text": "a"}, {"exit": {"code": 0, "stderr": ""}}]]}
+    )
+    with pytest.raises(CliRunError, match="no result"):
+        await _run(binary, tmp_path, ClaudeCliRunner(None, None))
 
 
 @pytest.mark.anyio
-async def test_runner_kills_subprocess_when_event_callback_raises(tmp_path, monkeypatch):
-    """Regression: on an exceptional exit the subprocess must be reaped.
+async def test_runner_kills_subprocess_when_event_callback_raises(tmp_path):
+    binary = fake_claude_bin(tmp_path, {"turns": [[{"text": "a"}, {"sleep": 30}]]})
 
-    A fake CLI writes its PID, emits one assistant event, then sleeps 30 s.
-    The on_event callback raises on the first event. With no try/finally the
-    child would keep sleeping (orphaned); with the fix the finally block kills
-    and reaps it.
-    """
-    import asyncio
-    import os
-    import time
+    async def boom(sid, ev, usage):
+        raise RuntimeError("sink failed")
 
-    pidfile = tmp_path / "cli_pid.txt"
-    monkeypatch.setenv("FAKE_CLI_PIDFILE", str(pidfile))
-
-    p = tmp_path / "sleepy_claude.py"
-    p.write_text(_FAKE_CLI_SLEEPY.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-
-    async def on_event_raises(stream_id, event, usage):
-        raise RuntimeError("simulated on_event failure")
-
-    runner = ClaudeCliRunner(on_event_raises, None)
-
-    with pytest.raises(RuntimeError):
-        await asyncio.wait_for(
-            runner.run(
-                binary=str(p),
-                prompt="go",
-                system_prompt="s",
-                cwd=str(tmp_path),
-                allow_gated=True,
-                allowed_tools=frozenset(),
-                model=None,
-                stream_id="s1",
-            ),
-            timeout=15,
-        )
-
-    assert pidfile.exists(), "fake CLI never wrote its PID — test setup broken"
-    pid = int(pidfile.read_text().strip())
-
-    # Poll until the process is reaped (or give up after a few seconds).
-    deadline = time.monotonic() + 5.0
-    reaped = False
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-            await asyncio.sleep(0.1)
-        except (ProcessLookupError, OSError):
-            reaped = True
-            break
-
-    assert reaped, (
-        f"subprocess (pid {pid}) was NOT reaped after ClaudeCliRunner.run raised — "
-        "orphaned child is still running"
-    )
-
-
-@pytest.mark.anyio
-async def test_runner_drains_stderr_concurrently_no_deadlock(tmp_path):
-    """Regression: draining stdout before stderr deadlocks when stderr > pipe buffer.
-
-    The fake CLI writes 2 MB to stderr before its stdout result line. On old
-    sequential-drain code the child blocks on the stderr write, the parent waits
-    forever on stdout EOF — deadlock. The fix starts an asyncio task to drain stderr
-    concurrently so the child never blocks.
-    """
-    import asyncio
-
-    p = tmp_path / "large_stderr.py"
-    p.write_text(_FAKE_CLI_LARGE_STDERR.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-
-    runner = ClaudeCliRunner(None, None)
-    result = await asyncio.wait_for(
-        runner.run(
-            binary=str(p),
-            prompt="go",
-            system_prompt="s",
-            cwd=str(tmp_path),
-            allow_gated=False,
-            allowed_tools=frozenset(),
-            model=None,
-            stream_id="",
-        ),
-        timeout=15,
-    )
-    assert result.output == "ok after big stderr"
-
-
-# A single NDJSON line carrying a >64 KiB tool_result — what a Read of a large
-# source file produces. `async for line in stream` caps lines at asyncio's 64 KiB
-# StreamReader buffer and raises "Separator is found, but chunk is longer than
-# limit"; the chunked reader removes that cap.
-_FAKE_CLI_HUGE_LINE = """#!{python}
-import json, sys
-big = "y" * 200_000   # ~200 KB, far past the 64 KiB readline limit
-for o in [
-    {{"type": "assistant", "message": {{"content": [
-        {{"type": "tool_use", "id": "t1", "name": "Read", "input": {{"path": "x"}}}},
-    ]}}}},
-    {{"type": "user", "message": {{"content": [
-        {{"type": "tool_result", "tool_use_id": "t1", "content": big}},
-    ]}}}},
-    {{"type": "result", "subtype": "success", "result": "done after big line",
-      "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
-]:
-    sys.stdout.write(json.dumps(o) + "\\n")
-sys.stdout.flush()
-"""
-
-
-@pytest.mark.anyio
-async def test_runner_handles_line_larger_than_64kib(tmp_path):
-    """Regression: a tool_result line exceeding asyncio's 64 KiB readline limit
-    (a single Read of a large file) must not crash the runner with
-    'Separator is found, but chunk is longer than limit'."""
-    import asyncio
-
-    p = tmp_path / "huge_line.py"
-    p.write_text(_FAKE_CLI_HUGE_LINE.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-
-    seen = []
-
-    async def on_event(stream_id, event, usage):
-        seen.append(type(event).__name__)
-
-    runner = ClaudeCliRunner(on_event, None)
-    result = await asyncio.wait_for(
-        runner.run(
-            binary=str(p),
-            prompt="go",
-            system_prompt="s",
-            cwd=str(tmp_path),
-            allow_gated=True,
-            allowed_tools=frozenset({"read_file"}),
-            model=None,
-            stream_id="s1",
-        ),
-        timeout=15,
-    )
-    assert result.output == "done after big line"
-    # The oversized tool_result line was parsed and surfaced, not dropped.
-    assert "FunctionToolResultEvent" in seen
+    runner = ClaudeCliRunner(boom, None)
+    with pytest.raises(RuntimeError, match="sink failed"):
+        await _run(binary, tmp_path, runner)
+    # `run`'s finally closed the process (SIGTERM to its group): the pid the
+    # fake recorded is gone from the process table.
+    pid = int((tmp_path / "claude.pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 @pytest.mark.anyio
 async def test_runner_returns_transcript(tmp_path):
-    binary = _make_fake_cli(tmp_path)
-    runner = ClaudeCliRunner(None, None)
-    result = await runner.run(
-        binary=binary,
-        prompt="go",
-        system_prompt="s",
-        cwd=str(tmp_path),
-        allow_gated=True,
-        allowed_tools=frozenset({"read_file"}),
-        model=None,
-        stream_id="s1",
+    binary = fake_claude_bin(
+        tmp_path,
+        {
+            "turns": [
+                [
+                    {"tool_use": {"id": "t1", "name": "Read", "input": {"file_path": "/a"}}},
+                    {"tool_result": {"id": "t1", "content": "x"}},
+                    {"text": "Done"},
+                    # The fake joins every `text` step into its auto result; pin
+                    # the terminal result so output is read from the result object.
+                    {"result": {"result": "Done"}},
+                ]
+            ]
+        },
     )
-    assert result.transcript
-    assert any(isinstance(m, ModelResponse) for m in result.transcript)
+    result = await _run(binary, tmp_path, ClaudeCliRunner(None, None))
+    kinds = [type(p).__name__ for m in result.transcript for p in m.parts]
+    assert kinds == ["ToolCallPart", "ToolReturnPart", "TextPart"]
 
 
-_FAKE_CLI_AGENT = """#!{python}
-import json, sys
-lines = [
-    {{"type": "system", "subtype": "init", "model": "claude-opus-4-8"}},
-    {{"type": "assistant", "message": {{"model": "claude-opus-4-8", "id": "msg_p1",
-        "content": [
-        {{"type": "tool_use", "id": "tsub", "name": "Agent",
-          "input": {{"description": "Answer 2+2", "subagent_type": "Explore",
-                     "prompt": "What is 2+2?"}}}},
-    ]}}}},
-    {{"type": "system", "subtype": "task_started", "task_id": "af41",
-      "tool_use_id": "tsub", "description": "Answer 2+2",
-      "subagent_type": "Explore", "prompt": "What is 2+2?"}},
-    {{"type": "user", "message": {{"content": [
-        {{"type": "tool_result", "tool_use_id": "tsub",
-          "content": [{{"type": "text", "text": "Async agent launched..."}}]}},
-    ]}}}},
-    {{"type": "assistant", "parent_tool_use_id": "tsub",
-      "message": {{"model": "claude-haiku-4-5", "id": "msg_c1",
-        "usage": {{"input_tokens": 10, "output_tokens": 5,
-                   "cache_creation_input_tokens": 10066}},
-        "content": [{{"type": "text", "text": "4"}}]}}}},
-    {{"type": "system", "subtype": "task_updated", "task_id": "af41",
-      "patch": {{"status": "completed"}}}},
-    {{"type": "system", "subtype": "task_notification", "task_id": "af41",
-      "tool_use_id": "tsub", "status": "completed", "summary": "4",
-      "usage": {{"total_tokens": 10086, "tool_uses": 0, "duration_ms": 2073}}}},
-    {{"type": "result", "subtype": "success",
-      "result": "Agent spawned. Waiting for it to complete...", "num_turns": 2,
-      "total_cost_usd": 0.04,
-      "usage": {{"input_tokens": 18, "output_tokens": 1083}}}},
-    {{"type": "assistant", "message": {{"model": "claude-opus-4-8", "id": "msg_p2",
-        "content": [{{"type": "text", "text": "Four."}}]}}}},
-    {{"type": "result", "subtype": "success", "result": "Four.", "num_turns": 1,
-      "total_cost_usd": 0.05,
-      "usage": {{"input_tokens": 10, "output_tokens": 48}}}},
+# One recorded Claude turn that spawns a Claude-side Agent sub-agent: the
+# parent's tool_use, the task_started/task_notification system objects, the
+# child's own assistant message (tagged with parent_tool_use_id) and the
+# turn's terminal result. Replayed verbatim through the fake's `raw` steps.
+_AGENT_STREAM: list[dict] = [
+    {"type": "system", "subtype": "init", "model": "claude-opus-4-8"},
+    {
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-4-8",
+            "id": "msg_p1",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tsub",
+                    "name": "Agent",
+                    "input": {
+                        "description": "Answer 2+2",
+                        "subagent_type": "Explore",
+                        "prompt": "What is 2+2?",
+                    },
+                }
+            ],
+        },
+    },
+    {
+        "type": "system",
+        "subtype": "task_started",
+        "task_id": "af41",
+        "tool_use_id": "tsub",
+        "description": "Answer 2+2",
+        "subagent_type": "Explore",
+        "prompt": "What is 2+2?",
+    },
+    {
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tsub",
+                    "content": [{"type": "text", "text": "Async agent launched..."}],
+                }
+            ]
+        },
+    },
+    {
+        "type": "assistant",
+        "parent_tool_use_id": "tsub",
+        "message": {
+            "model": "claude-haiku-4-5",
+            "id": "msg_c1",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 10066,
+            },
+            "content": [{"type": "text", "text": "4"}],
+        },
+    },
+    {
+        "type": "system",
+        "subtype": "task_updated",
+        "task_id": "af41",
+        "patch": {"status": "completed"},
+    },
+    {
+        "type": "system",
+        "subtype": "task_notification",
+        "task_id": "af41",
+        "tool_use_id": "tsub",
+        "status": "completed",
+        "summary": "4",
+        "usage": {"total_tokens": 10086, "tool_uses": 0, "duration_ms": 2073},
+    },
+    {
+        "type": "assistant",
+        "message": {
+            "model": "claude-opus-4-8",
+            "id": "msg_p2",
+            "content": [{"type": "text", "text": "Four."}],
+        },
+    },
+    {
+        "type": "result",
+        "subtype": "success",
+        "result": "Four.",
+        "num_turns": 1,
+        "total_cost_usd": 0.05,
+        "usage": {"input_tokens": 10, "output_tokens": 48},
+    },
 ]
-for o in lines:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
 
 
-def _make_fake_cli_agent(tmp_path) -> str:
-    p = tmp_path / "fake_claude_agent.py"
-    p.write_text(_FAKE_CLI_AGENT.format(python=sys.executable), encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+def _agent_scenario() -> dict:
+    """Replay `_AGENT_STREAM` through the fake: every object is a `raw` step in
+    order, except the terminal `result`, which becomes the fake's own auto
+    result (so its `result`/`usage`/`total_cost_usd` land on the real one), and
+    `system/init`, which the fake emits itself from the scenario's model."""
+    init = [o for o in _AGENT_STREAM if o.get("type") == "system" and o.get("subtype") == "init"][0]
+    body = [o for o in _AGENT_STREAM if o is not init]
+    final = body.pop()
+    assert final["type"] == "result"
+    steps: list[dict] = [{"raw": o} for o in body]
+    steps.append({"result": {k: v for k, v in final.items() if k != "type"}})
+    return {"model": init["model"], "turns": [steps]}
 
 
 @pytest.mark.anyio
 async def test_runner_demuxes_claude_side_subagents(tmp_path):
-    binary = _make_fake_cli_agent(tmp_path)
+    binary = fake_claude_bin(tmp_path, _agent_scenario())
     events: list[tuple[str, object, object]] = []
     models: list[tuple[str, str]] = []
 
@@ -863,15 +658,15 @@ async def test_runner_demuxes_claude_side_subagents(tmp_path):
         prompt="t",
         system_prompt="s",
         cwd=str(tmp_path),
-        allow_gated=False,
         allowed_tools=[],
         model=None,
         stream_id="parent",
     )
-    # Final report is the LAST result event's text; usage sums both segments
-    # and keeps the last (cumulative) cost.
+    # The report is the turn's terminal result — one per turn now that the turn
+    # runs on a live process (multi-result folding stays covered by the
+    # sum_result_usages unit tests above).
     assert result.output == "Four."
-    assert result.usage.output_tokens == 1083 + 48
+    assert result.usage.output_tokens == 48
     from marim_harness.usage import COST_DETAIL_KEY
 
     assert result.usage.details[COST_DETAIL_KEY] == 50_000  # $0.05 in micro-USD

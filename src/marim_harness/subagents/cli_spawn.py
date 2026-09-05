@@ -1,7 +1,8 @@
-"""Runs and resumes ``backend: claude-cli`` spawns — the external ``claude -p``
-process path. Owns the CLI-side meta/checkpoint templates and the ``--resume``
-relaunch; rejoins the runner's shared ``_run_spawn_lifecycle`` (passed in as
-``lifecycle``) so run+failure+finalize stays written once.
+"""Runs and resumes ``backend: claude-cli`` spawns — the external ``claude``
+process path (one bidirectional process per spawn). Owns the CLI-side
+meta/checkpoint templates and the ``--resume`` relaunch; rejoins the runner's
+shared ``_run_spawn_lifecycle`` (passed in as ``lifecycle``) so
+run+failure+finalize stays written once.
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..claude.approvals import ClaudeApprovalBroker
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps
-from ..runtime.permissions import Mode
+from ..runtime.permissions import Mode, UiSeams
 from ..workspace import effective_tools
 from .backend import CONTINUATION_PROMPT, SpawnLifecycle, SpawnRun
 from .isolation import SpawnWorktree
@@ -211,8 +213,9 @@ class CliSpawnOrchestrator:
     ) -> CliResult:
         """Resolve binary, tool reach, model, and cwd for a CLI spawn, then run it.
         Raises CliUnavailable when no `claude` binary is found so the caller's
-        contained-error path reports it. Reach mirrors the native gate — gated
-        tools only in auto mode. Model precedence: per-spawn override, then the
+        contained-error path reports it. Reach is the agent's full grant — every
+        tool use is gated per call by the spawn's broker instead. Model
+        precedence: per-spawn override, then the
         agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
         own default."""
         from ..tools.names import NET_TOOLS
@@ -230,25 +233,30 @@ class CliSpawnOrchestrator:
                 "no `claude` binary found (set MARIM_CLAUDE_CLI_BIN or install Claude Code)"
             )
         # Same spawn-time mode snapshot as the native path (SubagentRunner.build):
-        # reach is fixed when the CLI process launches; a mode flip affects the
-        # next spawn. Plan mode strips web_search/fetch_url from the grant AND
-        # hard-denies their Claude Code counterparts (WebSearch/WebFetch) via
-        # --disallowedTools. The strip alone is NOT enough: --allowedTools is
-        # additive pre-approval only, and the CLI degrades every non-auto mode
-        # to `--permission-mode plan`, whose own policy auto-allows the web
-        # research tools — so absence from the allowlist (or an allowlist
-        # omitted entirely when the stripped set maps empty) denies nothing.
-        # --disallowedTools is the deny headless `claude -p` actually honors,
-        # closing marim's plan-mode egress boundary (_plan_decision) on this
-        # backend too. Only the two net tools are denied — the rest of the
-        # CLI's reach stays governed by its own permission mode.
+        # the tool grant is fixed when the CLI process launches; a mode flip
+        # affects the next spawn. Plan mode strips marim's net tools from the
+        # allowlist AND hard-denies Claude Code's web tools: absence from
+        # `--tools` alone is not a denial.
         mode = self.deps.workspace.mode
-        allow_gated = mode is Mode.auto
         deny_net = mode is Mode.plan
-        tools = effective_tools(defn, allow_gated=allow_gated, allow_net=not deny_net)
+        tools = effective_tools(defn, allow_gated=True, allow_net=not deny_net)
         cwd = str(work_root or self.deps.workspace.root)
         model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
         cbs = self.deps.ui
+        # Every tool Claude wants to run comes back as a can_use_tool request;
+        # the broker applies the live mode (auto/ask/plan) per call, so the
+        # allowlist no longer has to pre-decide gated tools (allow_gated=True):
+        # a mutating tool is granted to the process and gated per use.
+        # `services` is bound late (the deps/services cycle), so reach it
+        # defensively — a spawn built before the binding still gets a broker.
+        get_scratchpad = getattr(getattr(self.deps, "services", None), "get_scratchpad", None)
+        broker = ClaudeApprovalBroker(
+            mode_getter=lambda: self.deps.workspace.mode,
+            workspace_root=Path(cwd),
+            scratchpad_getter=get_scratchpad or (lambda: None),
+            ui=UiSeams(request_approval=cbs.request_approval, ask_user=cbs.ask_user),
+            label=defn.name,
+        )
         runner = ClaudeCliRunner(
             cbs.on_subagent_event, cbs.on_subagent_notice, cbs.on_subagent_model
         )
@@ -257,13 +265,13 @@ class CliSpawnOrchestrator:
             prompt=task,
             system_prompt=defn.prompt,
             cwd=cwd,
-            allow_gated=allow_gated,
             allowed_tools=tools,
             model=model_name,
             disallowed_tools=map_tools_to_cc(NET_TOOLS) if deny_net else None,
             stream_id=stream_id,
             checkpoint=checkpoint,
             resume_session_id=resume_session_id,
+            broker=broker,
         )
         if stream_id and cbs.on_subagent_usage is not None:
             await cbs.on_subagent_usage(stream_id, result.usage)

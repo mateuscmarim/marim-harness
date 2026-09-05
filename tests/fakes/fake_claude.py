@@ -351,6 +351,10 @@ class Fake:
 
 
 def main(argv: list[str]) -> int:
+    # Record the real pid (the wrapper `exec`s us, so this is the pid the
+    # parent spawned) next to the log, for tests that assert the process was
+    # killed. sys.argv[0] is this module, not the wrapper — hence the log path.
+    Path(os.environ["MARIM_CLAUDE_FAKE_LOG"]).with_name("claude.pid").write_text(str(os.getpid()))
     scenario = json.loads(
         Path(os.environ["MARIM_CLAUDE_FAKE_SCENARIO"]).read_text(encoding="utf-8")
     )
@@ -364,7 +368,10 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"No conversation found with session ID: {rid}\n")
             sys.stderr.flush()
             return 1
-        scenario["session_id"] = rid
+        # A resume continues the same session unless the scenario pinned an id
+        # of its own — that models a fork, where the CLI mints a NEW session id
+        # and the caller must key later resumes off it.
+        scenario.setdefault("session_id", rid)
     Fake(scenario, log).serve()
     return 0
 

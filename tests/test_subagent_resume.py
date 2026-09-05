@@ -6,8 +6,6 @@ death mid-run lost the transcript entirely. The runner now flushes a v2 envelope
 finalizes it with a terminal status, so a crashed spawn leaves a resumable trail.
 """
 
-import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -24,6 +22,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.session import SessionStore, TranscriptStore
 from marim_harness.subagents.backend import CONTINUATION_PROMPT
 from tests.conftest import _make_deps, _make_harness
+from tests.fakes import fake_claude_bin, read_claude_argv, read_claude_log
 
 
 def _session_store(tmp_path: Path) -> SessionStore:
@@ -368,37 +367,52 @@ def _cli_agent(tmp_path):
     )
 
 
-def _resume_fake_cli(tmp_path, argv_file):
-    p = tmp_path / "fake_claude_resume.py"
-    p.write_text(
-        f"#!{sys.executable}\n"
-        "import json, sys\n"
-        f"open({str(argv_file)!r}, 'w').write(json.dumps(sys.argv))\n"
-        # A DIFFERENT session id than the one seeded in meta ("sess-abc"): a fork
-        # on --resume mints a new session, and the finished sidecar must record the
-        # NEWEST id (result.session_id wins over the meta's), so a later re-resume
-        # keys off the fork, not the exhausted original.
-        'sys.stdout.write(json.dumps({"type": "system", "subtype": "init",'
-        ' "session_id": "sess-def", "model": "m"}) + "\\n")\n'
-        # An assistant text event so the translated transcript is non-empty —
-        # TranscriptStore.write no-ops on an empty message list (see
-        # transcripts.py), which would otherwise leave the sidecar's status
-        # stuck at "running". Mirrors every other fake-CLI fixture in this repo
-        # (test_subagent_cli_spawn.py, test_subagent_transcript_capture.py).
-        'sys.stdout.write(json.dumps({"type": "assistant", "message": {"content":'
-        ' [{"type": "text", "text": "resuming"}]}}) + "\\n")\n'
-        'sys.stdout.write(json.dumps({"type": "result", "subtype": "success",'
-        ' "result": "resumed-cli-ok", "num_turns": 1,'
-        ' "usage": {"input_tokens": 1, "output_tokens": 1}}) + "\\n")\n'
+def _resume_fake_cli(tmp_path) -> str:
+    # A DIFFERENT session id than the one seeded in meta ("sess-abc"): a fork
+    # on --resume mints a new session, and the finished sidecar must record the
+    # NEWEST id (result.session_id wins over the meta's), so a later re-resume
+    # keys off the fork, not the exhausted original.
+    #
+    # The "resuming" text step matters too: TranscriptStore.write no-ops on an
+    # empty message list (see transcripts.py), which would leave the sidecar's
+    # status stuck at "running".
+    return fake_claude_bin(
+        tmp_path,
+        {
+            "session_id": "sess-def",
+            "known_sessions": ["sess-abc"],
+            "turns": [
+                [
+                    {"text": "resuming"},
+                    {
+                        "result": {
+                            "result": "resumed-cli-ok",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        }
+                    },
+                ]
+            ],
+        },
     )
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+
+
+def _sent_prompt(tmp_path) -> str:
+    """The first user message marim pushed over the CLI's stdin. The prompt no
+    longer rides in argv (`-p`): a bidirectional run sends it as a stream-json
+    user message."""
+    for msg in read_claude_log(tmp_path):
+        if msg.get("type") != "user":
+            continue
+        content = (msg.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        return "".join(c.get("text", "") for c in content or [] if isinstance(c, dict))
+    return ""
 
 
 @pytest.mark.anyio
 async def test_resume_cli_spawn_relaunches_with_resume_flag(tmp_path, monkeypatch):
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path))
     _cli_agent(tmp_path)
     store = _session_store(tmp_path)
     harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
@@ -408,12 +422,10 @@ async def test_resume_cli_spawn_relaunches_with_resume_flag(tmp_path, monkeypatc
     assert job_id is not None, message
     report = await harness.deps.jobs.wait(job_id)
     assert report == "resumed-cli-ok"
-    import json as _json
-
-    argv = _json.loads(argv_file.read_text())
+    argv = read_claude_argv(tmp_path)
     assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
     assert "--append-system-prompt" not in argv
-    assert argv[argv.index("-p") + 1].startswith("You were interrupted")
+    assert _sent_prompt(tmp_path).startswith("You were interrupted")
     meta = ts.read_meta("sg-cli")
     assert meta["status"] == "finished"
     assert meta["task"] == "original cli task"  # continuation prompt never leaks in
@@ -428,8 +440,7 @@ async def test_resume_cli_preserves_prior_transcript(tmp_path, monkeypatch):
     not re-emit prior history, so without prepending the persisted transcript the
     resume's checkpoints (and final write) would overwrite the sidecar with
     tail-only content, destroying the pre-interrupt segment the pane replays."""
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path))
     _cli_agent(tmp_path)
     store = _session_store(tmp_path)
     harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
@@ -454,8 +465,7 @@ async def test_resume_cli_preserves_prior_transcript(tmp_path, monkeypatch):
 async def test_cli_spawn_records_caller_depth(tmp_path, monkeypatch):
     """A CLI spawn made by a nested native sub-agent records the real depth
     (caller_depth + 1), not a hardcoded 1."""
-    argv_file = tmp_path / "argv.json"
-    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path, argv_file))
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path))
     _cli_agent(tmp_path)
     store = _session_store(tmp_path)
     harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
