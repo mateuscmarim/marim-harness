@@ -497,6 +497,11 @@ async def _iter_ndjson_lines(stream, chunk_size: int = _READ_CHUNK):
         yield buffer.decode("utf-8", "replace")
 
 
+# Public name for the codex transport (codex/rpc.py) — same chunked reader,
+# same "no line-length cap, trailing unterminated line still yielded" contract.
+iter_ndjson_lines = _iter_ndjson_lines
+
+
 @dataclass
 class _RunState:
     """The `run` read-loop's mutated locals, pulled into one object so they can
