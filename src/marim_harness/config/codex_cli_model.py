@@ -268,11 +268,16 @@ class CodexCliModel(ExternalCliModel):
         self.thread = handle
         if not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + handle.thread_id)
-        # FRESH (full flattened history needed) only when a persisted thread
-        # existed and its resume failed (cold-start replay); a genuinely
-        # first-ever thread has no history to flatten beyond the one prompt
-        # already in `messages`, so the latest user text is enough.
-        return handle, persisted is not None
+        # FRESH (full flattened history needed) whenever `messages` carries more
+        # than the current request — a resumed marim session, a mid-session
+        # switch to codex-cli (SessionController.set_model clears a foreign
+        # provider's ref, so `persisted` is None here even though history
+        # exists), or a resume whose thread Codex no longer has. Mirrors
+        # claude_cli_model.py's cold-start rule. A genuinely first-ever turn has
+        # only the current request in `messages`, so flattening it would just
+        # reformat the same single prompt — skip that to keep behavior
+        # unchanged for the common case.
+        return handle, len(messages) > 1
 
     async def _begin_turn(
         self, messages: list, model_settings: ModelSettings | None

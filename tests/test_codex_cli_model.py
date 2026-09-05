@@ -9,9 +9,11 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     SystemPromptPart,
+    TextPart,
     ThinkingPart,
     ThinkingPartDelta,
     UserPromptPart,
@@ -153,6 +155,29 @@ async def test_resumes_persisted_thread_or_falls_back(tmp_path):
     turn = [r for r in log if r["method"] == "turn/start"][-1]
     assert "first question" in turn["params"]["input"][0]["text"]
     assert "second question" in turn["params"]["input"][0]["text"]
+
+
+async def test_cold_thread_carries_flattened_history_with_no_persisted_ref(tmp_path):
+    """A mid-session switch to codex-cli (SessionController.set_model clears a
+    foreign-provider ref) or any resumed session whose ref was never set must
+    still seed the new thread with the whole conversation, not just the latest
+    line — Important #1 of the final review. `session_ref_getter` is left at
+    its default (None), exactly like a session with no persisted codex-cli ref."""
+    m = _model(tmp_path, {"turns": [_hello_turn()]})
+    history = [
+        ModelRequest(parts=[UserPromptPart(content="first question")]),
+        ModelResponse(parts=[TextPart(content="first answer")]),
+        ModelRequest(parts=[UserPromptPart(content="second question")]),
+    ]
+    try:
+        await m.request(history, None, PARAMS)
+    finally:
+        await m.aclose()
+    log = read_request_log(tmp_path)
+    turn = next(r for r in log if r["method"] == "turn/start")
+    text = turn["params"]["input"][0]["text"]
+    assert "first question" in text
+    assert "second question" in text
 
 
 async def test_foreign_session_ref_is_ignored(tmp_path):
