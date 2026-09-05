@@ -2,7 +2,7 @@
 
 Date: 2026-09-04
 Branch: `feat/codex-cli-backend` (off master at bdc75095, v0.6.0)
-Status: design — awaiting review
+Status: approved 2026-09-04 (reviewed on mddocs) — implementation pending
 
 ## Goal
 
