@@ -53,6 +53,7 @@ from ..workspace import (
 )
 from .backend import CONTINUATION_PROMPT, SpawnRun
 from .cli_spawn import CliSpawnOrchestrator
+from .codex_spawn import CodexSpawnOrchestrator
 from .isolation import SpawnWorktree
 from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
@@ -198,6 +199,16 @@ class SubagentRunner:
             transcripts=self._transcripts,
             lifecycle=self._run_spawn_lifecycle,
             resolve_agent=self._resolve_agent,
+        )
+        # The codex-cli spawn path: one Codex thread per spawn on the shared
+        # app-server; same lifecycle-injection shape as the claude-cli path.
+        self._codex = CodexSpawnOrchestrator(
+            deps=deps,
+            hooks=hooks,
+            transcripts=self._transcripts,
+            lifecycle=self._run_spawn_lifecycle,
+            resolve_agent=self._resolve_agent,
+            thinking_default=thinking_default,
         )
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
@@ -771,11 +782,12 @@ class SubagentRunner:
             if err is not None:
                 return self._preflight_failure(err, background)
         work_root = iso.path if iso else None
-        # CLI-backed agents run an external `claude` process instead of the
-        # in-process Pydantic AI loop, so they skip the native build+MCP prepare.
-        # Branch here to self._cli.execute, which builds its own meta/checkpoint
-        # and then rejoins the SAME _run_spawn_lifecycle the native tails use — the
-        # run+failure+finalize wrapper is written once, not duplicated per backend.
+        # CLI-backed agents (claude-cli, codex-cli) run an external process
+        # instead of the in-process Pydantic AI loop, so they skip the native
+        # build+MCP prepare. Branch here to self._cli.execute / self._codex.execute,
+        # which each build their own meta/checkpoint and then rejoin the SAME
+        # _run_spawn_lifecycle the native tails use — the run+failure+finalize
+        # wrapper is written once, not duplicated per backend.
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
@@ -802,6 +814,21 @@ class SubagentRunner:
                 stream_id,
                 background=background,
                 depth=depth,
+            )
+        if defn is not None and defn.backend == "codex-cli":
+            return await self._codex.execute(
+                defn,
+                task,
+                work_root,
+                iso,
+                mcp_names,
+                max_output_chars,
+                model,
+                stream_id,
+                background=background,
+                depth=depth,
+                output_schema=output_schema,
+                thinking=thinking,
             )
         prep = await self._prepare_spawn(
             type,
@@ -1383,6 +1410,12 @@ class SubagentRunner:
             # would be wasted work at best and engine-swapping at worst.
             if meta.get("backend") == "claude-cli":
                 return await self._cli.resume(stream_id, meta)
+            # A codex-cli spawn resumes by re-opening its persisted thread
+            # (thread/resume) on the shared app-server and sending the
+            # continuation prompt as a new turn — same rationale as claude-cli:
+            # Codex owns its own thread history.
+            if meta.get("backend") == "codex-cli":
+                return await self._codex.resume(stream_id, meta)
             messages = self._transcripts.read(stream_id)
             history = _resumable_history(messages or [])
             if history is None:

@@ -13,6 +13,9 @@ from pathlib import Path
 
 CODEX_BINARY_ENV = "MARIM_CODEX_CLI_BIN"
 CODEX_TIMEOUT_ENV = "MARIM_CODEX_CLI_TIMEOUT"
+# Default model for `backend: codex-cli` sub-agents (the spec's `model:` wins;
+# the spawn call's model= wins over both). None ⇒ the CLI's own default.
+CODEX_MODEL_ENV = "MARIM_CODEX_CLI_MODEL"
 _DEFAULT_TIMEOUT = 600.0
 # app-server v2 (thread/turn/item vocabulary, typed approval requests) landed
 # in this line; older binaries speak a different protocol and are refused.

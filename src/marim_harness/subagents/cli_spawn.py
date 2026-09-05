@@ -61,6 +61,8 @@ class CliSpawnOrchestrator:
         original_task: str | None = None,
         depth: int = 1,
         transcript_prefix: list[Any] | None = None,
+        output_schema: dict | None = None,  # accepted for dispatch symmetry; the
+        thinking: str | None = None,  # claude-cli backend applies neither (see docstring)
     ) -> str:
         """Run a ``backend: claude-cli`` agent inside the same lifecycle the native
         path uses: hooks bracketing, output cap/spill, worktree close, background
@@ -71,7 +73,13 @@ class CliSpawnOrchestrator:
         contains a failure as an error string (so a sibling fan-out spawn isn't
         taken down); background re-raises to the job registry. Usage is folded into
         the session, and a background spawn persists immediately since no run_turn
-        will fold its spend."""
+        will fold its spend.
+
+        ``output_schema``/``thinking`` are accepted (and ignored) only so the
+        runner's dispatch can pass the same keyword set to whichever backend it
+        routes to — this backend already folds a schema into the task text as a
+        prompt contract before dispatch (see ``output_schema.py``), and Claude
+        Code's CLI has no reasoning-effort knob marim can drive from here."""
         hook_task = original_task or task
         # Wall-clock start for the terminal meta's duration stat. The native path
         # reads prep.t0 (stamped in _execute_spawn); the CLI early-return branches

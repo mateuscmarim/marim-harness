@@ -30,10 +30,16 @@ def output_contract(schema: dict) -> str:
 def resolve_output_schema(schema: dict | None, backend: str | None) -> tuple[dict | None, str]:
     """Decide the enforcement path for a spawn's output schema. Returns
     ``(schema, "")`` when the spawn can ride structured output (native
-    backend, object-rooted schema), or ``(None, contract)`` for the prompt
-    fallback. Pure; unit-tested directly."""
+    backend, object-rooted schema; or the codex-cli backend, any root type),
+    or ``(None, contract)`` for the prompt fallback (claude-cli backend, or a
+    non-object-rooted schema on the native backend). Pure; unit-tested
+    directly."""
     if schema is None:
         return None, ""
+    if backend == "codex-cli":
+        # Codex enforces `outputSchema` natively (turn/start.outputSchema),
+        # for any root type — no prompt contract needed.
+        return schema, ""
     if backend == "claude-cli" or schema.get("type") != "object":
         return None, output_contract(schema)
     return schema, ""

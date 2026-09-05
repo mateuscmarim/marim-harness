@@ -74,6 +74,7 @@ non-positive values and fall back to the default (exceptions are noted).
 | `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Wall-clock ceiling in seconds for one claude-cli spawn. |
 | `MARIM_CODEX_CLI_BIN` | `codex` (resolved on PATH) | Path to the `codex` binary when it is not on PATH (used by the `codex-cli` provider and `backend: codex-cli` sub-agents). |
 | `MARIM_CODEX_CLI_TIMEOUT` | `600` | Seconds a Codex turn may sit idle (no notification) before marim interrupts it. Default `600`. |
+| `MARIM_CODEX_CLI_MODEL` | unset (CLI's own default) | Default model for `backend: codex-cli` sub-agents (a Codex model id such as `gpt-5.4-mini`). The spec's `model:` and a spawn's `model=` override it. |
 
 An unknown `MARIM_PROVIDER` value falls back to `openrouter` with a warning.
 Every provider whose credentials are present is auto-detected and merged into

@@ -192,6 +192,7 @@ _TRUST_PROJECT_SUITES = frozenset(
         "test_commands.py",
         "test_plugin_skills.py",
         "test_subagent_cli_spawn.py",
+        "test_subagent_codex_spawn.py",
         "test_subagent_isolation.py",
         "test_subagent_resume.py",
         "test_subagent_safety.py",
