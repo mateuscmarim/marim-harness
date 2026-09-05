@@ -44,3 +44,17 @@ def test_example_cli_agent_parses_as_claude_cli(tmp_path: Path):
     defn = find_agent(tmp_path, "cli-worker")
     assert defn is not None
     assert defn.backend == "claude-cli"
+
+
+def test_example_codex_agent_parses_as_codex_cli(tmp_path: Path):
+    import shutil
+
+    src = Path("docs/examples/agents/codex-worker.md")
+    dst = tmp_path / ".marim" / "agents" / "codex-worker.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    defn = find_agent(tmp_path, "codex-worker")
+    assert defn is not None
+    assert defn.backend == "codex-cli"
+    assert defn.model is None  # let the CLI pick; MARIM_CODEX_CLI_MODEL overrides
+    assert defn.thinking == "medium"

@@ -43,18 +43,18 @@ logger = logging.getLogger(__name__)
 def aux_model_for(model: Model, *, cwd: str) -> Model:
     """The model the aux agents (summarizer/titler) should run on.
 
-    A ``ClaudeCliModel`` carries the live ``session_id``, so an aux agent sharing
-    it would resume — and reply into — the user's real Claude session (dropping
-    its own instructions). Such a model is swapped for a stateless, read-only
-    ``ephemeral_clone`` that never resumes or stores a session; every other
-    provider reuses the one model unchanged.
+    An ``ExternalCliModel`` (claude-cli, codex-cli) carries the live provider
+    session/thread, so an aux agent sharing it would resume — and reply into —
+    the user's real conversation (dropping its own instructions). Such a model
+    is swapped for a stateless, read-only ``ephemeral_clone`` that never resumes
+    or stores a session; every other provider reuses the one model unchanged.
 
     This is the SINGLE source of that decision: both bootstrap (initial build)
     and ``update_model`` (runtime ``/model`` switch) route the model through here,
     so the clone can never be dropped on one path but kept on the other."""
-    from ..config.claude_cli_model import ClaudeCliModel
+    from ..config.external_cli import ExternalCliModel
 
-    if isinstance(model, ClaudeCliModel):
+    if isinstance(model, ExternalCliModel):
         return model.ephemeral_clone(cwd=cwd)
     return model
 
@@ -377,6 +377,14 @@ class SessionController:
     def set_model(self, model_id: str) -> None:
         if self.store is not None:
             self.store.model = model_id
+            ref = self.store.cli_thread_id
+            if ref and not ref.startswith(model_id.split(":", 1)[0] + ":"):
+                # A thread belongs to one external CLI. Switching provider
+                # orphans it — the new model would ignore the foreign
+                # prefix anyway, but a stale ref must not outlive the switch
+                # on disk (a later switch back would resume a thread whose
+                # history the session no longer matches).
+                self.store.cli_thread_id = None
             if self.store.path.exists():
                 # Metadata-only on-disk patch, NOT a full persist: a model
                 # switch can land mid-turn, when the in-memory history may end
@@ -421,6 +429,25 @@ class SessionController:
         clean persist."""
         if self.store is not None:
             self.store.thinking = value
+            if self.store.path.exists():
+                self.store.save_meta()
+            else:
+                self.persist(force=True)
+
+    @property
+    def saved_cli_thread_id(self) -> str | None:
+        """The external-CLI thread ref persisted with this session
+        ("<provider>:<id>"), or None if unset or no store."""
+        return self.store.cli_thread_id if self.store is not None else None
+
+    def set_cli_thread_id(self, value: str | None) -> None:
+        """Persist the external-CLI thread ref. Same metadata-only patch
+        rules as ``set_thinking``: the ref lands mid-turn (the thread is
+        created on the first request), when in-memory history must never
+        reach disk, so patch the header when a file exists, else force one
+        clean persist."""
+        if self.store is not None:
+            self.store.cli_thread_id = value
             if self.store.path.exists():
                 self.store.save_meta()
             else:

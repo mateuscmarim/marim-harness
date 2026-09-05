@@ -92,6 +92,11 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # it huge would blunt that safety limit, so it too comes only from the shell
         # env / trusted global config.
         "MARIM_CLAUDE_CLI_TIMEOUT",
+        # Codex CLI binary and timeout settings — same trust boundary as claude-cli
+        # (provider selection, binary pointer, timeout override). Honored only from
+        # the shell env or the trusted global config.
+        "MARIM_CODEX_CLI_BIN",
+        "MARIM_CODEX_CLI_TIMEOUT",
         # The XDG base dirs decide WHERE the "trusted" global config/data is read
         # from — and that global config IS allowed to set every key above. When
         # XDG_CONFIG_HOME is unset (the common Linux/macOS case), a project .env
@@ -102,6 +107,7 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # MARIM_BASE_URL / OPENROUTER_API_KEY (exfil), self-contained in the clone.
         # Blocklisting the XDG dirs closes that redirect so the trusted-config
         # location comes only from the real shell env (or the ~/.config default).
+        "CODEX_HOME",
         "XDG_CONFIG_HOME",
         "XDG_DATA_HOME",
     }

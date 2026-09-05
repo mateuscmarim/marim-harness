@@ -30,10 +30,11 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import ModelResponse, TextPart
-from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
+from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.usage import RequestUsage
 
 from ..usage import COST_DETAIL_KEY
+from .external_cli import CliModelError, ExternalCliModel, TextFolder
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -533,10 +534,6 @@ def note_ask_limitation_once(mode: str) -> None:
         )
 
 
-class CliModelError(Exception):
-    """The claude CLI was unavailable or produced no terminal result."""
-
-
 def _no_result_message(done: DoneChunk | None) -> str:
     """The error text for a turn that ended without a proper ``result`` event.
     Appends the CLI's stderr tail (captured on the terminal ``DoneChunk``) when
@@ -563,7 +560,7 @@ async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncGenerator[dict]:
     can attach it to the terminal ``DoneChunk`` and the "no result" ``CliModelError``
     can explain the failure (crash, bad flag, not logged in) instead of staying
     silent."""
-    from ..subagents.cli_backend import _iter_ndjson_lines
+    from ..ndjson import iter_ndjson_lines as _iter_ndjson_lines
 
     proc = await asyncio.create_subprocess_exec(  # pragma: no cover
         *argv,
@@ -602,41 +599,26 @@ async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncGenerator[dict]:
                 await proc.wait()
 
 
-class ClaudeCliModel(Model):
+class ClaudeCliModel(ExternalCliModel):
     """A Pydantic AI model backed by the ``claude`` CLI (a Claude subscription).
 
     Each request spawns ``claude -p`` (resuming Claude's session when one is known)
     and returns a single text-only ``ModelResponse``; Claude runs its own tools
-    internally. ``mode_getter`` is set by bootstrap to read marim's live approval
-    mode; ``session_id`` is held in-memory across turns of one process."""
+    internally. The late-bound seams (``mode_getter``, ``cwd``, ``on_activity``,
+    ``on_subagent*``) live on ``ExternalCliModel`` and are bound by
+    ``Harness.wire_cli_model``; ``session_id`` is held in-memory across turns of
+    one process."""
+
+    provider_id = "claude-cli"
 
     def __init__(self, model_id: str | None, *, ephemeral: bool = False) -> None:
         super().__init__()
         self._model_id = model_id
-        self.mode_getter: Callable[[], str] | None = None
         self.session_id: str | None = None
-        # Ephemeral models are for one-shot aux agents (titler/summarizer): they
-        # never resume or store a session, so they can't continue — or hijack —
-        # the user's live Claude session, and they always send their own system
-        # prompt. See ``ephemeral_clone``.
+        # See ExternalCliModel.ephemeral / ``ephemeral_clone``: aux agents never
+        # resume or store a session, so they can't hijack the user's live one.
         self.ephemeral = ephemeral
-        # Late-bound by bind_ui (TUI only) to a coroutine that renders Claude's own
-        # tool_use/tool_result as native tool cards in the main transcript. When None
-        # (headless, or no UI) tool activity is folded into the text as ▸ lines.
-        # Never enters the model response, so pydantic_ai never executes these calls.
-        self.on_activity: Callable[[list], Awaitable[None]] | None = None
-        # Late-bound by bind_ui (TUI only): routes a Claude-side sub-agent's
-        # translated events to the sub-agents screen (on_subagent ≙
-        # Deps.ui.on_subagent_event) and relabels its card with the model the
-        # child reports (on_subagent_model). None headless — the stream filter
-        # in consume_cli_stream then simply drops child traffic.
-        self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
-        self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
         self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
-        # Late-bound by bootstrap/set_model to marim's real workspace (or worktree)
-        # root, exactly like ``mode_getter``. Spawning in the process cwd (".") would
-        # make Claude read/edit the WRONG directory — destructively so under --worktree.
-        self.cwd: str = "."
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
         """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
@@ -652,10 +634,6 @@ class ClaudeCliModel(Model):
     @property
     def model_name(self) -> str:
         return self._model_id or "default"
-
-    @property
-    def system(self) -> str:
-        return "claude-cli"
 
     def _argv(self, messages: list) -> list[str]:
         from ..subagents.cli_backend import build_cli_argv as _build
@@ -763,63 +741,9 @@ class ClaudeCliModel(Model):
             await objs.aclose()
 
 
-class _TextFolder:
-    """The vendor-part-id bookkeeping for ``_get_event_iterator``'s two
-    rendering modes.
-
-    With a UI side-channel (cards mode, ``on_activity`` set), Claude's
-    tool_use/tool_result become native tool cards pushed out-of-band, and each
-    run of assistant prose gets its own text part (a fresh vendor_part_id after
-    every tool) so the cards interleave between text blocks. Headless (fold
-    mode, no side-channel) folds tool_use into the text as ``▸`` lines in one
-    growing part. ``part_n`` (cards mode) and ``folded_any`` (fold mode, for
-    blank-line separation) both mutate across chunks AND across the text/tool
-    arms, so they're threaded via this small stateful object rather than loose
-    locals passed in/out of each arm."""
-
-    def __init__(
-        self, parts_manager, on_activity: Callable[[list], Awaitable[None]] | None
-    ) -> None:
-        self._parts_manager = parts_manager
-        self._on_activity = on_activity
-        self._cards = on_activity is not None
-        self.part_n = 0
-        self.folded_any = False
-
-    async def _emit(self, content: str, part_id: str):
-        for event in self._parts_manager.handle_text_delta(vendor_part_id=part_id, content=content):
-            yield event
-
-    async def emit_text(self, delta: str):
-        """A ``TextChunk``: cards mode gives it its own vendor part id
-        (``text-{part_n}``); fold mode grows the single ``text-0`` part,
-        blank-line-separated from anything already folded into it."""
-        if self._cards:
-            async for ev in self._emit(delta, f"text-{self.part_n}"):
-                yield ev
-            return
-        seg = delta if not self.folded_any else f"\n\n{delta}"
-        async for ev in self._emit(seg, "text-0"):
-            yield ev
-        self.folded_any = True
-
-    async def emit_tool(self, chunk):
-        """A ``ToolUseChunk``/``ToolResultChunk``: cards mode pushes it
-        out-of-band via ``on_activity`` and, for a ``ToolUseChunk``, bumps
-        ``part_n`` so following prose starts a fresh part below the card;
-        fold mode folds it into the text stream as a ``▸`` line."""
-        if self._on_activity is not None:
-            events = cli_activity_events(chunk)
-            if events:
-                await self._on_activity(events)
-            if isinstance(chunk, ToolUseChunk):
-                self.part_n += 1  # following prose starts a fresh part below the card
-            return
-        seg = fold_chunk_text(chunk, leading=not self.folded_any)
-        if seg:
-            async for ev in self._emit(seg, "text-0"):
-                yield ev
-            self.folded_any = True
+# Moved to config/external_cli.py (shared with codex-cli); the old name stays
+# importable for tests that reach for it.
+_TextFolder = TextFolder
 
 
 @dataclass
@@ -882,7 +806,13 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # (a UI is bound); headless keeps the cheap filter-only path in
         # consume_cli_stream (Claude-side child traffic is simply dropped there).
         objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
-        folder = _TextFolder(self._parts_manager, self._on_activity)
+        folder = TextFolder(
+            self._parts_manager,
+            self._on_activity,
+            activity_events=cli_activity_events,
+            fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
+            is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
+        )
 
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk

@@ -127,8 +127,8 @@ The file **stem is the agent's identity**. Recognized keys:
 | `name` | no | If present, must equal the file stem (a mismatch invalidates the file). |
 | `description` | **yes** | Shown in the spawnable-agents index the model sees; non-empty string. |
 | `tools` | no | Tool names as a comma string or YAML list; unknown names are dropped. Absent/empty ⇒ the read-only set. |
-| `backend` | no | `native` (default, in-process Pydantic AI loop) or `claude-cli`. |
-| `model` | no | Backend-specific default model. For `claude-cli`, a Claude Code model name passed verbatim to `--model`; ignored by the native backend. |
+| `backend` | no | `native` (default, in-process Pydantic AI loop), `claude-cli`, or `codex-cli`. |
+| `model` | no | Backend-specific default model. For `claude-cli`, a Claude Code model name passed verbatim to `--model`; for `codex-cli`, a Codex model id (falls back to `MARIM_CODEX_CLI_MODEL`, then the CLI's default); ignored by the native backend. |
 | `tier` | no | `cheap`, `med`, or `high` — the spec's tier label for the native model router. Unknown values normalize to unset. |
 | `thinking` (alias `effort`) | no | Reasoning-effort level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`). Unknown values degrade to "inherit". |
 
@@ -234,6 +234,36 @@ Differences that matter:
   spawn.
 - One spawn is bounded by a wall-clock ceiling, `MARIM_CLAUDE_CLI_TIMEOUT`
   (default 600 s); `MARIM_CLAUDE_CLI_BIN` picks the executable.
+
+## The codex-cli backend
+
+`backend: codex-cli` runs the agent as one thread on the shared
+`codex app-server` process (the same one the `codex-cli` main-loop provider
+uses; it is started on first use and stays up for the marim process — a
+`codex-cli` session model closing with no thread left on the server closes
+it, spawns alone never do). The agent's prompt becomes the thread's developer instructions;
+the task is the first
+turn.
+
+- **Reach is fixed up front.** The Codex sandbox is `read-only` unless the
+  agent's tools include `write_file`, `edit_file` or `bash` (and never in
+  plan mode). The approval policy follows the parent's mode: `auto` →
+  `on-request`, `ask` → `untrusted` (prompts land in *your* approval panel,
+  labelled with the agent name), `plan` → `never`.
+- **Structured output** (`output_schema=` on `spawn_agent`) is enforced by
+  Codex natively, for any schema root — no prompt contract is appended.
+- **Thinking** follows the usual precedence (spawn `thinking=` → spec
+  `thinking:` → the session level) and maps to Codex reasoning effort.
+- **Resume** reopens the persisted Codex thread (`codex_thread_id` in the
+  spawn's sidecar) and sends the continuation prompt as a new turn.
+- The shared app-server is launched with the user's Codex MCP servers
+  disabled by name and plugins and the apps connector off (see the provider
+  notes in the configuration reference), so MCP grants do not reach the
+  spawn — marim's
+  own MCP servers and Codex's user-level ones alike. A non-empty grant list
+  is noted in the output anyway, as with `claude-cli`.
+
+See [`docs/examples/agents/codex-worker.md`](../examples/agents/codex-worker.md).
 
 ## Limits and operations
 

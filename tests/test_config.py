@@ -918,6 +918,80 @@ def test_build_model_claude_cli(monkeypatch):
     assert m.model_name == "sonnet"
 
 
+# ---------------------------------------------------------------------------
+# codex-cli provider
+# ---------------------------------------------------------------------------
+
+
+def test_codex_cli_is_a_known_provider():
+    assert "codex-cli" in model_mod.KNOWN_PROVIDERS
+
+
+def test_provider_config_codex_cli(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "codex-cli")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    cfg = model_mod.load_config()
+    assert cfg.provider == "codex-cli"
+    assert cfg.model is None and cfg.api_key is None and cfg.base_url is None
+
+
+def test_provider_config_codex_cli_model_override(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "codex-cli")
+    monkeypatch.setenv("MARIM_MODEL", "gpt-5.4-mini")
+    assert model_mod.load_config().model == "gpt-5.4-mini"
+
+
+def test_codex_has_creds_follows_binary_and_login(monkeypatch, tmp_path):
+    monkeypatch.setattr(model_mod, "_codex_cli_available", lambda: True)
+    assert model_mod._provider_has_creds("codex-cli") is True
+    monkeypatch.setattr(model_mod, "_codex_cli_available", lambda: False)
+    assert model_mod._provider_has_creds("codex-cli") is False
+    # The real detector: binary AND auth.json under CODEX_HOME.
+    monkeypatch.undo()
+    fake_bin = tmp_path / "codex"
+    fake_bin.write_text("#!/bin/sh\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setenv("MARIM_CODEX_CLI_BIN", str(fake_bin))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
+    assert model_mod._codex_cli_available() is False
+    (tmp_path / "home").mkdir()
+    (tmp_path / "home" / "auth.json").write_text("{}")
+    assert model_mod._codex_cli_available() is True
+
+
+def test_build_model_codex_cli():
+    from dataclasses import replace
+
+    cfg = replace(model_mod.load_config(), provider="codex-cli", model="gpt-5.6-sol")
+    m = model_mod.build_model(cfg)
+    from marim_harness.config.codex_cli_model import CodexCliModel
+
+    assert isinstance(m, CodexCliModel)
+    assert m.model_name == "gpt-5.6-sol" and m.system == "codex-cli"
+
+
+@pytest.mark.anyio
+async def test_list_models_codex_cli_uses_catalog(monkeypatch):
+    from dataclasses import replace
+
+    from marim_harness.config import model as _m
+    from marim_harness.workspace.catalog import ModelEntry
+
+    async def fake_list(*, strict=False, server=None):
+        return [ModelEntry(id="x", name="X", provider="codex-cli", supports_thinking=True)]
+
+    monkeypatch.setattr("marim_harness.codex.catalog.list_codex_models", fake_list)
+    cfg = replace(_m.load_config(), provider="codex-cli", model=None)
+    entries = await _m.ModelSource(cfg).list_models()
+    assert [e.id for e in entries] == ["x"]
+
+
+def test_codex_cli_qualified_prefix_is_recognised():
+    from marim_harness.config.context_limits import _bare_id
+
+    assert _bare_id("codex-cli:gpt-5.6-sol") == "gpt-5.6-sol"
+
+
 def test_scratchpad_env_defaults_on(monkeypatch):
     monkeypatch.delenv("MARIM_SCRATCHPAD", raising=False)
     from marim_harness.config import load_config

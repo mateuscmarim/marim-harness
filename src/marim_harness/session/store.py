@@ -163,6 +163,9 @@ class SessionInfo:
     advisor_model: str | None = None
     thinking: str | None = None
     mode: str | None = None
+    # The external CLI's thread/session ref ("<provider>:<id>") when the
+    # session ran on codex-cli (claude-cli keeps its own on the model today).
+    cli_thread_id: str | None = None
 
 
 def filter_sessions(sessions: list[SessionInfo], query: str) -> list[SessionInfo]:
@@ -191,6 +194,7 @@ class SessionStore:
         advisor_model: str | None = None,
         thinking: str | None = None,
         mode: str | None = None,
+        cli_thread_id: str | None = None,
     ) -> None:
         self.path = Path(path)
         self.workspace_root = Path(workspace_root).resolve()
@@ -213,6 +217,10 @@ class SessionStore:
         # by the serve daemon so a session's mode survives a restart; the TUI
         # neither sets nor reads it (its mode is a live, per-launch toggle).
         self.mode = mode
+        # The external-CLI conversation this session continues (codex-cli
+        # thread id, prefixed with the provider). Per-session, never
+        # inherited by `create` — a new marim session is a new thread.
+        self.cli_thread_id = cli_thread_id
 
     def save(
         self,
@@ -231,6 +239,7 @@ class SessionStore:
             "advisor_model": self.advisor_model,
             "thinking": self.thinking,
             "mode": self.mode,
+            "cli_thread_id": self.cli_thread_id,
             "workspace": str(self.workspace_root),
             "updated": _now(),
             "duration_seconds": duration_seconds,
@@ -295,6 +304,7 @@ class SessionStore:
             data["advisor_model"] = self.advisor_model
             data["thinking"] = self.thinking
             data["mode"] = self.mode
+            data["cli_thread_id"] = self.cli_thread_id
             atomic_write_text(self.path, json.dumps(data))
 
     def load(self) -> tuple[list, RunUsage, list, float | None, list]:
@@ -418,6 +428,7 @@ class SessionManager:
                     advisor_model=data.get("advisor_model"),
                     thinking=data.get("thinking"),
                     mode=data.get("mode"),
+                    cli_thread_id=data.get("cli_thread_id"),
                 )
             )
         infos.sort(key=lambda info: info.updated, reverse=True)
@@ -441,6 +452,7 @@ class SessionManager:
         advisor_model = meta.get("advisor_model")
         thinking = meta.get("thinking")
         mode = meta.get("mode")
+        cli_thread_id = meta.get("cli_thread_id")
         self._reserved.add(session_id)
         return SessionStore(
             path,
@@ -452,6 +464,7 @@ class SessionManager:
             advisor_model=advisor_model,
             thinking=thinking,
             mode=mode,
+            cli_thread_id=cli_thread_id,
         )
 
     def create(self, name: str | None = None) -> SessionStore:
@@ -501,6 +514,7 @@ class SessionManager:
         # thinking level the user last chose (including an explicit "off").
         if store.thinking is None:
             store.thinking = self.latest_thinking()
+        # cli_thread_id is deliberately NOT inherited: a new session is a new thread.
         return store
 
     def _unique_id(self, base: str) -> str:

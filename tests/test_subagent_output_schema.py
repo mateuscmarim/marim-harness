@@ -76,6 +76,15 @@ async def test_non_object_schema_falls_back_to_prompt_contract(tmp_path: Path):
     assert "plain text" in out
 
 
+def test_resolve_passes_any_schema_to_codex_cli():
+    # Codex enforces `outputSchema` natively for any root type, so the
+    # codex-cli backend gets the schema itself and no prompt contract.
+    array_schema = {"type": "array", "items": {"type": "string"}}
+    assert resolve_output_schema(array_schema, "codex-cli") == (array_schema, "")
+    assert resolve_output_schema(FINDINGS, "codex-cli") == (FINDINGS, "")
+    assert resolve_output_schema(None, "codex-cli") == (None, "")
+
+
 @pytest.mark.anyio
 async def test_no_schema_leaves_the_spawn_unchanged(tmp_path: Path):
     seen = {}

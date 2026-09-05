@@ -61,7 +61,7 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, or `claude-cli`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, or `codex-cli`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
 | `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
@@ -72,6 +72,9 @@ non-positive values and fall back to the default (exceptions are noted).
 | `MARIM_CLAUDE_CLI_BIN` | `claude` (resolved on PATH) | Claude Code executable to launch for the `claude-cli` provider and `backend: claude-cli` spawns. |
 | `MARIM_CLAUDE_CLI_MODEL` | unset (CLI's own default) | Claude Code model for `backend: claude-cli` **sub-agent** spawns (alias like `sonnet` or a full id). |
 | `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Wall-clock ceiling in seconds for one claude-cli spawn. |
+| `MARIM_CODEX_CLI_BIN` | `codex` (resolved on PATH) | Path to the `codex` binary when it is not on PATH (used by the `codex-cli` provider and `backend: codex-cli` sub-agents). |
+| `MARIM_CODEX_CLI_TIMEOUT` | `600` | Seconds a Codex turn may sit idle (no notification) before marim interrupts it. Default `600`. |
+| `MARIM_CODEX_CLI_MODEL` | unset (CLI's own default) | Default model for `backend: codex-cli` sub-agents (a Codex model id such as `gpt-5.4-mini`). The spec's `model:` and a spawn's `model=` override it. |
 
 An unknown `MARIM_PROVIDER` value falls back to `openrouter` with a warning.
 Every provider whose credentials are present is auto-detected and merged into
@@ -82,7 +85,8 @@ id like `local:qwen2.5-coder` addresses any active provider.
 `MARIM_MODEL` defaults per provider: `anthropic/claude-sonnet-4-6`
 (openrouter), `qwen2.5-coder` (local), `gemini-2.5-flash` (google),
 `mimo-v2.5-free` (zen), `glm-5.2` (zen-go), and *unset* for `claude-cli`
-(the CLI uses its own configured default). The value is passed to the
+(the CLI uses its own configured default) and for `codex-cli` (the Codex
+CLI's configured default model). The value is passed to the
 provider verbatim — marim does not validate or rewrite it.
 
 The `zen` provider talks to [OpenCode Zen](https://opencode.ai/auth)'s
@@ -114,6 +118,55 @@ claude-cli model comes from `MARIM_MODEL`. `MARIM_CLAUDE_CLI_BIN` may be a
 name resolved on PATH or a path; a non-positive or unparseable
 `MARIM_CLAUDE_CLI_TIMEOUT` (float, seconds) falls back to 600 rather than
 disabling the guard.
+
+Under the `codex-cli` provider marim delegates each turn to `codex app-server`
+(the Codex CLI's JSON-RPC front end): one app-server per marim *process* — a
+module-level singleton shared by the main-loop model and every `codex-cli`
+spawn, not one process per session (a `marim serve` daemon holding many
+sessions shares a single app-server). Codex runs its own tools inside its
+own sandbox, so marim's tools and LSP do not apply. The app-server is
+launched with config overrides that isolate it from the user's own Codex
+setup: every MCP server in the user's Codex config is disabled by name
+(`codex mcp list` enumerates them, each gets
+`-c mcp_servers.<name>.enabled=false`), the plugin system is switched off
+(`-c features.plugins=false`) and so is the built-in apps connector
+(`-c features.apps=false`, the `codex_apps` server with the `github.*`
+tools), so a marim-started thread loads neither marim's own MCP servers nor
+Codex's user-level ones, nor Codex plugins or connectors. Two residuals:
+Codex *skills* (`$CODEX_HOME/skills`, `~/.agents/skills`, `.codex/skills`)
+have no working override and still load, and a server whose name is not a
+bare TOML key (anything outside `[A-Za-z0-9_-]`) cannot be disabled this
+way — marim logs it at WARNING and it loads. The env-gated live smoke
+(`tests/test_codex_live.py`) checks the server's own `mcpServerStatus/list`
+reports no connected server (disabled servers are still listed there,
+without server info or tools). Unlike `claude-cli`, Codex *asks*
+before privileged actions and marim answers: approvals go through the same
+approval panel native tools use. The modes map as follows.
+
+| marim mode | Codex `approvalPolicy` | Codex sandbox |
+|---|---|---|
+| `auto` | `on-request` | workspace-write (the workspace root; the scratchpad is always writable) |
+| `ask` | `untrusted` (every command/edit is brokered to the approval panel; scratchpad-only edits auto-accept) | workspace-write |
+| `plan` | `never` | read-only |
+
+Requires `codex login` (marim never handles the OpenAI credentials) and
+`codex >= 0.152`. `/think` levels map to Codex reasoning effort
+(`minimal`/`low` → low, `medium`, `high`, `xhigh` when the model lists it);
+`/steer` forwards to the running turn; `/compact` also compacts the Codex
+thread. The thread id is saved with the session, so `--resume` continues the
+same Codex thread; if Codex no longer has it, a fresh thread starts from the
+saved history.
+
+Per-turn usage on a resumed thread is seeded from Codex's own
+`thread/tokenUsage/updated` notification (its cumulative `total` minus the
+newest response's `last` at the turn's first update), so the first turn
+after `--resume` reports only its own tokens rather than the whole thread's
+history. After each turn marim also polls `account/rateLimits/read` once and
+shows the subscription quota in the status bar as `quota 37% (5h) · 12% (1w)`
+(primary and secondary windows); a failed read is ignored and the field
+simply stays absent. The Settings › Providers card verifies the CLI live on
+show (a `model/list` against the app-server) and reports
+`✓ connected · N models` like a keyed provider.
 
 ## Context window & compaction
 
