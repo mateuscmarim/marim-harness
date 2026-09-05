@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -989,6 +990,7 @@ class Harness:
         if self.model_source is None:
             return
         model = self.model_source.build(model_id)
+        old = self.current_model
         self.current_model = model
         # A model switch invalidates discovered windows: the switch may land
         # on ANOTHER provider entirely (qualified `local:...` ids) whose
@@ -1004,18 +1006,33 @@ class Harness:
         self.session.update_model(model)
         if persist:
             self.session.set_model(model_id)
-        # Re-wire the late-bound hooks if the new model is a ClaudeCliModel, so
-        # switching TO this provider at runtime honors live /mode, the workspace
-        # cwd, and the TUI tool-card side-channel.
+        # Re-wire the late-bound hooks if the new model is an ExternalCliModel,
+        # so switching TO such a provider at runtime honors live /mode, the
+        # workspace cwd, and the TUI side-channels.
         self.wire_cli_model(model)
+        # The outgoing model may hold a live `claude` process / codex thread:
+        # release it now rather than when its idle reaper fires. Scheduled, not
+        # awaited — set_model is sync (called from the TUI's command path).
+        if old is not model:
+            self._close_model_later(old)
+
+    def _close_model_later(self, old: Model) -> None:
+        if not isinstance(old, ExternalCliModel):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (a sync caller before the app starts): nothing to close yet
+        task = loop.create_task(old.aclose())
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def wire_cli_model(self, model: Model) -> None:
         """Bind the late-bound seams an ``ExternalCliModel`` (claude-cli,
         codex-cli) needs — live approval mode, the real workspace (or worktree)
         cwd, the TUI tool-card and sub-agents side-channels, interactive gating
-        (request_approval/ask_user — brokered by both CLIs), the scratchpad,
-        the live thinking level and the persisted provider-side conversation
-        reference. A no-op for every other
+        (request_approval/ask_user — both CLIs broker their tool-permission
+        prompts through them), the scratchpad, the live thinking level and the
+        persisted provider-side conversation reference. A no-op for every other
         provider's model. Public because ``bootstrap`` (the CLI preset) binds it
         once after build, before any UI attaches — the internal set_model/bind_ui
         callers use it too, so a UI attached later re-binds the fresh callbacks."""
@@ -1225,18 +1242,14 @@ class Harness:
             lsp = getattr(self, "lsp", None)
             if lsp is not None:
                 await lsp.aclose()
-            # The process-wide codex app-server is shared by every codex-cli
-            # harness/spawn/ephemeral clone in the process — `marim serve`
-            # holds many `SessionHost`s over one app-server, and one being
-            # idle-evicted must not tear it down out from under the others'
-            # in-flight turns. So this drops only THIS harness's own thread
-            # (if codex-cli was ever this session's model) and lets the
-            # server close itself once nothing else is registered on it —
-            # see `CodexCliModel.aclose`/`close_shared_server_if_idle` (final
-            # review Important #4). A no-op when codex-cli was never used.
-            from ..config.codex_cli_model import CodexCliModel
-
-            if isinstance(self.current_model, CodexCliModel):
+            # An external-CLI model holds provider-side state — claude-cli a
+            # long-lived `claude` subprocess, codex-cli this harness's thread on
+            # the process-wide app-server (`marim serve` holds many SessionHosts
+            # over one app-server, so codex drops only ITS thread and lets the
+            # server close itself once nothing else is registered — see
+            # `CodexCliModel.aclose`/`close_shared_server_if_idle`). A no-op for
+            # every other provider.
+            if isinstance(self.current_model, ExternalCliModel):
                 await self.current_model.aclose()
         finally:
             # A discarded Harness must not leak the session it was driving.

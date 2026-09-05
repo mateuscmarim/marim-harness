@@ -56,9 +56,9 @@ class ExternalCliModel(Model):
         self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
         self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
         # Interactive gating (Deps.ui.request_approval / ask_user). Both
-        # providers broker their CLI-side approval / ask-user requests through
-        # them (claude-cli over can_use_tool control requests, codex-cli over
-        # its server's approval RPCs).
+        # external CLIs broker their tool-permission requests through them:
+        # codex-cli its server-side approval requests, claude-cli the
+        # `can_use_tool` control requests of its long-lived process.
         self.request_approval: Callable[[object], Awaitable[object]] | None = None
         self.ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None = None
         # The session scratchpad (auto-approved writes in ask mode).
@@ -89,6 +89,12 @@ class ExternalCliModel(Model):
     async def compact_remote(self) -> None:
         """Ask the CLI to compact its own context (after marim compacts its
         copy). No-op by default."""
+        return None
+
+    async def aclose(self) -> None:
+        """Release whatever the provider holds open (a subprocess, a server
+        thread). Called by the harness when the model is switched away from
+        and at teardown. The base does nothing."""
         return None
 
 
