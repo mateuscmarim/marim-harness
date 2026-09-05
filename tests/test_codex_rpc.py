@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from marim_harness.codex.rpc import JsonRpcClient, RpcError
+from marim_harness.codex.rpc import CLOSED_CODE, INTERNAL_ERROR_CODE, JsonRpcClient, RpcError
 
 
 class FakeWriter:
@@ -150,6 +150,106 @@ async def test_malformed_line_is_skipped():
     _feed(reader, {"method": "warning", "params": {"message": "x"}})
     reader.feed_eof()
     await loop  # no exception
+
+
+@pytest.mark.anyio
+async def test_request_after_closed_raises_immediately_without_sending():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    reader.feed_eof()
+    await loop
+    assert client.closed.is_set()
+    with pytest.raises(RpcError) as exc:
+        await client.request("thread/start", {"cwd": "/x"})
+    assert exc.value.code == CLOSED_CODE
+    assert writer.lines == []  # never even attempted to write
+
+
+@pytest.mark.anyio
+async def test_notify_sends_a_method_only_message_with_no_id():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    await client.notify("turn/steer", {"input": [{"type": "text", "text": "hi"}]})
+    await client.notify("turn/ack")  # no params -> the key must be omitted, not null
+    reader.feed_eof()
+    await loop
+    assert writer.lines == [
+        {"method": "turn/steer", "params": {"input": [{"type": "text", "text": "hi"}]}},
+        {"method": "turn/ack"},
+    ]
+    assert "id" not in writer.lines[0] and "params" not in writer.lines[1]
+
+
+@pytest.mark.anyio
+async def test_blank_lines_are_skipped():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    reader.feed_data(b"\n")  # whitespace-only line: skipped before JSON parsing
+    _feed(reader, {"method": "ping", "params": {}})
+    reader.feed_eof()
+    await loop  # no exception; the reader kept going past the blank line
+
+
+@pytest.mark.anyio
+async def test_non_dict_json_line_is_ignored():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    reader.feed_data(b"[1, 2, 3]\n")  # valid JSON, but not an object -> nothing to dispatch
+    _feed(reader, {"method": "ping", "params": {}})
+    reader.feed_eof()
+    await loop  # no exception; the reader kept going past the non-dict line
+
+
+@pytest.mark.anyio
+async def test_a_dict_with_neither_id_nor_method_is_ignored():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    _feed(reader, {"unexpected": "shape"})  # neither a response, request, nor notification
+    _feed(reader, {"method": "ping", "params": {}})
+    reader.feed_eof()
+    await loop  # _dispatch falls through all three arms without raising
+
+
+@pytest.mark.anyio
+async def test_response_for_an_unknown_id_is_silently_dropped():
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    _feed(reader, {"id": 999, "result": {"unexpected": True}})  # no such pending request
+    fut = asyncio.create_task(client.request("model/list"))
+    await asyncio.sleep(0)
+    _feed(reader, {"id": writer.lines[0]["id"], "result": {"ok": True}})
+    assert await fut == {"ok": True}  # the real request still completes normally
+    reader.feed_eof()
+    await loop
+
+
+@pytest.mark.anyio
+async def test_a_future_already_done_when_run_exits_is_left_untouched():
+    """`run()`'s EOF cleanup fails every future still pending — but a future
+    that already has a result (e.g. its owning `request()` hasn't yet run its
+    own `finally` to pop it) must not have that result clobbered."""
+    reader, writer, client = _client()
+    loop = asyncio.create_task(client.run())
+    done_fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+    done_fut.set_result({"already": "done"})
+    client._pending[123] = done_fut  # simulate the race directly
+    reader.feed_eof()
+    await loop
+    assert done_fut.result() == {"already": "done"}  # untouched, not overwritten with an error
+
+
+@pytest.mark.anyio
+async def test_server_request_handler_plain_exception_becomes_internal_error_reply():
+    async def on_server_request(method: str, params: dict) -> dict:
+        raise ValueError("boom")
+
+    reader, writer, client = _client(on_server_request=on_server_request)
+    loop = asyncio.create_task(client.run())
+    _feed(reader, {"id": 7, "method": "mystery", "params": {}})
+    await asyncio.sleep(0.01)
+    reader.feed_eof()
+    await loop
+    assert writer.lines == [{"id": 7, "error": {"code": INTERNAL_ERROR_CODE, "message": "boom"}}]
 
 
 @pytest.mark.anyio

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import pytest
+
 from marim_harness.config import claude_cli_model as ccm
 from marim_harness.config.claude_cli_model import ClaudeCliModel
 from marim_harness.config.external_cli import CliModelError, ExternalCliModel, TextFolder
 from marim_harness.session.ctrl import aux_model_for
 from tests.conftest import _make_deps, _make_harness, _text_model
+
+pytestmark = pytest.mark.anyio
 
 
 class _Fake(ExternalCliModel):
@@ -29,6 +33,35 @@ class _Fake(ExternalCliModel):
 
     async def request(self, messages, model_settings, model_request_parameters):  # pragma: no cover
         raise NotImplementedError
+
+
+class _Bare(ExternalCliModel):
+    """An ExternalCliModel subclass that does NOT override `ephemeral_clone` —
+    for exercising the base class's own defaults (the loud raise, the
+    steer/compact_remote no-ops) rather than a subclass's override of them."""
+
+    provider_id = "bare-cli"
+
+    @property
+    def model_name(self) -> str:
+        return "bare"
+
+    async def request(self, messages, model_settings, model_request_parameters):  # pragma: no cover
+        raise NotImplementedError
+
+
+class _FakePartsManager:
+    """A minimal stand-in for pydantic-ai's ModelResponsePartsManager: records
+    every `handle_text_delta` call so tests can assert TextFolder's exact
+    vendor-part-id bookkeeping, and forwards each call through as its own
+    ``event`` (TextFolder only ever forwards whatever the manager yields)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def handle_text_delta(self, *, vendor_part_id: str, content: str):
+        self.calls.append((vendor_part_id, content))
+        return [(vendor_part_id, content)]
 
 
 def test_claude_cli_model_is_an_external_cli_model():
@@ -82,3 +115,137 @@ def test_wire_cli_model_ignores_other_models(tmp_path):
     plain = _Plain()
     harness.wire_cli_model(plain)  # no attribute errors, nothing set
     assert not hasattr(plain, "mode_getter")
+
+
+def test_base_ephemeral_clone_raises_when_a_subclass_forgets_to_override():
+    with pytest.raises(NotImplementedError, match="_Bare must implement ephemeral_clone"):
+        _Bare().ephemeral_clone(cwd="/ws")
+
+
+async def test_base_compact_remote_is_a_noop():
+    assert await _Bare().compact_remote() is None
+
+
+def _folder(pm, *, cards: bool, fold_text=None, is_call=None, activity_events=None) -> TextFolder:
+    return TextFolder(
+        pm,
+        (lambda events: None) if cards else None,
+        activity_events=activity_events or (lambda chunk: []),
+        fold_text=fold_text or (lambda chunk, first: ""),
+        is_call=is_call or (lambda chunk: False),
+    )
+
+
+async def test_text_folder_emit_text_cards_mode_bootstraps_then_deltas():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=True)
+    events = [e async for e in folder.emit_text("hello")]
+    # a brand-new vendor part id gets an empty-content bootstrap call BEFORE
+    # the real delta, so a delta-only consumer never misses the first chunk.
+    assert pm.calls == [("text-0", ""), ("text-0", "hello")]
+    assert events == [("text-0", ""), ("text-0", "hello")]
+
+
+async def test_text_folder_emit_text_cards_mode_skips_bootstrap_on_the_same_part():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=True)
+    _ = [e async for e in folder.emit_text("a")]
+    _ = [e async for e in folder.emit_text("b")]
+    # same part_n ("text-0") both times -> only the FIRST call bootstraps.
+    assert pm.calls == [("text-0", ""), ("text-0", "a"), ("text-0", "b")]
+
+
+async def test_text_folder_emit_text_fold_mode_joins_with_blank_lines():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False)
+    _ = [e async for e in folder.emit_text("first")]
+    assert folder.folded_any is True
+    _ = [e async for e in folder.emit_text("second")]
+    # both chunks land on the SAME part id ("text-0"), and the second is
+    # blank-line-separated from what's already folded in.
+    assert pm.calls == [
+        ("text-0", ""),
+        ("text-0", "first"),
+        ("text-0", "\n\nsecond"),
+    ]
+
+
+async def test_text_folder_emit_tool_cards_mode_pushes_activity_and_bumps_part_n_for_calls():
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [f"event-for-{chunk}"],
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: True,
+    )
+    async for _ in folder.emit_tool("call-1"):
+        pass  # pragma: no cover - cards mode yields nothing
+    assert pushed == [["event-for-call-1"]]
+    assert folder.part_n == 1  # a tool CALL opens a fresh part for following prose
+
+
+async def test_text_folder_emit_tool_cards_mode_skips_callback_when_no_events():
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [],  # nothing worth rendering for this chunk
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: True,
+    )
+    async for _ in folder.emit_tool("call-1"):
+        pass  # pragma: no cover
+    assert pushed == []  # on_activity never invoked with an empty event list
+    assert folder.part_n == 1  # but a CALL still bumps part_n regardless
+
+
+async def test_text_folder_emit_tool_cards_mode_result_does_not_bump_part_n():
+    """A tool RESULT (not a call) still pushes its activity events, but must
+    NOT open a fresh text part — only a call does, so prose continues to
+    interleave right after the result on the SAME part."""
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [f"event-for-{chunk}"],
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: False,
+    )
+    async for _ in folder.emit_tool("result-1"):
+        pass  # pragma: no cover
+    assert pushed == [["event-for-result-1"]]
+    assert folder.part_n == 0
+
+
+async def test_text_folder_emit_tool_fold_mode_folds_a_nonempty_segment():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "▸ ran ls")
+    events = [e async for e in folder.emit_tool("cmd")]
+    assert pm.calls == [("text-0", ""), ("text-0", "▸ ran ls")]
+    assert events == [("text-0", ""), ("text-0", "▸ ran ls")]
+    assert folder.folded_any is True
+
+
+async def test_text_folder_emit_tool_fold_mode_skips_an_empty_segment():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "")
+    events = [e async for e in folder.emit_tool("noise")]
+    assert events == []
+    assert pm.calls == []
+    assert folder.folded_any is False
