@@ -91,12 +91,18 @@ def _fold(item: object, state: TurnState) -> object | None:
 
 
 async def turn_events(
-    server: CodexServer, handle: ThreadHandle, state: TurnState
+    server: CodexServer, handle: ThreadHandle, state: TurnState, *, turn_id: str
 ) -> AsyncIterator[object]:
     """Yield translated items (TextDelta/ThinkingDelta/ActivityStart/ActivityEnd/
-    Notice) for the current turn until it completes. Usage and completion are
-    folded into ``state`` rather than yielded."""
-    turn_id = handle.current_turn_id
+    Notice) for turn ``turn_id`` until it completes. Usage and completion are
+    folded into ``state`` rather than yielded.
+
+    ``turn_id`` is the value ``start_turn`` returned, passed explicitly rather
+    than read back from ``handle.current_turn_id``: a fast turn can complete
+    before ``start_turn`` even resumes, in which case the handle already has
+    NO current turn — reading it here would make ``_is_stale_completion``
+    drop the very completion this loop is waiting for and hang until the
+    idle timeout (seen on the loaded 3.10 CI leg)."""
     try:
         while state.done is None:
             method, params = await asyncio.wait_for(handle.events.get(), server.timeout)

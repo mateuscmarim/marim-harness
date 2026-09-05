@@ -144,7 +144,9 @@ async def test_thread_and_turn_events_route_to_handle(tmp_path):
                 sandbox_policy=WS,
             ),
         )
-        assert turn_id == "turn-1" and handle.current_turn_id == "turn-1"
+        # The completion may already have been dispatched by the time
+        # `start_turn` resumed, in which case the handle has no current turn.
+        assert turn_id == "turn-1" and handle.current_turn_id in ("turn-1", None)
         events = await _drain_until(handle, "turn/completed")
         methods = [m for m, _ in events]
         assert "item/agentMessage/delta" in methods and "warning" in methods

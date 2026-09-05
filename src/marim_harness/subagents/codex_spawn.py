@@ -440,7 +440,7 @@ class CodexSpawnOrchestrator:
         tx = _Transcript()
         last_ckpt_len = 0
         try:
-            await server.start_turn(
+            turn_id = await server.start_turn(
                 handle,
                 options=TurnOptions(
                     inputs=[text_input(request.task)],
@@ -451,7 +451,7 @@ class CodexSpawnOrchestrator:
                     output_schema=request.output_schema,
                 ),
             )
-            async for item in turn_events(server, handle, state):
+            async for item in turn_events(server, handle, state, turn_id=turn_id):
                 events = tx.feed(item)
                 # Checkpoint whenever the transcript grows (mirrors
                 # cli_backend._process_line's growth-gated checkpoint) so a

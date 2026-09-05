@@ -355,14 +355,14 @@ class CodexCliModel(ExternalCliModel):
 
     async def _begin_turn(
         self, messages: list, model_settings: ModelSettings | None
-    ) -> tuple[CodexServer, ThreadHandle]:
+    ) -> tuple[CodexServer, ThreadHandle, str]:
         server = await self._ensure_server()
         await self._load_efforts(server)
         handle, fresh = await self._thread_for(messages, server)
         text = flatten_history(messages) if fresh else latest_user_text(messages)
         mode = self._mode()
         supported = (self._efforts or {}).get(self._model_id or "", None)
-        await server.start_turn(
+        turn_id = await server.start_turn(
             handle,
             options=TurnOptions(
                 inputs=[text_input(text)],
@@ -372,7 +372,7 @@ class CodexCliModel(ExternalCliModel):
                 sandbox_policy=sandbox_for(mode, self.cwd),
             ),
         )
-        return server, handle
+        return server, handle, turn_id
 
     # --- Model API ----------------------------------------------------------------
     async def request(
@@ -381,10 +381,10 @@ class CodexCliModel(ExternalCliModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
-        server, handle = await self._begin_turn(messages, model_settings)
+        server, handle, turn_id = await self._begin_turn(messages, model_settings)
         state = TurnState()
         parts: list[str] = []
-        async for item in turn_events(server, handle, state):
+        async for item in turn_events(server, handle, state, turn_id=turn_id):
             if isinstance(item, TextDelta):
                 parts.append(item.delta)
             elif isinstance(item, (ActivityStart, ActivityEnd)):
@@ -411,11 +411,11 @@ class CodexCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
-        server, handle = await self._begin_turn(messages, model_settings)
+        server, handle, turn_id = await self._begin_turn(messages, model_settings)
         state = TurnState()
         stream = CodexStreamedResponse(
             model_request_parameters=model_request_parameters,
-            _items=turn_events(server, handle, state),
+            _items=turn_events(server, handle, state, turn_id=turn_id),
             _after=lambda: self._refresh_quota(server),
             _finish=lambda: finish_turn(handle, state),
             _model_id=self.model_name,
