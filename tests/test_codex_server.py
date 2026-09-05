@@ -79,6 +79,23 @@ def test_handle_remembers_the_completed_turn():
     assert handle.last_completed_turn_id == "turn-9"
 
 
+def test_stale_completion_keeps_the_running_turn_current():
+    """An interrupted turn's completion arriving after the next turn started
+    must not clear the NEW turn's id — steer/interrupt would go blind."""
+    handle = ThreadHandle(thread_id="t", events=asyncio.Queue(), request_handler=_decline)
+    handle.current_turn_id = "turn-2"
+    handle.note_turn_completed({"threadId": "t", "turn": {"id": "turn-1", "status": "interrupted"}})
+    assert handle.current_turn_id == "turn-2"
+    assert handle.last_completed_turn_id == "turn-1"
+    handle.note_turn_completed({"threadId": "t", "turn": {"id": "turn-2", "status": "completed"}})
+    assert handle.current_turn_id is None
+    assert handle.last_completed_turn_id == "turn-2"
+    # No id at all: nothing to match against, so it clears as it always did.
+    handle.current_turn_id = "turn-3"
+    handle.note_turn_completed({"threadId": "t"})
+    assert handle.current_turn_id is None
+
+
 async def test_start_rejects_old_version(tmp_path):
     binary = fake_codex_bin(tmp_path, {"userAgent": "codex_cli_rs/0.100.0"})
     server = CodexServer(binary=binary)

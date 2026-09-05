@@ -98,13 +98,23 @@ class ThreadHandle:
     last_completed_turn_id: str | None = None
 
     def note_turn_completed(self, params: dict) -> None:
-        """Bookkeeping for ``turn/completed``: the turn is no longer current,
-        and its id is remembered so ``start_turn`` can tell that the turn it
-        just got the response for has ALREADY finished (see there)."""
-        self.current_turn_id = None
+        """Bookkeeping for ``turn/completed``.
+
+        The completed id is remembered so ``start_turn`` can tell that the
+        turn it just got the response for has ALREADY finished (see there).
+        The current id is cleared only when it is the one that completed: an
+        interrupted turn's completion can still be in flight when the NEXT
+        turn starts on the same thread (``turn.py`` filters it on the consumer
+        side for the same reason), and clearing unconditionally would blind
+        ``interrupt``/``steer`` to the turn that is actually running. A
+        notification without a turn id cannot be matched and clears as before.
+        """
         turn = params.get("turn")
-        if isinstance(turn, dict) and turn.get("id"):
-            self.last_completed_turn_id = str(turn["id"])
+        completed = str(turn["id"]) if isinstance(turn, dict) and turn.get("id") else None
+        if completed is not None:
+            self.last_completed_turn_id = completed
+        if completed is None or completed == self.current_turn_id:
+            self.current_turn_id = None
 
 
 @dataclass(frozen=True)
