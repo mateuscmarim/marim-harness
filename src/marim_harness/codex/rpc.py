@@ -16,7 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from ..subagents.cli_backend import iter_ndjson_lines
+from ..ndjson import iter_ndjson_lines
 
 logger = logging.getLogger(__name__)
 

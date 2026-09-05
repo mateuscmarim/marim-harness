@@ -560,7 +560,7 @@ async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncGenerator[dict]:
     can attach it to the terminal ``DoneChunk`` and the "no result" ``CliModelError``
     can explain the failure (crash, bad flag, not logged in) instead of staying
     silent."""
-    from ..subagents.cli_backend import _iter_ndjson_lines
+    from ..ndjson import iter_ndjson_lines as _iter_ndjson_lines
 
     proc = await asyncio.create_subprocess_exec(  # pragma: no cover
         *argv,

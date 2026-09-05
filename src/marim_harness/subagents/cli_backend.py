@@ -42,6 +42,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
+from ..ndjson import iter_ndjson_lines
+
 if TYPE_CHECKING:
     from .cli_demux import CliSubagentDemux, RoutedEvent
 
@@ -465,41 +467,11 @@ def _flatten_tool_result(content) -> str:
 # proceed with whatever stderr was collected.
 _POST_LOOP_GRACE = 2.0
 
-_READ_CHUNK = 65536
-
-
-async def _iter_ndjson_lines(stream, chunk_size: int = _READ_CHUNK):
-    """Yield decoded newline-delimited lines from ``stream`` with no per-line
-    length cap.
-
-    ``async for line in stream`` (and ``StreamReader.readline``) caps a line at
-    asyncio's 64 KiB buffer limit and raises ``ValueError: Separator is found,
-    but chunk is longer than limit`` on anything longer. The Claude CLI emits one
-    JSON object per line, and a line carrying a ``tool_result`` with file
-    contents (a single Read of a large source file) routinely exceeds 64 KiB — so
-    that cap crashed otherwise-fine spawns. Reading raw chunks and splitting on
-    ``\\n`` ourselves removes the cap (bounded only by available memory). Decoding
-    one complete line at a time is safe: a ``\\n`` byte never falls inside a UTF-8
-    multibyte sequence, so no character is split across the boundary."""
-    buffer = b""
-    while True:
-        chunk = await stream.read(chunk_size)
-        if not chunk:
-            break
-        buffer += chunk
-        while True:
-            nl = buffer.find(b"\n")
-            if nl < 0:
-                break
-            line, buffer = buffer[:nl], buffer[nl + 1 :]
-            yield line.decode("utf-8", "replace")
-    if buffer:  # a final line with no trailing newline
-        yield buffer.decode("utf-8", "replace")
-
-
-# Public name for the codex transport (codex/rpc.py) — same chunked reader,
-# same "no line-length cap, trailing unterminated line still yielded" contract.
-iter_ndjson_lines = _iter_ndjson_lines
+# The chunked NDJSON reader lives in the package-level leaf ``ndjson`` module
+# (shared with the codex transport, which must be importable without pulling
+# this package in); the private alias is kept because
+# ``config/claude_cli_model.py`` imports it lazily under this name.
+_iter_ndjson_lines = iter_ndjson_lines
 
 
 @dataclass
