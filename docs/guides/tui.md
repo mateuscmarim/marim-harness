@@ -122,7 +122,10 @@ and `bash` (and `run_workflow` when workflows are enabled). Cycle modes with
   The agent researches and presents a plan instead of editing.
 
 Under the `claude-cli` main-loop provider none of this applies — Claude Code
-runs its own tools and its own permission prompts.
+runs its own tools and its own permission prompts. Under
+`codex-cli`, Codex runs its own tools but its approval requests are brokered
+into this same panel (with the Codex command or file diff), so `ask` mode
+still gates every privileged action and `plan` mode is read-only.
 
 ### The approval panel
 

@@ -341,3 +341,14 @@ else, since headless can't answer prompts) becomes Claude's read-only
 without a UI attached, Claude Code's internal tool activity is folded into
 the assistant text as `▸` activity lines, so `stream-json` carries it in
 `text` events rather than `tool_call`/`tool_result` events.
+
+## The codex-cli provider
+
+`MARIM_PROVIDER=codex-cli` works headless the same way: each turn is one Codex
+turn on a per-session thread, and the answer is the agent's final message.
+Codex's tool activity is folded into the output as `▸ tool …` lines (there is
+no card UI to send it to). Approvals: in `auto` mode Codex acts within its
+workspace-write sandbox without prompting; in `ask` mode there is nobody to
+ask, so every brokered request is **declined** (use `auto` or `plan` for
+unattended runs); `plan` mode is read-only. Structured output (`--output-schema`)
+is enforced by Codex natively.

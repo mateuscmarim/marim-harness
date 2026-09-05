@@ -61,7 +61,7 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, or `claude-cli`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, or `codex-cli`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
 | `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
@@ -85,7 +85,8 @@ id like `local:qwen2.5-coder` addresses any active provider.
 `MARIM_MODEL` defaults per provider: `anthropic/claude-sonnet-4-6`
 (openrouter), `qwen2.5-coder` (local), `gemini-2.5-flash` (google),
 `mimo-v2.5-free` (zen), `glm-5.2` (zen-go), and *unset* for `claude-cli`
-(the CLI uses its own configured default). The value is passed to the
+(the CLI uses its own configured default) and for `codex-cli` (the Codex
+CLI's configured default model). The value is passed to the
 provider verbatim — marim does not validate or rewrite it.
 
 The `zen` provider talks to [OpenCode Zen](https://opencode.ai/auth)'s
@@ -117,6 +118,27 @@ claude-cli model comes from `MARIM_MODEL`. `MARIM_CLAUDE_CLI_BIN` may be a
 name resolved on PATH or a path; a non-positive or unparseable
 `MARIM_CLAUDE_CLI_TIMEOUT` (float, seconds) falls back to 600 rather than
 disabling the guard.
+
+Under the `codex-cli` provider marim delegates each turn to `codex app-server`
+(the Codex CLI's JSON-RPC front end), one long-lived process per marim
+session. Codex runs its own tools inside its own sandbox, so marim's tools,
+LSP and MCP servers do not apply — but unlike `claude-cli`, Codex *asks*
+before privileged actions and marim answers: approvals go through the same
+approval panel native tools use. The modes map as follows.
+
+| marim mode | Codex `approvalPolicy` | Codex sandbox |
+|---|---|---|
+| `auto` | `on-request` | workspace-write (the workspace root; the scratchpad is always writable) |
+| `ask` | `untrusted` (every command/edit is brokered to the approval panel; scratchpad-only edits auto-accept) | workspace-write |
+| `plan` | `never` | read-only |
+
+Requires `codex login` (marim never handles the OpenAI credentials) and
+`codex >= 0.152`. `/think` levels map to Codex reasoning effort
+(`minimal`/`low` → low, `medium`, `high`, `xhigh` when the model lists it);
+`/steer` forwards to the running turn; `/compact` also compacts the Codex
+thread. The thread id is saved with the session, so `--resume` continues the
+same Codex thread; if Codex no longer has it, a fresh thread starts from the
+saved history.
 
 ## Context window & compaction
 
