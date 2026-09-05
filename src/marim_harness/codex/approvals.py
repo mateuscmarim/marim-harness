@@ -173,9 +173,11 @@ class ApprovalBroker:
         self._ask_user = ask_user
         self._label = label
         self._lock = asyncio.Lock()
-        # The last reply built, including the "cancel" reply set on the way
-        # out of a CancelledError (the rpc dispatcher reads it — see
-        # ``handle`` — so Codex gets an answer before the cancel propagates).
+        # The last reply this broker produced, including the "cancel" placeholder
+        # set on the way out of a CancelledError. Recorded for callers/tests that
+        # want to observe the outcome of a cancelled prompt — nothing in this
+        # module sends it anywhere on its own; a future dispatcher wanting to
+        # answer Codex on cancel would read it here.
         self.last_reply: dict | None = None
 
     async def handle(self, method: str, params: dict) -> dict:
@@ -257,7 +259,9 @@ def _is_approved(result: object) -> bool:
         return True
     if not result:
         return False
-    return type(result).__name__ == "ToolApproved"
+    from pydantic_ai import ToolApproved  # lazy — see module note in runtime/permissions.py.
+
+    return isinstance(result, ToolApproved)
 
 
 def _question(raw: dict) -> Question:

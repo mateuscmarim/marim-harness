@@ -101,7 +101,23 @@ def args_for(item: dict) -> dict:
         }
     if kind == "plan":
         return {"text": item.get("text", "")}
+    if kind == "fileChange":
+        return _file_change_args(item)
     return {}
+
+
+def _file_change_args(item: dict) -> dict:
+    """A single args dict for a fileChange approval prompt or activity card:
+    the changed path(s) plus kind and diff, so an approval panel never renders
+    a fileChange blind. One change flattens to {"path", "kind", "diff"}; more
+    than one is {"paths": [...], "changes": [...]} so the panel can still show
+    every path even though a single ToolCallPart carries one args dict."""
+    changes = [args for _cid, args in _changes(item)]
+    if not changes:
+        return {}
+    if len(changes) == 1:
+        return changes[0]
+    return {"paths": [c["path"] for c in changes], "changes": changes}
 
 
 def _changes(item: dict) -> list[tuple[str, dict]]:

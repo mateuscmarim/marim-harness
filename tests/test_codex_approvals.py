@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from pydantic_ai import ToolDenied
+from pydantic_ai import ToolApproved, ToolDenied
 
 from marim_harness.codex.approvals import (
     ApprovalBroker,
@@ -73,6 +73,23 @@ def test_decide_ask_auto_accepts_scratchpad_writes_only(tmp_path):
     assert decide(Mode.ask, "item/commandExecution/requestApproval", _cmd(), tmp_path, pad).ask
 
 
+def test_decide_auto_rejects_dotdot_traversal_and_symlink_escape(tmp_path):
+    # A ".."-relative path that naively looks like a workspace child but
+    # resolves outside the root once normalized.
+    traversal = _change(str(tmp_path / ".." / f"{tmp_path.name}-sibling" / "secret.txt"))
+    d = decide(Mode.auto, "item/fileChange/requestApproval", traversal, tmp_path, None)
+    assert d.ask is True and not d.accept
+
+    # A symlink physically inside the root pointing at a directory outside it.
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    link = tmp_path / "escape"
+    link.symlink_to(outside)
+    via_symlink = _change(str(link / "secret.txt"))
+    d2 = decide(Mode.auto, "item/fileChange/requestApproval", via_symlink, tmp_path, None)
+    assert d2.ask is True and not d2.accept
+
+
 def _broker(mode: Mode, tmp_path: Path, *, request_approval=None, ask_user=None, label=""):
     return ApprovalBroker(
         mode_getter=lambda: mode,
@@ -109,6 +126,35 @@ async def test_handle_ask_routes_to_request_approval_as_tool_call_part(tmp_path)
     call = seen[0]
     assert call.tool_name == "bash" and call.tool_call_id == "c1"
     assert call.args == {"command": "rm -rf build", "cwd": "/w", "label": "worker"}
+
+
+async def test_handle_ask_file_change_prompt_carries_path_in_args(tmp_path):
+    # Escalated outside the scratchpad -> prompts. The ApprovalPanel must not
+    # render this blind: args_for's fileChange branch (translate.py) has to
+    # surface the path being changed.
+    seen = []
+
+    async def approver(call):
+        seen.append(call)
+        return True
+
+    outside = _change("/etc/hosts")
+    broker = _broker(Mode.ask, tmp_path, request_approval=approver)
+    reply = await broker.handle("item/fileChange/requestApproval", outside)
+    assert reply == {"decision": "accept"}
+    call = seen[0]
+    assert call.tool_name == "apply_patch"
+    assert call.args["path"] == "/etc/hosts"
+    assert call.args
+
+
+async def test_handle_ask_accepts_when_request_approval_returns_tool_approved(tmp_path):
+    async def approver(call):
+        return ToolApproved()
+
+    broker = _broker(Mode.ask, tmp_path, request_approval=approver)
+    reply = await broker.handle("item/commandExecution/requestApproval", _cmd())
+    assert reply == {"decision": "accept"}
 
 
 async def test_handle_ask_denied_and_tool_denied_both_decline(tmp_path):
@@ -150,8 +196,8 @@ async def test_handle_cancelled_prompt_answers_cancel(tmp_path):
     broker = _broker(Mode.ask, tmp_path, request_approval=approver)
     with pytest.raises(asyncio.CancelledError):
         await broker.handle("item/commandExecution/requestApproval", _cmd())
-    # The reply is still recorded so the caller (rpc dispatch) can answer Codex
-    # before propagating the cancel.
+    # last_reply still reflects the outcome so a caller/test can observe it
+    # even though the CancelledError propagates past this call.
     assert broker.last_reply == {"decision": "cancel"}
 
 

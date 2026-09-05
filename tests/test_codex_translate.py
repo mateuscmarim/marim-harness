@@ -126,6 +126,32 @@ def test_file_change_fans_out_per_change():
     assert ends == [ActivityEnd("f1:0", "-x\n+y", False), ActivityEnd("f1:1", "+new", False)]
 
 
+def test_args_for_file_change_flattens_a_single_change():
+    item = {
+        "type": "fileChange",
+        "id": "f9",
+        "changes": [{"path": "/w/a.py", "kind": {"type": "update"}, "diff": "+x"}],
+    }
+    assert args_for(item) == {"path": "/w/a.py", "kind": "update", "diff": "+x"}
+
+
+def test_args_for_file_change_lists_paths_for_multiple_changes():
+    item = {
+        "type": "fileChange",
+        "id": "f9",
+        "changes": [
+            {"path": "/w/a.py", "kind": {"type": "update"}, "diff": "+x"},
+            {"path": "/w/b.py", "kind": {"type": "add"}, "diff": "+y"},
+        ],
+    }
+    result = args_for(item)
+    assert result["paths"] == ["/w/a.py", "/w/b.py"]
+    assert result["changes"] == [
+        {"path": "/w/a.py", "kind": "update", "diff": "+x"},
+        {"path": "/w/b.py", "kind": "add", "diff": "+y"},
+    ]
+
+
 def test_mcp_web_search_collab_plan_and_compaction():
     t = _t()
     mcp = {
