@@ -119,7 +119,7 @@ class JsonRpcClient:
         elif "id" in obj:
             self._spawn(self._answer(obj["id"], str(method), obj.get("params") or {}))
         elif method is not None:
-            self._spawn(self._on_notification(str(method), obj.get("params") or {}))
+            self._spawn(self._handle_notification(str(method), obj.get("params") or {}))
 
     def _complete(self, obj: dict) -> None:
         fut = self._pending.get(obj["id"]) if isinstance(obj["id"], int) else None
@@ -148,3 +148,10 @@ class JsonRpcClient:
             logger.exception("codex rpc: server request %s failed", method)
             reply = {"id": rid, "error": {"code": INTERNAL_ERROR_CODE, "message": str(exc)}}
         await self._send(reply)
+
+    async def _handle_notification(self, method: str, params: dict) -> None:
+        """Wrap notification handler to prevent exceptions from killing the read loop."""
+        try:
+            await self._on_notification(method, params)
+        except Exception:  # noqa: BLE001 - a handler bug must not kill the read loop
+            logger.exception("codex rpc: notification %s failed", method)

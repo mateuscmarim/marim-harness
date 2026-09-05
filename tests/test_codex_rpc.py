@@ -150,3 +150,27 @@ async def test_malformed_line_is_skipped():
     _feed(reader, {"method": "warning", "params": {"message": "x"}})
     reader.feed_eof()
     await loop  # no exception
+
+
+@pytest.mark.anyio
+async def test_notification_handler_exception_does_not_stop_read_loop(caplog):
+    """Notification handler exceptions must be logged but not kill the read loop."""
+
+    async def on_notification(method: str, params: dict) -> None:
+        if method == "turn/error":
+            raise ValueError("handler crashed")
+
+    reader, writer, client = _client(on_notification=on_notification)
+    loop = asyncio.create_task(client.run())
+    # Send a notification that raises
+    _feed(reader, {"method": "turn/error", "params": {}})
+    await asyncio.sleep(0.01)  # let handler task run
+    # Send a request/response to verify the read loop is still alive
+    fut = asyncio.create_task(client.request("thread/status"))
+    await asyncio.sleep(0)
+    _feed(reader, {"id": writer.lines[0]["id"], "result": {"ok": True}})
+    assert await fut == {"ok": True}
+    reader.feed_eof()
+    await loop
+    # Verify the exception was logged
+    assert "handler crashed" in caplog.text
