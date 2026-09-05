@@ -54,7 +54,11 @@ async def list_codex_models(
     srv = server if server is not None else shared_server()
     try:
         await srv.start()
-        return entries_from(await srv.list_models()) or list(STATIC_MODELS)
+        entries = entries_from(await srv.list_models())
+        # An empty *live* response is meaningful under strict=True (the caller
+        # needs to tell "connected, 0 models" apart from "failed to connect"),
+        # so only the non-strict path falls back to the static catalog here.
+        return entries if (entries or strict) else list(STATIC_MODELS)
     except Exception as exc:
         if strict:
             raise

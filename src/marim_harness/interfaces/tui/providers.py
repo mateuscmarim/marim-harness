@@ -96,9 +96,6 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec("codex-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
-# Providers whose "configured" state is the presence of an external binary
-# (plus its own login), not a stored key.
-_BINARY_PROVIDERS = frozenset({"claude-cli", "codex-cli"})
 
 _DEFAULT_LOCAL_URL = "http://localhost:11434/v1"
 

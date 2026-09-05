@@ -50,3 +50,26 @@ async def test_list_codex_models_falls_back_when_server_unavailable(tmp_path, mo
     assert entries == list(STATIC_MODELS)
     with pytest.raises(Exception):  # noqa: B017 - CodexUnavailable/OSError, binary-resolution dependent
         await list_codex_models(server=server, strict=True)
+
+
+async def test_list_codex_models_empty_live_response_falls_back_when_not_strict(tmp_path):
+    # A live server that connects fine but reports zero models: non-strict
+    # callers (the picker) still want a non-empty catalog to show.
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {"models": []}))
+    try:
+        entries = await list_codex_models(server=server)
+    finally:
+        await server.aclose()
+    assert entries == list(STATIC_MODELS)
+
+
+async def test_list_codex_models_empty_live_response_is_not_masked_when_strict(tmp_path):
+    # strict=True is how provider verification tells "connected, 0 models"
+    # apart from "failed to connect" -- an empty live response must come back
+    # as [], not silently substitute the static fallback.
+    server = CodexServer(binary=fake_codex_bin(tmp_path, {"models": []}))
+    try:
+        entries = await list_codex_models(server=server, strict=True)
+    finally:
+        await server.aclose()
+    assert entries == []

@@ -137,8 +137,9 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local" | "google" | "claude-cli" | "zen" | "zen-go"
-    model: str | None  # None ⇒ claude-cli uses its own configured default
+    # "openrouter" | "local" | "google" | "claude-cli" | "codex-cli" | "zen" | "zen-go"
+    provider: str
+    model: str | None  # None ⇒ claude-cli/codex-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
     # The GLOBAL context budget in tokens — an economic ceiling, not the
