@@ -437,6 +437,30 @@ async def test_timeout_property_reflects_configured_value(tmp_path):
     assert server.timeout == 42.0
 
 
+async def test_notification_for_unknown_thread_id_is_dropped_not_broadcast():
+    """A thread-scoped notification naming a threadId this process no longer
+    has registered (e.g. a spawn's trailing item/turn deltas arriving after its
+    thread was deregistered on cancellation) must be dropped, never fanned out
+    to every OTHER live thread — Important #2 of the final review."""
+    server = CodexServer()
+    h1 = server._register({"id": "t1"}, _decline)
+    h2 = server._register({"id": "t2"}, _decline)
+    await server._on_notification("item/agentMessage/delta", {"threadId": "unknown"})
+    assert h1.events.empty()
+    assert h2.events.empty()
+
+
+async def test_notification_without_thread_id_still_reaches_all_threads():
+    """A notification carrying no threadId at all (a genuinely global event)
+    is the one case broadcast is still correct for."""
+    server = CodexServer()
+    h1 = server._register({"id": "t1"}, _decline)
+    h2 = server._register({"id": "t2"}, _decline)
+    await server._on_notification("session/configured", {})
+    assert h1.events.get_nowait() == ("session/configured", {})
+    assert h2.events.get_nowait() == ("session/configured", {})
+
+
 async def test_thread_ids_tracks_registered_threads(tmp_path):
     server = CodexServer(binary=fake_codex_bin(tmp_path, {}))
     await server.start()

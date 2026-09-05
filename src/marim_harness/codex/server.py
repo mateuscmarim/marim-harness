@@ -263,20 +263,41 @@ class CodexServer:
         self._threads.clear()
 
     # --- routing ------------------------------------------------------------
-    def _handle_for(self, method: str, params: dict) -> ThreadHandle | None:
+    def _thread_id_for(self, method: str, params: dict) -> str | None:
         if method in _THREAD_OBJ_METHODS:
             tid = (params.get("thread") or {}).get("id")
         else:
             tid = params.get("threadId")
-        return self._threads.get(str(tid)) if tid else None
+        return str(tid) if tid else None
+
+    def _handle_for(self, method: str, params: dict) -> ThreadHandle | None:
+        tid = self._thread_id_for(method, params)
+        return self._threads.get(tid) if tid is not None else None
 
     async def _on_notification(self, method: str, params: dict) -> None:
-        handle = self._handle_for(method, params)
-        targets = [handle] if handle is not None else list(self._threads.values())
-        if method == "turn/completed" and handle is not None:
+        tid = self._thread_id_for(method, params)
+        if tid is None:
+            # No threadId at all: a genuinely global notification (nothing in
+            # the wire protocol names one today, but nothing rules it out
+            # either) — fan out to every live thread.
+            for h in list(self._threads.values()):
+                h.events.put_nowait((method, params))
+            return
+        handle = self._threads.get(tid)
+        if handle is None:
+            # A thread-scoped notification for a thread we no longer have
+            # registered — most commonly a spawn's trailing item/turn deltas
+            # still in flight when its `finally: server.drop_thread(handle)`
+            # ran (cancellation, or a fast completion racing the last few
+            # events). This is expected, not an error: broadcasting it instead
+            # would fold a deregistered spawn's prose/tool-cards, or even a
+            # `turn/failed`, into every OTHER thread sharing this process —
+            # see Important #2 of the final review.
+            logger.debug("codex notification %r for unknown thread %s dropped", method, tid)
+            return
+        if method == "turn/completed":
             handle.current_turn_id = None
-        for h in targets:
-            h.events.put_nowait((method, params))
+        handle.events.put_nowait((method, params))
 
     async def _on_server_request(self, method: str, params: dict) -> dict:
         handle = self._handle_for(method, params)
