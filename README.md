@@ -120,9 +120,9 @@ MARIM_API_KEY=local
 Then just run `marim` — the model picker discovers models from the server's
 `/v1/models` endpoint. With an `OPENROUTER_API_KEY` set instead, marim
 defaults to OpenRouter; a Claude Pro/Max subscription works via
-`MARIM_PROVIDER=claude-cli` (delegates turns to the `claude` CLI), and a ChatGPT/Codex subscription via `MARIM_PROVIDER=codex-cli`
-(delegates turns to `codex app-server`, with approvals brokered through
-marim's own panel).
+`MARIM_PROVIDER=claude-cli` (delegates turns to the `claude` CLI), and a
+ChatGPT/Codex subscription via `MARIM_PROVIDER=codex-cli` (delegates turns to
+`codex app-server`, with approvals brokered through marim's own panel).
 
 ## Usage
 

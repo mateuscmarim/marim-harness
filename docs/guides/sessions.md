@@ -58,8 +58,8 @@ Inside the TUI:
 
 An unnamed session is titled automatically: after a turn completes, a small
 tool-free "titler" agent (running on the session's model — or, under the
-`claude-cli`/`codex-cli` providers, on an ephemeral clone that never touches your live
-Claude session) reads the transcript and produces a short title of at most six
+`claude-cli`/`codex-cli` providers, on an ephemeral read-only clone that never touches
+the live session's thread) reads the transcript and produces a short title of at most six
 words. It runs in the background so it never delays your turn; headless runs
 wait for it before exiting. An explicit `/name` always wins — once you set a
 name yourself, auto-titling stops for that session.
