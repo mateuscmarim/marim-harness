@@ -310,7 +310,6 @@ class CodexCliModel(ExternalCliModel):
         text = flatten_history(messages) if fresh else latest_user_text(messages)
         mode = self._mode()
         supported = (self._efforts or {}).get(self._model_id or "", None)
-        handle.usage_baseline = dict(handle.usage_baseline)
         await server.start_turn(
             handle,
             options=TurnOptions(

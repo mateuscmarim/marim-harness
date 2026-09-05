@@ -120,9 +120,16 @@ name resolved on PATH or a path; a non-positive or unparseable
 disabling the guard.
 
 Under the `codex-cli` provider marim delegates each turn to `codex app-server`
-(the Codex CLI's JSON-RPC front end), one long-lived process per marim
-session. Codex runs its own tools inside its own sandbox, so marim's tools,
-LSP and MCP servers do not apply — but unlike `claude-cli`, Codex *asks*
+(the Codex CLI's JSON-RPC front end): one app-server per marim *process* — a
+module-level singleton shared by the main-loop model and every `codex-cli`
+spawn, not one process per session (a `marim serve` daemon holding many
+sessions shares a single app-server). Codex runs its own tools inside its
+own sandbox, so marim's tools and LSP do not apply. Each thread starts with
+an empty `mcp_servers` config, so marim's own MCP servers and Codex's
+user-level MCP servers are not expected to load; this isolation is exercised
+by the env-gated live smoke (`tests/test_codex_live.py`), not by the unit
+suite, and the additional `CODEX_HOME` redirection some setups would need
+for full isolation is not yet implemented. Unlike `claude-cli`, Codex *asks*
 before privileged actions and marim answers: approvals go through the same
 approval panel native tools use. The modes map as follows.
 

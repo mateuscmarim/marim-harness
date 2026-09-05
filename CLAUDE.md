@@ -49,12 +49,15 @@ rendered as first-class cards in the sub-agents screen, for both the main-loop
 provider and `backend: claude-cli` spawns. Interrupted `claude-cli` spawns
 resume via the CLI's own `--resume` (the session id is checkpointed in the
 spawn's sidecar meta). `codex-cli` delegates each turn to
-`codex app-server` (JSON-RPC over stdio, one process per marim session,
-`codex/` package): Codex runs its own tools in its own sandbox, but its
-approval and user-input requests are brokered back through marim's
-approval panel / ask-user flow (`codex/approvals.py`), so `auto`/`ask`/`plan`
-keep their meaning. The thread id persists on the session
-(`SessionStore.cli_thread_id`) and resumes via `thread/resume`.
+`codex app-server` (JSON-RPC over stdio, `codex/` package) — one app-server
+per marim *process*, a module-level singleton shared by the main-loop model
+and every `backend: codex-cli` spawn (not one process per session; a
+`marim serve` daemon holding many sessions shares a single app-server).
+Codex runs its own tools in its own sandbox, but its approval and
+user-input requests are brokered back through marim's approval panel /
+ask-user flow (`codex/approvals.py`), so `auto`/`ask`/`plan` keep their
+meaning. The thread id persists on the session (`SessionStore.cli_thread_id`)
+and resumes via `thread/resume`.
 
 ## Architecture
 
