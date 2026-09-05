@@ -28,15 +28,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from ..ask_user import Choice, Question
-from ..runtime.permissions import Mode
+from ..runtime.permissions import Decision, ExternalRequest, Mode, UiSeams, decide_external
 from .rpc import RpcError
 from .translate import args_for, tool_name_for
+
+__all__ = [
+    "ApprovalBroker",
+    "Decision",
+    "UiSeams",
+    "decide",
+    "policy_for",
+    "sandbox_for",
+    "sandbox_mode_for",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -51,23 +59,6 @@ _APPROVAL_METHODS = frozenset(
 )
 USER_INPUT_METHOD = "item/tool/requestUserInput"
 ELICITATION_METHOD = "mcpServer/elicitation/request"
-
-
-@dataclass(frozen=True)
-class Decision:
-    accept: bool
-    reason: str = ""
-    ask: bool = False  # True: the caller must prompt (accept is the headless default)
-
-
-@dataclass(frozen=True)
-class UiSeams:
-    """The two UI callbacks a broker needs to reach the human — grouped into
-    one domain concept ("how to prompt") so ``ApprovalBroker.__init__`` reads
-    as mode/paths, then UI, rather than an unstructured parameter bag."""
-
-    request_approval: Callable[[Any], Awaitable[Any]] | None
-    ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None
 
 
 def policy_for(mode: Mode) -> str:
@@ -104,16 +95,6 @@ def _change_paths(params: dict) -> list[Path]:
     return [Path(str(c.get("path", ""))) for c in params.get("changes") or [] if c.get("path")]
 
 
-def _within(path: Path, root: Path | None) -> bool:
-    if root is None:
-        return False
-    try:
-        path.resolve().relative_to(root.resolve())
-    except (ValueError, OSError):
-        return False
-    return True
-
-
 def decide(
     mode: Mode,
     method: str,
@@ -121,28 +102,14 @@ def decide(
     workspace_root: Path | None,
     scratchpad: Path | None,
 ) -> Decision:
-    """The policy answer for one approval request, before any prompting.
-
-    plan  -> decline (never prompts; Codex should not even ask under ``never``,
-             but a stale policy on a resumed thread could).
-    auto  -> accept, except a fileChange touching a path outside the workspace
-             root AND outside the scratchpad, which is escalated to a prompt
-             (the sandbox already forbids it; the prompt is defense in depth).
-    ask   -> a fileChange entirely inside the scratchpad is accepted (mirrors
-             ``_scratchpad_approval`` for native tools); everything else prompts.
-    """
-    if mode is Mode.plan:
-        return Decision(accept=False, reason="plan mode: read-only")
+    """Codex's approval requests, shaped for the shared table: every
+    ``requestApproval`` is a mutation (Codex never asks for reads), and a
+    fileChange names its paths so auto/ask can apply the workspace and
+    scratchpad rules. See ``runtime.permissions.decide_external`` for the
+    per-mode table."""
     paths = _change_paths(params) if method == "item/fileChange/requestApproval" else []
-    if mode is Mode.auto:
-        stray = [p for p in paths if not _within(p, workspace_root) and not _within(p, scratchpad)]
-        if stray:
-            return Decision(accept=False, reason=f"outside workspace: {stray[0]}", ask=True)
-        return Decision(accept=True)
-    # ask mode
-    if paths and scratchpad is not None and all(_within(p, scratchpad) for p in paths):
-        return Decision(accept=True, reason="scratchpad write")
-    return Decision(accept=False, ask=True)
+    req = ExternalRequest(mutating=True, paths=tuple(paths))
+    return decide_external(mode, req, workspace_root, scratchpad)
 
 
 _METHOD_ITEM_TYPES = {
