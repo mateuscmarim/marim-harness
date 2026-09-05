@@ -11,6 +11,7 @@ from pydantic_ai import ToolApproved, ToolDenied
 from marim_harness.codex.approvals import (
     ApprovalBroker,
     Decision,
+    UiSeams,
     decide,
     policy_for,
     sandbox_for,
@@ -95,8 +96,7 @@ def _broker(mode: Mode, tmp_path: Path, *, request_approval=None, ask_user=None,
         mode_getter=lambda: mode,
         workspace_root=tmp_path,
         scratchpad_getter=lambda: None,
-        request_approval=request_approval,
-        ask_user=ask_user,
+        ui=UiSeams(request_approval=request_approval, ask_user=ask_user),
         label=label,
     )
 

@@ -32,6 +32,25 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class CliDetection:
+    """Whether each CLI-backed provider's binary (and, for codex, its login)
+    was found — folded from two loose bools into one value object so
+    ``ProvidersPane.__init__`` stays under ruff's PLR0913 argument ceiling.
+    ``for_`` answers "is this provider's CLI detected" for any provider name,
+    defaulting to False for the non-CLI providers ``_configured`` never asks."""
+
+    claude_cli: bool = False
+    codex_cli: bool = False
+
+    def for_(self, provider: str) -> bool:
+        if provider == "claude-cli":
+            return self.claude_cli
+        if provider == "codex-cli":
+            return self.codex_cli
+        return False
+
+
+@dataclass(frozen=True)
 class ProviderSpec:
     """Which env keys one provider reads/writes, driving its settings card."""
 
@@ -161,16 +180,14 @@ class ProvidersPane(Vertical):
         model_source: object | None,
         status: Callable[[str], None],
         set_badge: Callable[[str], None],
-        cli_detected: bool,
-        codex_detected: bool = False,
+        cli_detection: CliDetection,
         id: str | None = None,
     ) -> None:
         super().__init__(id=id)
         self._model_source = model_source
         self._status = status
         self._set_badge = set_badge
-        self._cli_detected = cli_detected
-        self._codex_detected = codex_detected
+        self._cli_detection = cli_detection
         # Gate commits until mounted: widget events fired while the initial
         # tree mounts (e.g. the RadioSet preselect) must not persist anything.
         self._ready = False
@@ -272,10 +289,8 @@ class ProvidersPane(Vertical):
     # -- painting ----------------------------------------------------------
 
     def _configured(self, spec: ProviderSpec) -> bool:
-        if spec.name == "claude-cli":
-            return self._cli_detected
-        if spec.name == "codex-cli":
-            return self._codex_detected
+        if spec.name in ("claude-cli", "codex-cli"):
+            return self._cli_detection.for_(spec.name)
         return spec_configured(spec)
 
     def _paint_card(self, spec: ProviderSpec) -> None:

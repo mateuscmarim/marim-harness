@@ -45,9 +45,9 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
-from ..codex.approvals import ApprovalBroker, policy_for, sandbox_for, sandbox_mode_for
+from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.env import CODEX_MODEL_ENV, INSTALL_HINT, CodexUnavailable, codex_available
-from ..codex.server import CodexServer, shared_server
+from ..codex.server import CodexServer, ThreadOptions, TurnOptions, shared_server
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..config.codex_cli_model import activity_events, effort_for
@@ -174,6 +174,36 @@ class _Transcript:
         return "".join(self._texts[last_id])
 
 
+@dataclass
+class SpawnCollaborators:
+    """The runner-owned collaborators a spawn orchestrator needs, grouped so
+    ``CodexSpawnOrchestrator.__init__`` takes one value object instead of four
+    loose keyword arguments (a ``PLR0913`` the ratchet gate flags). Mirrors
+    what ``CliSpawnOrchestrator`` takes positionally — that one stays at
+    exactly five arguments (its own ceiling), so it is left alone."""
+
+    hooks: TurnHooks
+    transcripts: SpawnTranscripts
+    lifecycle: SpawnLifecycle
+    resolve_agent: Callable[[str], AgentDef | None]
+
+
+@dataclass
+class CodexSpawnRequest:
+    """What one ``run_codex`` call needs, bundled so the method takes one
+    request object instead of eight loose values — the spawn-request analog
+    of ``ThreadOptions``/``TurnOptions`` (``codex/server.py``)."""
+
+    defn: AgentDef
+    task: str
+    work_root: Path | None
+    model: str | None
+    stream_id: str
+    output_schema: dict | None = None
+    thinking: str | None = None
+    resume_thread_id: str | None = None
+
+
 def _efforts_for(models: list[dict], model_id: str | None) -> list[str] | None:
     for m in models:
         if str(m.get("id") or m.get("model")) == model_id:
@@ -191,18 +221,15 @@ class CodexSpawnOrchestrator:
         self,
         *,
         deps: Deps,
-        hooks: TurnHooks,
-        transcripts: SpawnTranscripts,
-        lifecycle: SpawnLifecycle,
-        resolve_agent: Callable[[str], AgentDef | None],
+        collaborators: SpawnCollaborators,
         thinking_default: Callable[[], str | None] | None = None,
         server: CodexServer | None = None,
     ) -> None:
         self.deps = deps
-        self.hooks = hooks
-        self._transcripts = transcripts
-        self._lifecycle = lifecycle
-        self._resolve_agent = resolve_agent
+        self.hooks = collaborators.hooks
+        self._transcripts = collaborators.transcripts
+        self._lifecycle = collaborators.lifecycle
+        self._resolve_agent = collaborators.resolve_agent
         self._thinking_default = thinking_default
         self._server = server
 
@@ -251,14 +278,16 @@ class CodexSpawnOrchestrator:
 
         async def _run() -> SpawnRun:
             result = await self.run_codex(
-                defn,
-                task,
-                work_root,
-                model,
-                stream_id,
-                output_schema=output_schema,
-                thinking=thinking,
-                resume_thread_id=resume_thread_id,
+                CodexSpawnRequest(
+                    defn=defn,
+                    task=task,
+                    work_root=work_root,
+                    model=model,
+                    stream_id=stream_id,
+                    output_schema=output_schema,
+                    thinking=thinking,
+                    resume_thread_id=resume_thread_id,
+                )
             )
             full_transcript = list(transcript_prefix or []) + result.transcript
             final_meta = {
@@ -320,8 +349,7 @@ class CodexSpawnOrchestrator:
             mode_getter=lambda: mode,
             workspace_root=Path(cwd),
             scratchpad_getter=get_scratchpad or (lambda: None),
-            request_approval=cbs.request_approval,
-            ask_user=cbs.ask_user,
+            ui=UiSeams(request_approval=cbs.request_approval, ask_user=cbs.ask_user),
             label=label,
         )
 
@@ -335,39 +363,33 @@ class CodexSpawnOrchestrator:
             raise CliModelError(f"codex app-server failed to start: {exc}") from exc
         return server
 
-    async def run_codex(
-        self,
-        defn: AgentDef,
-        task: str,
-        work_root: Path | None,
-        model: str | None,
-        stream_id: str,
-        *,
-        output_schema: dict | None = None,
-        thinking: str | None = None,
-        resume_thread_id: str | None = None,
-    ) -> CodexRun:
+    async def run_codex(self, request: CodexSpawnRequest) -> CodexRun:
+        defn = request.defn
+        stream_id = request.stream_id
         server = await self._server_or_raise()
         mode, read_only = self._policy(defn)
-        cwd = str(work_root or self.deps.workspace.root)
-        model_name = model or defn.model or os.environ.get(CODEX_MODEL_ENV) or None
+        cwd = str(request.work_root or self.deps.workspace.root)
+        model_name = request.model or defn.model or os.environ.get(CODEX_MODEL_ENV) or None
         inherited = self._thinking_default() if self._thinking_default is not None else None
-        level = resolve_thinking(thinking, defn.thinking, inherited)
+        level = resolve_thinking(request.thinking, defn.thinking, inherited)
         broker = self._broker(mode, cwd, defn.name)
-        common: dict[str, Any] = {
-            "cwd": cwd,
-            "developer_instructions": defn.prompt,
-            "model": model_name,
-            "sandbox": sandbox_mode_for(mode, read_only=read_only),
-            "approval_policy": policy_for(mode),
-            "request_handler": broker.handle,
-        }
-        if resume_thread_id is not None:
-            handle = await server.resume_thread(resume_thread_id, **common)
+        options = ThreadOptions(
+            cwd=cwd,
+            developer_instructions=defn.prompt,
+            model=model_name,
+            sandbox=sandbox_mode_for(mode, read_only=read_only),
+            approval_policy=policy_for(mode),
+        )
+        if request.resume_thread_id is not None:
+            handle = await server.resume_thread(
+                request.resume_thread_id, options=options, request_handler=broker.handle
+            )
             if handle is None:
-                raise CliModelError(f"codex thread {resume_thread_id} is gone; cannot resume")
+                raise CliModelError(
+                    f"codex thread {request.resume_thread_id} is gone; cannot resume"
+                )
         else:
-            handle = await server.start_thread(ephemeral=False, **common)
+            handle = await server.start_thread(options=options, request_handler=broker.handle)
         cbs = self.deps.ui
         if stream_id and cbs.on_subagent_model is not None:
             await cbs.on_subagent_model(stream_id, f"{BACKEND}:{model_name or 'default'}")
@@ -380,12 +402,14 @@ class CodexSpawnOrchestrator:
         try:
             await server.start_turn(
                 handle,
-                inputs=[text_input(task)],
-                model=model_name,
-                effort=effort_for(level, _efforts_for(models, model_name)),
-                approval_policy=policy_for(mode),
-                sandbox_policy=sandbox_for(mode, cwd, read_only=read_only),
-                output_schema=output_schema,
+                options=TurnOptions(
+                    inputs=[text_input(request.task)],
+                    model=model_name,
+                    effort=effort_for(level, _efforts_for(models, model_name)),
+                    approval_policy=policy_for(mode),
+                    sandbox_policy=sandbox_for(mode, cwd, read_only=read_only),
+                    output_schema=request.output_schema,
+                ),
             )
             async for item in turn_events(server, handle, state):
                 for event in tx.feed(item):

@@ -11,6 +11,7 @@ from pydantic_ai.models.function import FunctionModel
 from marim_harness.codex.server import close_shared_server
 from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionStore, TranscriptStore
+from marim_harness.subagents.codex_spawn import CodexSpawnRequest
 from tests.conftest import _make_deps, _make_harness
 from tests.fakes import fake_codex_bin, read_request_log
 
@@ -214,7 +215,14 @@ async def test_run_codex_resumes_a_persisted_thread(tmp_path: Path, monkeypatch)
     defn = runner._resolve_agent("codex-worker")
     assert defn is not None
     run = await runner._codex.run_codex(
-        defn, "continue", None, None, "s1", resume_thread_id="thread-7"
+        CodexSpawnRequest(
+            defn=defn,
+            task="continue",
+            work_root=None,
+            model=None,
+            stream_id="s1",
+            resume_thread_id="thread-7",
+        )
     )
     assert run.thread_id == "thread-7" and "Done: report body" in run.output
     log = read_request_log(tmp_path)

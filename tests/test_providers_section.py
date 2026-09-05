@@ -9,6 +9,7 @@ from textual.widgets import Button, Input, Static
 
 from marim_harness.interfaces.tui.providers import (
     PROVIDER_SPECS,
+    CliDetection,
     ProvidersPane,
     current_default_provider,
     key_hint,
@@ -119,8 +120,9 @@ class _PaneHost(App):
             model_source=self._model_source,
             status=self.statuses.append,
             set_badge=self.badges.append,
-            cli_detected=self._cli_detected,
-            codex_detected=self._codex_detected,
+            cli_detection=CliDetection(
+                claude_cli=self._cli_detected, codex_cli=self._codex_detected
+            ),
         )
 
 
@@ -595,7 +597,9 @@ async def test_verification_deferred_until_pane_shown(isolated_env, monkeypatch,
                 model_source=self._model_source,
                 status=self.statuses.append,
                 set_badge=self.badges.append,
-                cli_detected=self._cli_detected,
+                cli_detection=CliDetection(
+                    claude_cli=self._cli_detected, codex_cli=self._codex_detected
+                ),
             )
             pane.display = False
             yield pane

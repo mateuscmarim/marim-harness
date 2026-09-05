@@ -60,6 +60,16 @@ class Decision:
     ask: bool = False  # True: the caller must prompt (accept is the headless default)
 
 
+@dataclass(frozen=True)
+class UiSeams:
+    """The two UI callbacks a broker needs to reach the human — grouped into
+    one domain concept ("how to prompt") so ``ApprovalBroker.__init__`` reads
+    as mode/paths, then UI, rather than an unstructured parameter bag."""
+
+    request_approval: Callable[[Any], Awaitable[Any]] | None
+    ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None
+
+
 def policy_for(mode: Mode) -> str:
     """``approvalPolicy`` for a marim mode."""
     if mode is Mode.auto:
@@ -162,15 +172,14 @@ class ApprovalBroker:
         mode_getter: Callable[[], Mode],
         workspace_root: Path | None,
         scratchpad_getter: Callable[[], Path | None],
-        request_approval: Callable[[Any], Awaitable[Any]] | None,
-        ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None,
+        ui: UiSeams,
         label: str = "",
     ) -> None:
         self._mode_getter = mode_getter
         self._root = workspace_root
         self._scratchpad_getter = scratchpad_getter
-        self._request_approval = request_approval
-        self._ask_user = ask_user
+        self._request_approval = ui.request_approval
+        self._ask_user = ui.ask_user
         self._label = label
         self._lock = asyncio.Lock()
         # The last reply this broker produced, including the "cancel" placeholder

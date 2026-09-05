@@ -34,7 +34,7 @@ from ...config import ModelConfig, MultiModelSource
 from ...runtime.permissions import Mode
 from ...subagents.cli_backend import resolve_cli_binary
 from .model_picker import ModelPickerModal
-from .providers import ProvidersPane, current_default_provider
+from .providers import CliDetection, ProvidersPane, current_default_provider
 from .settings_env import (
     ENV_CHECKBOXES,
     ENV_INT_INPUTS,
@@ -222,8 +222,10 @@ class SettingsScreen(Screen[None]):
                     model_source=self.harness.model_source,
                     status=self._status,
                     set_badge=self._set_providers_badge,
-                    cli_detected=resolve_cli_binary() is not None,
-                    codex_detected=codex_available(),
+                    cli_detection=CliDetection(
+                        claude_cli=resolve_cli_binary() is not None,
+                        codex_cli=codex_available(),
+                    ),
                     id="section-providers",
                 )
                 with Vertical(id="section-theme"):

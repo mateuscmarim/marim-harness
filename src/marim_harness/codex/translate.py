@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -84,26 +85,42 @@ def tool_name_for(item: dict) -> str | None:
     return _TOOL_NAMES.get(str(kind))
 
 
-def args_for(item: dict) -> dict:
-    kind = item.get("type")
-    if kind == "commandExecution":
-        return {"command": _command_text(item.get("command")), "cwd": item.get("cwd")}
-    if kind == "mcpToolCall":
-        args = item.get("arguments")
-        return dict(args) if isinstance(args, dict) else {"arguments": args}
-    if kind == "webSearch":
-        return {"query": item.get("query", "")}
-    if kind in ("collabAgentToolCall", "subAgentActivity"):
-        return {
-            k: item.get(k)
-            for k in ("prompt", "model", "receiverThreadIds", "agentPath", "kind")
-            if item.get(k) is not None
+def _command_execution_args(item: dict) -> dict:
+    return {"command": _command_text(item.get("command")), "cwd": item.get("cwd")}
+
+
+def _mcp_tool_call_args(item: dict) -> dict:
+    args = item.get("arguments")
+    return dict(args) if isinstance(args, dict) else {"arguments": args}
+
+
+def _web_search_args(item: dict) -> dict:
+    return {"query": item.get("query", "")}
+
+
+def _agent_activity_args(item: dict) -> dict:
+    return {
+        k: item.get(k)
+        for k in ("prompt", "model", "receiverThreadIds", "agentPath", "kind")
+        if item.get(k) is not None
+    }
+
+
+def _plan_args(item: dict) -> dict:
+    return {"text": item.get("text", "")}
+
+
+def _changes(item: dict) -> list[tuple[str, dict]]:
+    out = []
+    for n, change in enumerate(item.get("changes") or []):
+        kind = change.get("kind") or {}
+        args = {
+            "path": change.get("path"),
+            "kind": kind.get("type"),
+            "diff": change.get("diff", ""),
         }
-    if kind == "plan":
-        return {"text": item.get("text", "")}
-    if kind == "fileChange":
-        return _file_change_args(item)
-    return {}
+        out.append((f"{item.get('id')}:{n}", args))
+    return out
 
 
 def _file_change_args(item: dict) -> dict:
@@ -120,17 +137,23 @@ def _file_change_args(item: dict) -> dict:
     return {"paths": [c["path"] for c in changes], "changes": changes}
 
 
-def _changes(item: dict) -> list[tuple[str, dict]]:
-    out = []
-    for n, change in enumerate(item.get("changes") or []):
-        kind = change.get("kind") or {}
-        args = {
-            "path": change.get("path"),
-            "kind": kind.get("type"),
-            "diff": change.get("diff", ""),
-        }
-        out.append((f"{item.get('id')}:{n}", args))
-    return out
+# Dispatch table for `args_for`, keyed by ThreadItem `type` — a dict beats an
+# if/elif chain past ruff's PLR0911 (too many returns) ceiling, and reads as
+# "one handler per item kind" rather than a wall of comparisons.
+_ARGS_BY_KIND: dict[str, Callable[[dict], dict]] = {
+    "commandExecution": _command_execution_args,
+    "mcpToolCall": _mcp_tool_call_args,
+    "webSearch": _web_search_args,
+    "collabAgentToolCall": _agent_activity_args,
+    "subAgentActivity": _agent_activity_args,
+    "plan": _plan_args,
+    "fileChange": _file_change_args,
+}
+
+
+def args_for(item: dict) -> dict:
+    handler = _ARGS_BY_KIND.get(str(item.get("type")))
+    return handler(item) if handler is not None else {}
 
 
 def _result_text(item: dict) -> tuple[str, bool]:
@@ -190,27 +213,36 @@ class ItemTranslator:
         return [ActivityStart(item_id, name, args_for(item))]
 
     def _completed(self, params: dict) -> list[object]:
+        # Dispatch by item `type` via `_COMPLETED_BY_KIND` (defined below the
+        # class, mirroring `_METHODS`) rather than an if/elif chain past
+        # ruff's PLR0911 (too many returns) ceiling.
         item = params.get("item") or {}
         kind = item.get("type")
         item_id = str(item.get("id"))
-        if kind == "agentMessage":
-            return (
-                [] if item_id in self._streamed else [TextDelta(item_id, str(item.get("text", "")))]
-            )
-        if kind == "reasoning":
-            if item_id in self._streamed:
-                return []
-            text = "\n".join(item.get("summary") or item.get("content") or [])
-            return [ThinkingDelta(item_id, text)] if text else []
-        if kind == "commandExecution":
-            return [self._command_end(item, item_id)]
-        if kind == "fileChange":
-            failed = item.get("status") != "completed"
-            return [ActivityEnd(cid, str(args["diff"]), failed) for cid, args in _changes(item)]
-        if kind in ("mcpToolCall", "webSearch", "collabAgentToolCall", "subAgentActivity"):
-            text, is_error = _result_text(item)
-            return [ActivityEnd(item_id, text, is_error)]
-        return []
+        handler = _COMPLETED_BY_KIND.get(str(kind))
+        return handler(self, item, item_id) if handler is not None else []
+
+    def _completed_agent_message(self, item: dict, item_id: str) -> list[object]:
+        if item_id in self._streamed:
+            return []
+        return [TextDelta(item_id, str(item.get("text", "")))]
+
+    def _completed_reasoning(self, item: dict, item_id: str) -> list[object]:
+        if item_id in self._streamed:
+            return []
+        text = "\n".join(item.get("summary") or item.get("content") or [])
+        return [ThinkingDelta(item_id, text)] if text else []
+
+    def _completed_command_execution(self, item: dict, item_id: str) -> list[object]:
+        return [self._command_end(item, item_id)]
+
+    def _completed_file_change(self, item: dict, item_id: str) -> list[object]:
+        failed = item.get("status") != "completed"
+        return [ActivityEnd(cid, str(args["diff"]), failed) for cid, args in _changes(item)]
+
+    def _completed_result(self, item: dict, item_id: str) -> list[object]:
+        text, is_error = _result_text(item)
+        return [ActivityEnd(item_id, text, is_error)]
 
     def _command_end(self, item: dict, item_id: str) -> ActivityEnd:
         buffered = "".join(self._output.pop(item_id, []))
@@ -241,6 +273,22 @@ class ItemTranslator:
 
     def _warning(self, params: dict) -> list[object]:
         return [Notice(str(params.get("message", "")))]
+
+
+# Dispatch table for `_completed`, keyed by ThreadItem `type` — same rationale
+# as `_ARGS_BY_KIND`: a dict beats an if/elif/return chain past ruff's
+# PLR0911 ceiling. Handlers are unbound methods, called as `handler(self, ...)`
+# like `_METHODS` below.
+_COMPLETED_BY_KIND: dict[str, Callable[[ItemTranslator, dict, str], list[object]]] = {
+    "agentMessage": ItemTranslator._completed_agent_message,
+    "reasoning": ItemTranslator._completed_reasoning,
+    "commandExecution": ItemTranslator._completed_command_execution,
+    "fileChange": ItemTranslator._completed_file_change,
+    "mcpToolCall": ItemTranslator._completed_result,
+    "webSearch": ItemTranslator._completed_result,
+    "collabAgentToolCall": ItemTranslator._completed_result,
+    "subAgentActivity": ItemTranslator._completed_result,
+}
 
 
 _METHODS = {

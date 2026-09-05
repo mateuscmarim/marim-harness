@@ -5,7 +5,14 @@ import asyncio
 import pytest
 
 from marim_harness.codex.env import CodexUnavailable
-from marim_harness.codex.server import CLOSED, CodexServer, ThreadHandle, thread_config
+from marim_harness.codex.server import (
+    CLOSED,
+    CodexServer,
+    ThreadHandle,
+    ThreadOptions,
+    TurnOptions,
+    thread_config,
+)
 from tests.fakes import fake_codex_bin, read_request_log
 
 pytestmark = pytest.mark.anyio
@@ -77,22 +84,26 @@ async def test_thread_and_turn_events_route_to_handle(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions="be brief",
-            model="gpt-5.6-sol",
-            ephemeral=False,
-            sandbox="workspace-write",
-            approval_policy="on-request",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions="be brief",
+                model="gpt-5.6-sol",
+                sandbox="workspace-write",
+                approval_policy="on-request",
+                ephemeral=False,
+            ),
             request_handler=_decline,
         )
         assert handle.thread_id == "thread-1"
         turn_id = await server.start_turn(
             handle,
-            inputs=[{"type": "text", "text": "hello", "text_elements": []}],
-            model="gpt-5.6-sol",
-            effort="medium",
-            approval_policy="on-request",
-            sandbox_policy=WS,
+            options=TurnOptions(
+                inputs=[{"type": "text", "text": "hello", "text_elements": []}],
+                model="gpt-5.6-sol",
+                effort="medium",
+                approval_policy="on-request",
+                sandbox_policy=WS,
+            ),
         )
         assert turn_id == "turn-1" and handle.current_turn_id == "turn-1"
         events = await _drain_until(handle, "turn/completed")
@@ -117,22 +128,26 @@ async def test_effort_none_is_omitted_and_output_schema_forwarded(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         await server.start_turn(
             handle,
-            inputs=[],
-            model=None,
-            effort=None,
-            approval_policy="never",
-            sandbox_policy={"type": "readOnly", "networkAccess": False},
-            output_schema={"type": "object"},
+            options=TurnOptions(
+                inputs=[],
+                model=None,
+                effort=None,
+                approval_policy="never",
+                sandbox_policy={"type": "readOnly", "networkAccess": False},
+                output_schema={"type": "object"},
+            ),
         )
         await _drain_until(handle, "turn/completed")
         turn = next(m for m in read_request_log(tmp_path) if m.get("method") == "turn/start")
@@ -166,21 +181,25 @@ async def test_server_request_routes_to_thread_handler(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="workspace-write",
-            approval_policy="untrusted",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="workspace-write",
+                approval_policy="untrusted",
+                ephemeral=True,
+            ),
             request_handler=handler,
         )
         await server.start_turn(
             handle,
-            inputs=[],
-            model=None,
-            effort=None,
-            approval_policy="untrusted",
-            sandbox_policy=WS,
+            options=TurnOptions(
+                inputs=[],
+                model=None,
+                effort=None,
+                approval_policy="untrusted",
+                sandbox_policy=WS,
+            ),
         )
         await _drain_until(handle, "turn/completed")
         assert seen == ["item/commandExecution/requestApproval"]
@@ -194,16 +213,25 @@ async def test_interrupt_ends_hanging_turn(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         await server.start_turn(
-            handle, inputs=[], model=None, effort=None, approval_policy="never", sandbox_policy=WS
+            handle,
+            options=TurnOptions(
+                inputs=[],
+                model=None,
+                effort=None,
+                approval_policy="never",
+                sandbox_policy=WS,
+            ),
         )
         await asyncio.sleep(0.2)
         await server.interrupt(handle)
@@ -218,17 +246,26 @@ async def test_steer_requires_active_turn(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         assert await server.steer(handle, "nope") is False
         await server.start_turn(
-            handle, inputs=[], model=None, effort=None, approval_policy="never", sandbox_policy=WS
+            handle,
+            options=TurnOptions(
+                inputs=[],
+                model=None,
+                effort=None,
+                approval_policy="never",
+                sandbox_policy=WS,
+            ),
         )
         await asyncio.sleep(0.2)
         assert await server.steer(handle, "also do X") is True
@@ -247,21 +284,25 @@ async def test_resume_thread_unknown_returns_none(tmp_path):
     try:
         ok = await server.resume_thread(
             "thread-42",
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+            ),
             request_handler=_decline,
         )
         assert ok is not None and ok.thread_id == "thread-42"
         gone = await server.resume_thread(
             "thread-7",
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+            ),
             request_handler=_decline,
         )
         assert gone is None
@@ -274,16 +315,25 @@ async def test_crash_delivers_closed_with_stderr_and_respawns(tmp_path):
     await server.start()
     try:
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         await server.start_turn(
-            handle, inputs=[], model=None, effort=None, approval_policy="never", sandbox_policy=WS
+            handle,
+            options=TurnOptions(
+                inputs=[],
+                model=None,
+                effort=None,
+                approval_policy="never",
+                sandbox_policy=WS,
+            ),
         )
         events = await _drain_until(handle, CLOSED)
         assert "fake: dying" in events[-1][1]["stderr"]
@@ -292,12 +342,14 @@ async def test_crash_delivers_closed_with_stderr_and_respawns(tmp_path):
         assert server.alive
         assert handle.thread_id not in server.thread_ids  # respawn clears the old generation
         again = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         assert again.thread_id == "thread-1"  # a fresh fake process
@@ -356,12 +408,14 @@ async def test_list_models_and_compact(tmp_path):
         models = await server.list_models()
         assert [m["model"] for m in models] == ["gpt-5.6-sol", "gpt-5.4-mini"]
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=False,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=False,
+            ),
             request_handler=_decline,
         )
         await server.compact(handle)
@@ -389,12 +443,14 @@ async def test_thread_ids_tracks_registered_threads(tmp_path):
     try:
         assert server.thread_ids == frozenset()
         handle = await server.start_thread(
-            cwd="/w",
-            developer_instructions=None,
-            model=None,
-            ephemeral=True,
-            sandbox="read-only",
-            approval_policy="never",
+            options=ThreadOptions(
+                cwd="/w",
+                developer_instructions=None,
+                model=None,
+                sandbox="read-only",
+                approval_policy="never",
+                ephemeral=True,
+            ),
             request_handler=_decline,
         )
         assert server.thread_ids == frozenset({handle.thread_id})

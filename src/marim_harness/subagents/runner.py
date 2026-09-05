@@ -53,7 +53,7 @@ from ..workspace import (
 )
 from .backend import CONTINUATION_PROMPT, SpawnRun
 from .cli_spawn import CliSpawnOrchestrator
-from .codex_spawn import CodexSpawnOrchestrator
+from .codex_spawn import CodexSpawnOrchestrator, SpawnCollaborators
 from .isolation import SpawnWorktree
 from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
@@ -204,10 +204,12 @@ class SubagentRunner:
         # app-server; same lifecycle-injection shape as the claude-cli path.
         self._codex = CodexSpawnOrchestrator(
             deps=deps,
-            hooks=hooks,
-            transcripts=self._transcripts,
-            lifecycle=self._run_spawn_lifecycle,
-            resolve_agent=self._resolve_agent,
+            collaborators=SpawnCollaborators(
+                hooks=hooks,
+                transcripts=self._transcripts,
+                lifecycle=self._run_spawn_lifecycle,
+                resolve_agent=self._resolve_agent,
+            ),
             thinking_default=thinking_default,
         )
         # Hard depth ceiling. Spawns that would produce a sub-agent at

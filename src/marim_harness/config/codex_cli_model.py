@@ -32,15 +32,15 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.usage import RequestUsage
 
-from ..codex.approvals import ApprovalBroker, policy_for, sandbox_for, sandbox_mode_for
+from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.env import INSTALL_HINT, CodexUnavailable, codex_available
-from ..codex.server import CodexServer, ThreadHandle, shared_server
+from ..codex.server import CodexServer, ThreadHandle, ThreadOptions, TurnOptions, shared_server
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..runtime.permissions import Mode
@@ -192,8 +192,7 @@ class CodexCliModel(ExternalCliModel):
             mode_getter=self._mode,
             workspace_root=Path(self.cwd),
             scratchpad_getter=self._scratchpad,
-            request_approval=self.request_approval,
-            ask_user=self.ask_user,
+            ui=UiSeams(request_approval=self.request_approval, ask_user=self.ask_user),
         )
 
     # --- thread lifecycle -------------------------------------------------------
@@ -247,22 +246,25 @@ class CodexCliModel(ExternalCliModel):
             return self.thread, False
         mode = self._mode()
         self._broker = self._make_broker()
-        common: dict[str, Any] = {
-            "cwd": self.cwd,
-            "developer_instructions": extract_system(messages) or None,
-            "model": self._model_id,
-            "sandbox": sandbox_mode_for(mode),
-            "approval_policy": policy_for(mode),
-            "request_handler": self._broker.handle,
-        }
+        options = ThreadOptions(
+            cwd=self.cwd,
+            developer_instructions=extract_system(messages) or None,
+            model=self._model_id,
+            ephemeral=self.ephemeral,
+            sandbox=sandbox_mode_for(mode),
+            approval_policy=policy_for(mode),
+        )
+        request_handler = self._broker.handle
         persisted = self._persisted_thread_id()
         if persisted is not None:
-            handle = await server.resume_thread(persisted, **common)
+            handle = await server.resume_thread(
+                persisted, options=options, request_handler=request_handler
+            )
             if handle is not None:
                 self.thread = handle
                 return handle, False
             logger.info("codex thread %s gone; starting fresh with flattened history", persisted)
-        handle = await server.start_thread(ephemeral=self.ephemeral, **common)
+        handle = await server.start_thread(options=options, request_handler=request_handler)
         self.thread = handle
         if not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + handle.thread_id)
@@ -284,11 +286,13 @@ class CodexCliModel(ExternalCliModel):
         handle.usage_baseline = dict(handle.usage_baseline)
         await server.start_turn(
             handle,
-            inputs=[text_input(text)],
-            model=self._model_id,
-            effort=effort_for(self._thinking(model_settings), supported),
-            approval_policy=policy_for(mode),
-            sandbox_policy=sandbox_for(mode, self.cwd),
+            options=TurnOptions(
+                inputs=[text_input(text)],
+                model=self._model_id,
+                effort=effort_for(self._thinking(model_settings), supported),
+                approval_policy=policy_for(mode),
+                sandbox_policy=sandbox_for(mode, self.cwd),
+            ),
         )
         return server, handle
 

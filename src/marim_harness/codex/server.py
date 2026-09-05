@@ -57,6 +57,36 @@ class ThreadHandle:
     current_turn_id: str | None = None
 
 
+@dataclass(frozen=True)
+class ThreadOptions:
+    """The fields ``thread/start`` and ``thread/resume`` share, bundled so
+    each RPC method takes one value object instead of five-to-six loose
+    keyword arguments (a ``PLR0913`` the ratchet gate flags). ``resume_thread``
+    ignores ``ephemeral`` — Codex has no notion of resuming into an ephemeral
+    thread — but taking the same type keeps both call sites uniform rather
+    than growing a second, almost-identical options class."""
+
+    cwd: str
+    developer_instructions: str | None
+    model: str | None
+    sandbox: str
+    approval_policy: str
+    ephemeral: bool = False
+
+
+@dataclass(frozen=True)
+class TurnOptions:
+    """Everything ``turn/start`` needs beyond the thread it runs on, bundled
+    for the same reason as ``ThreadOptions``."""
+
+    inputs: list[dict]
+    model: str | None
+    effort: str | None
+    approval_policy: str
+    sandbox_policy: dict
+    output_schema: dict | None = None
+
+
 def _text_input(text: str) -> dict:
     return {"type": "text", "text": text, "text_elements": []}
 
@@ -268,24 +298,16 @@ class CodexServer:
         return handle
 
     async def start_thread(
-        self,
-        *,
-        cwd: str,
-        developer_instructions: str | None,
-        model: str | None,
-        ephemeral: bool,
-        sandbox: str,
-        approval_policy: str,
-        request_handler: ServerRequestHandler,
+        self, *, options: ThreadOptions, request_handler: ServerRequestHandler
     ) -> ThreadHandle:
         params = _drop_none(
             {
-                "cwd": cwd,
-                "developerInstructions": developer_instructions,
-                "model": model,
-                "ephemeral": ephemeral,
-                "sandbox": sandbox,
-                "approvalPolicy": approval_policy,
+                "cwd": options.cwd,
+                "developerInstructions": options.developer_instructions,
+                "model": options.model,
+                "ephemeral": options.ephemeral,
+                "sandbox": options.sandbox,
+                "approvalPolicy": options.approval_policy,
                 "config": thread_config(),
             }
         )
@@ -293,24 +315,16 @@ class CodexServer:
         return self._register(result["thread"], request_handler)
 
     async def resume_thread(
-        self,
-        thread_id: str,
-        *,
-        cwd: str,
-        developer_instructions: str | None,
-        model: str | None,
-        sandbox: str,
-        approval_policy: str,
-        request_handler: ServerRequestHandler,
+        self, thread_id: str, *, options: ThreadOptions, request_handler: ServerRequestHandler
     ) -> ThreadHandle | None:
         params = _drop_none(
             {
                 "threadId": thread_id,
-                "cwd": cwd,
-                "developerInstructions": developer_instructions,
-                "model": model,
-                "sandbox": sandbox,
-                "approvalPolicy": approval_policy,
+                "cwd": options.cwd,
+                "developerInstructions": options.developer_instructions,
+                "model": options.model,
+                "sandbox": options.sandbox,
+                "approvalPolicy": options.approval_policy,
                 "config": thread_config(),
             }
         )
@@ -325,26 +339,16 @@ class CodexServer:
         self._threads.pop(handle.thread_id, None)
 
     # --- turns --------------------------------------------------------------
-    async def start_turn(
-        self,
-        handle: ThreadHandle,
-        *,
-        inputs: list[dict],
-        model: str | None,
-        effort: str | None,
-        approval_policy: str,
-        sandbox_policy: dict,
-        output_schema: dict | None = None,
-    ) -> str:
+    async def start_turn(self, handle: ThreadHandle, *, options: TurnOptions) -> str:
         params = _drop_none(
             {
                 "threadId": handle.thread_id,
-                "input": inputs,
-                "model": model,
-                "effort": effort,
-                "approvalPolicy": approval_policy,
-                "sandboxPolicy": sandbox_policy,
-                "outputSchema": output_schema,
+                "input": options.inputs,
+                "model": options.model,
+                "effort": options.effort,
+                "approvalPolicy": options.approval_policy,
+                "sandboxPolicy": options.sandbox_policy,
+                "outputSchema": options.output_schema,
             }
         )
         result = await self._rpc().request("turn/start", params, timeout=self._timeout)
