@@ -47,7 +47,7 @@ from pydantic_ai.usage import RunUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.env import CODEX_MODEL_ENV, INSTALL_HINT, CodexUnavailable, codex_available
-from ..codex.server import CodexServer, ThreadOptions, TurnOptions, shared_server
+from ..codex.server import CodexServer, ThreadHandle, ThreadOptions, TurnOptions, shared_server
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..config.codex_cli_model import activity_events, effort_for
@@ -385,6 +385,32 @@ class CodexSpawnOrchestrator:
             raise CliModelError(f"codex app-server failed to start: {exc}") from exc
         return server
 
+    async def _acquire_thread(
+        self,
+        server: CodexServer,
+        request: CodexSpawnRequest,
+        options: ThreadOptions,
+        broker: ApprovalBroker,
+    ) -> ThreadHandle:
+        """Start a fresh thread or resume a persisted one, then checkpoint the
+        real thread id immediately — well before ``turn/start`` — so an
+        interruption anywhere from here on (including before the first turn
+        even starts) leaves a resumable sidecar (Important #3 of the final
+        review)."""
+        if request.resume_thread_id is not None:
+            handle = await server.resume_thread(
+                request.resume_thread_id, options=options, request_handler=broker.handle
+            )
+            if handle is None:
+                raise CliModelError(
+                    f"codex thread {request.resume_thread_id} is gone; cannot resume"
+                )
+        else:
+            handle = await server.start_thread(options=options, request_handler=broker.handle)
+        if request.checkpoint is not None:
+            request.checkpoint([], handle.thread_id)
+        return handle
+
     async def run_codex(self, request: CodexSpawnRequest) -> CodexRun:
         defn = request.defn
         stream_id = request.stream_id
@@ -402,22 +428,7 @@ class CodexSpawnOrchestrator:
             sandbox=sandbox_mode_for(mode, read_only=read_only),
             approval_policy=policy_for(mode),
         )
-        if request.resume_thread_id is not None:
-            handle = await server.resume_thread(
-                request.resume_thread_id, options=options, request_handler=broker.handle
-            )
-            if handle is None:
-                raise CliModelError(
-                    f"codex thread {request.resume_thread_id} is gone; cannot resume"
-                )
-        else:
-            handle = await server.start_thread(options=options, request_handler=broker.handle)
-        if request.checkpoint is not None:
-            # The handle exists now, well before turn/start — checkpoint the
-            # real thread id immediately so an interruption anywhere from here
-            # on (including before the first turn even starts) leaves a
-            # resumable sidecar (Important #3 of the final review).
-            request.checkpoint([], handle.thread_id)
+        handle = await self._acquire_thread(server, request, options, broker)
         cbs = self.deps.ui
         if stream_id and cbs.on_subagent_model is not None:
             await cbs.on_subagent_model(stream_id, f"{BACKEND}:{model_name or 'default'}")
