@@ -265,6 +265,29 @@ turn.
 
 See [`docs/examples/agents/codex-worker.md`](../examples/agents/codex-worker.md).
 
+## Tiered CLI workers
+
+Both CLI backends ship a ready-to-copy trio in `docs/examples/agents/`, one
+spec per cost/capability tier, so the main agent can pick by task shape the
+same way the native router picks by `tier:`. Copy the ones you want into a
+trusted project's `.marim/agents/` or your global
+`$XDG_CONFIG_HOME/marim/agents/` — they are examples, not bundled defaults,
+because discovery does not check that the `claude` or `codex` binary is
+installed and the pinned model names track each vendor's release schedule.
+
+| Tier | Use for | claude-cli | codex-cli |
+| --- | --- | --- | --- |
+| fast | well-specified mechanical edits, renames, lookups | [`claude-fast`](../examples/agents/claude-fast.md) (haiku) | [`codex-fast`](../examples/agents/codex-fast.md) (gpt-5.6-luna, low effort) |
+| general | self-contained coding tasks delegated end-to-end | [`claude-general`](../examples/agents/claude-general.md) (sonnet) | [`codex-general`](../examples/agents/codex-general.md) (gpt-5.6-terra, medium effort) |
+| deep | multi-file refactors, design, subtle debugging | [`claude-deep`](../examples/agents/claude-deep.md) (opus) | [`codex-deep`](../examples/agents/codex-deep.md) (gpt-5.6-sol, high effort) |
+
+Each description names its siblings ("prefer codex-deep for…, codex-fast
+for…") so the spawnable-agents index the model reads carries the routing
+hint. The `fast` specs drop `web_search`/`fetch_url` and tell the agent to
+stop and report rather than guess when a task turns out to need judgment;
+the Codex specs set `thinking:` explicitly because the CLI's own default
+effort differs per model (`low` on Sol, `medium` on Terra and Luna).
+
 ## Limits and operations
 
 Operational knobs, briefly (full table in
