@@ -175,12 +175,34 @@ class ClaudeProcess:
         self.session_id: str | None = options.resume_id
         self.init_info: dict = {}
         self.closed = asyncio.Event()
+        # True while the idle reaper is inside aclose(). A close in flight is
+        # NOT a usable process — see `alive` and `wait_closing`.
+        self._closing = False
+        self._close_done = asyncio.Event()
 
     # --- state ---------------------------------------------------------------
     @property
     def alive(self) -> bool:
         proc = self._proc
-        return proc is not None and proc.returncode is None and not self.closed.is_set()
+        if proc is None or proc.returncode is not None or self.closed.is_set():
+            return False
+        # A process the idle reaper is already tearing down looks alive for the
+        # whole of aclose() (the child is signalled, not yet reaped). Sending a
+        # turn to it would cancel the reaper mid-close and leave a half-closed
+        # process behind, so it counts as dead from here on; the caller waits
+        # the close out via `wait_closing` and respawns on the session id.
+        return not self._closing
+
+    @property
+    def closing(self) -> bool:
+        """True while the idle reaper is closing this process."""
+        return self._closing
+
+    async def wait_closing(self) -> None:
+        """Block until an in-flight idle close has finished. A no-op when none
+        is running, so callers can await it unconditionally."""
+        if self._closing:
+            await self._close_done.wait()
 
     @property
     def turn_open(self) -> bool:
@@ -438,10 +460,21 @@ class ClaudeProcess:
 
     async def _idle_close(self) -> None:
         await asyncio.sleep(self._idle_timeout)
+        # Set BEFORE the first await inside the close: from here on `alive` is
+        # False, so a turn that starts concurrently waits this close out and
+        # respawns instead of cancelling it half-done. (Everything between the
+        # sleep returning and this line is synchronous, so there is no window
+        # where a turn can see the reaper as neither armed nor closing.)
+        self._closing = True
+        self._close_done.clear()
         logger.info(
             "claude idle for %.0fs; closing (the next turn resumes by id)", self._idle_timeout
         )
-        await self.aclose()
+        try:
+            await self.aclose()
+        finally:
+            self._closing = False
+            self._close_done.set()
 
 
 # --- consuming a turn -------------------------------------------------------

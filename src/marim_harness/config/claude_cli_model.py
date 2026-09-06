@@ -743,6 +743,12 @@ class ClaudeCliModel(ExternalCliModel):
         an ignored interrupt); the persisted session ref; a cold start carrying
         the flattened history and the system prompt."""
         process = self._process
+        if process is not None:
+            # The idle reaper may be inside aclose() right now: wait it out
+            # rather than race it (cancelling a close half-done leaves a
+            # process that answers nothing), then fall through and respawn on
+            # its session id.
+            await process.wait_closing()
         if process is not None and process.alive:
             return process, True
         resume_id = process.session_id if process is not None else self._persisted_session_id()

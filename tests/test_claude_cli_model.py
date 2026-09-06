@@ -27,7 +27,8 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestParameters
 
-from marim_harness.claude.env import CLI_BINARY_ENV
+from marim_harness.claude.env import CLI_BINARY_ENV, CLI_IDLE_TIMEOUT_ENV
+from marim_harness.claude.process import ClaudeProcess
 from marim_harness.claude.protocol import CLOSED
 from marim_harness.config import claude_cli_model
 from marim_harness.config.claude_cli_model import (
@@ -665,6 +666,47 @@ async def test_parent_aclose_closes_a_clone_that_still_holds_a_process(tmp_path,
     assert process.alive is True
     await base.aclose()
     assert process.alive is False
+
+
+@pytest.mark.anyio
+async def test_idle_reaper_racing_a_turn_respawns_on_the_session_id(tmp_path, monkeypatch):
+    """The reaper can be inside `aclose()` when the next turn starts. Reusing
+    that process (it still had `alive is True`, and `_cancel_idle` only aborted
+    the close half-done) is never right: the turn has to wait the close out and
+    resume on a fresh process. The tell is the second launch — with `--resume`,
+    so the conversation survives."""
+    monkeypatch.setenv(CLI_IDLE_TIMEOUT_ENV, "0.2")
+    scenario = {
+        "session_id": "S4",
+        "known_sessions": ["S4"],
+        "turns": [[{"text": "one"}], [{"text": "two"}]],
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    real_aclose = ClaudeProcess.aclose
+
+    async def paused(self) -> None:
+        entered.set()
+        await release.wait()
+        await real_aclose(self)
+
+    try:
+        await model.request(_user("a"), None, ModelRequestParameters())
+        monkeypatch.setattr(ClaudeProcess, "aclose", paused)
+        await asyncio.wait_for(entered.wait(), 5.0)  # the reaper is inside aclose()
+        turn = asyncio.ensure_future(model.request(_user("b"), None, ModelRequestParameters()))
+        await asyncio.sleep(0.05)  # let the turn reach _ensure_process
+        release.set()
+        second = await asyncio.wait_for(turn, 20.0)
+    finally:
+        release.set()
+        await model.aclose()
+    assert second.parts[0].content == "one"  # the respawned fake replays its first turn
+    argvs = read_claude_argvs(tmp_path)
+    assert len(argvs) == 2
+    assert "--resume" not in argvs[0]
+    assert argvs[1][argvs[1].index("--resume") + 1] == "S4"
 
 
 @pytest.mark.anyio
