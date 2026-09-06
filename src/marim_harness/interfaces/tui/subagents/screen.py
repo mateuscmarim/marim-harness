@@ -151,7 +151,9 @@ class SubAgentsScreen:
         if not subs:
             self.close()
             return
-        view = app.query_one(SubAgentsView)
+        view = self._mounted_view()
+        if view is None:
+            return
         view.repaint(subs, self.cost, selected=select)
         try:
             cursor_row = view.list.cursor_row
@@ -168,6 +170,22 @@ class SubAgentsScreen:
         if current.pane is not None:
             view.host.show(current.stream_id)
             self._lazy_load(current)
+
+    def _mounted_view(self) -> SubAgentsView | None:
+        """The ``SubAgentsView`` if it is currently in the DOM, else None.
+
+        ``open`` can outlive the view: ``App.run_test`` (and any shutdown that
+        skips ``App.exit``) tears the app down via ``_shutdown`` with the flush
+        interval still armed, and Textual removes a screen's children from its
+        node list *before* the screen leaves the stack and before timers stop.
+        A tick landing in that window queries the still-current default screen
+        for a view that has already gone — ``NoMatches``. Observed once on a
+        loaded 3.14 CI runner; the tick path must skip, not crash, and there is
+        nothing to repaint into anyway."""
+        try:
+            return self._app.query_one(SubAgentsView)
+        except NoMatches:
+            return None
 
     def _lazy_load(self, card) -> None:
         """Lazy-load the persisted transcript the first time ``card``'s pane is
