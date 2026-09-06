@@ -29,6 +29,19 @@ pre-1.0, minor versions may contain breaking changes.
   (haiku/sonnet/opus and gpt-5.6-luna/terra/sol) with a "Tiered CLI workers"
   section in the sub-agents guide; parsed in CI.
 
+### Changed
+
+- **claude-cli is bidirectional.** The `claude-cli` provider and `backend: claude-cli`
+  sub-agents now keep one long-lived `claude` process per conversation over its
+  stream-json control protocol instead of launching `claude -p` per turn. marim's
+  `auto`/`ask`/`plan` modes, the approval panel and `ask_user` now apply to Claude's
+  tool calls (`--permission-mode` is no longer passed); steer folds into the live turn;
+  Esc in the TUI (Ctrl-C headless) sends an interrupt (kill after a 2 s grace); the session resumes by id after
+  an idle close, crash, model switch or restart. New knob
+  `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` (default 600 s) closes an idle process;
+  `MARIM_CLAUDE_CLI_TIMEOUT` is now a per-turn *silence* bound that pauses while an
+  approval prompt waits. Claude Code ≥ 2.1 required (older versions warn). Closes #109.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

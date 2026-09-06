@@ -41,14 +41,18 @@ without breaking `ci.yml`. See `docs/quality-gate.md` to run it locally.
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
 (see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`|`codex-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
 `OPENROUTER_API_KEY`, etc. Default provider is OpenRouter, default model
-`anthropic/claude-sonnet-4-6`. `claude-cli` delegates each turn to the `claude` CLI on a
-Claude subscription — marim acts as a launcher (Claude runs its own tools/loop), so marim's
-own tools/approval/LSP/MCP do not apply in that provider. Claude's own Agent/Task
-sub-agents, however, are demuxed out of the stream (`subagents/cli_demux.py`) and
-rendered as first-class cards in the sub-agents screen, for both the main-loop
-provider and `backend: claude-cli` spawns. Interrupted `claude-cli` spawns
-resume via the CLI's own `--resume` (the session id is checkpointed in the
-spawn's sidecar meta). `codex-cli` delegates each turn to
+`anthropic/claude-sonnet-4-6`. `claude-cli` runs the conversation on one long-lived bidirectional `claude`
+process (`claude/` package: `protocol.py` stream-json client, `process.py`
+turn/idle/interrupt lifecycle, `approvals.py` `can_use_tool` → Mode/panel/
+ask_user, `env.py` knobs) on a Claude subscription — marim acts as a launcher
+(Claude runs its own tools/LSP/MCP), but marim's `auto`/`ask`/`plan`,
+approval panel, `ask_user`, steer and interrupt DO apply through the control
+protocol. Claude's own Agent/Task sub-agents are demuxed out of the stream
+(`subagents/cli_demux.py`) and rendered as first-class cards in the sub-agents
+screen, for both the main-loop provider and `backend: claude-cli` spawns. The
+session id persists as `claude-cli:<id>` on `SessionStore.cli_thread_id` and
+resumes after idle close/crash/restart; interrupted spawns resume the same way
+(the id is checkpointed in the spawn's sidecar meta). `codex-cli` delegates each turn to
 `codex app-server` (JSON-RPC over stdio, `codex/` package) — one app-server
 per marim *process*, a module-level singleton shared by the main-loop model
 and every `backend: codex-cli` spawn (not one process per session; a
@@ -179,12 +183,12 @@ to avoid import cycles.
   token-budget compaction helpers.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
-  `cli_spawn.py` (`claude -p` execute/resume orchestration), `codex_spawn.py`
+  `cli_spawn.py` (`backend: claude-cli` execute/resume orchestration: builds the spawn's approval broker), `codex_spawn.py`
   (`backend: codex-cli` spawns: one Codex thread per spawn on the shared
   app-server, read-only sandbox unless the agent has a mutating tool, native
   `outputSchema`), `masking.py`
   (per-spawn context masking of stale tool observations), and `cli_backend.py`
-  (the optional `claude -p` CLI backend it delegates to). Re-exported as
+  (the `ClaudeCliRunner` that drives one `ClaudeProcess` per spawn). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
   model-authored Python script in a pydantic-monty sandbox (`engine.py`);

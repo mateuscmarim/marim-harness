@@ -1,38 +1,62 @@
-"""Run the Claude Code CLI (`claude -p`) as a main-loop model provider.
+"""Run Claude Code as a main-loop model provider over one long-lived,
+bidirectional ``claude`` process.
 
-A Claude subscription is reachable only through the `claude` CLI, which runs its
-own agentic loop — there is no raw per-step model endpoint behind it. So this
-provider makes marim a *launcher*: ``ClaudeCliModel`` spawns ``claude -p`` in
-stream-json mode, lets Claude run its own tools internally, and returns a single
-**text-only** ``ModelResponse``. Emitting ``ToolCallPart``s here would make
-pydantic_ai's agent graph try to execute Claude's tool calls a second time, so
-Claude's internal tool activity is folded into the streamed text instead (see
-``format_activity_line`` / ``consume_cli_stream``). Claude's own Agent/Task
-sub-agent spawns are the exception: they are split off onto side-channels
-(``on_cli_activity`` / ``on_subagent_event``) via ``cli_demux.CliSubagentDemux``
-so the TUI can render them as first-class cards instead of flattened text.
+A Claude subscription is reachable only through the ``claude`` CLI, which runs
+its own agentic loop — there is no raw per-step model endpoint behind it. So
+this provider makes marim a *launcher*: ``ClaudeCliModel`` keeps one ``claude``
+process per conversation (``claude/process.py``), sends each user turn down its
+stdin as ``stream-json``, and returns a single **text-only** ``ModelResponse``.
+Emitting ``ToolCallPart``s here would make pydantic_ai's agent graph try to
+execute Claude's tool calls a second time, so Claude's tool activity is folded
+into the streamed text (headless) or pushed out-of-band as native tool cards
+(``on_activity``). Claude's own Agent/Task sub-agents are split off via
+``cli_demux.CliSubagentDemux`` onto ``on_subagent``.
 
-This module reuses the pure helpers in ``subagents.cli_backend`` (binary resolve,
-argv build, ndjson reader) and only depends on ``pydantic_ai`` + ``..usage``, so
-``config.build_model`` can import it lazily without a cycle.
+What the bidirectional transport buys over the old one-shot ``claude -p``:
+Claude asks marim before every tool through ``can_use_tool`` control requests,
+so marim's ``auto``/``ask``/``plan`` modes, the approval panel and ``ask_user``
+apply (``claude/approvals.py``); a steer folds into the live turn; an
+interrupt is a control request rather than a kill; and the conversation
+resumes by session id after an idle close, a crash, or a marim restart.
+
+Prose and thinking arrive as ``stream_event`` deltas; ``assistant`` objects
+contribute only their ``tool_use`` blocks (their text repeats the deltas);
+``user`` objects contribute ``tool_result`` blocks. See ``consume_cli_stream``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.usage import RequestUsage
 
+from ..claude.approvals import ClaudeApprovalBroker
+from ..claude.env import (
+    INSTALL_HINT,
+    MIN_CLAUDE_VERSION,
+    cli_idle_timeout,
+    cli_timeout,
+    resolve_cli_binary,
+)
+from ..claude.process import (
+    ClaudeProcess,
+    ProcessOptions,
+    TurnHandle,
+    next_turn_object,
+    turn_objects,
+)
+from ..claude.protocol import CLOSED
+from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
 from .external_cli import CliModelError, ExternalCliModel, TextFolder
 
@@ -44,22 +68,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# marim approval mode -> Claude Code --permission-mode. Headless `claude -p`
-# cannot pop a per-tool prompt, so marim's "ask" (gate each mutation) has no
-# faithful equivalent. Mapping it to "acceptEdits" would let the CLI edit files
-# with NO gating while marim's UI still says "ask" — a silent authority
-# escalation the user never consented to (the only disclosure was a
-# once-per-process log line a TUI user never sees). So an unconsented "ask"
-# degrades to the safe read-only "plan": the CLI can read/plan but not mutate,
-# which is the conservative reading of "don't act without my approval". Only the
-# explicit "auto" mode maps to acceptEdits. "ask" isn't listed, so it falls
-# through to the ``.get(..., "plan")`` default alongside any unknown mode.
-_MODE_MAP = {"auto": "acceptEdits", "plan": "plan"}
-
-
-def permission_mode_for(mode: str) -> str:
-    """The Claude ``--permission-mode`` for a marim approval mode."""
-    return _MODE_MAP.get(mode, "plan")
+# The provider-side conversation reference persisted on the marim session
+# (SessionStore.cli_thread_id) is namespaced so a switch to another external
+# CLI never resumes a foreign id.
+SESSION_REF_PREFIX = "claude-cli:"
 
 
 def _part_text(content) -> str:
@@ -228,7 +240,15 @@ def format_activity_line(name: str, tool_input: dict) -> str:
 
 @dataclass
 class TextChunk:
-    """A segment of assistant prose (one of Claude's text blocks, stripped)."""
+    """A run of assistant prose (one ``text_delta``)."""
+
+    delta: str
+
+
+@dataclass
+class ThinkingChunk:
+    """A run of Claude's thinking (one ``thinking_delta``); rendered as a
+    thinking part so the TUI can fold it like a native model's."""
 
     delta: str
 
@@ -254,17 +274,29 @@ class ToolResultChunk:
 
 
 @dataclass
+class InitChunk:
+    """The turn's ``system/init``: the session id (the resume key, persisted
+    as the session ref) and the CLI version (checked against
+    ``MIN_CLAUDE_VERSION`` once)."""
+
+    session_id: str | None
+    version: str
+    model: str
+
+
+@dataclass
 class DoneChunk:
-    """Terminal chunk: Claude's session id, usage, and whether a proper ``result``
-    event was seen (``complete=False`` ⇒ crash/bad output). ``error_detail`` carries
-    a tail of the CLI's stderr when the process failed, so the raised
-    ``CliModelError`` can report *why* (a crash, a not-logged-in CLI, a bad flag)
-    instead of a bare "no result"; it is ignored on a complete run."""
+    """Terminal chunk: Claude's session id, usage, and whether a proper
+    ``result`` was seen. ``complete=False`` ⇒ the turn failed (``error_detail``
+    says why: the CLI's exit code and stderr tail, or the result's error
+    subtype). ``aborted`` marks an interrupted turn that still ended cleanly
+    with an aborted result (steer/Ctrl-C) — complete, just cut short."""
 
     session_id: str | None
     usage: RequestUsage
     complete: bool
     error_detail: str = ""
+    aborted: bool = False
 
 
 def _flatten_result_content(content) -> str:
@@ -297,16 +329,28 @@ def _is_subagent_noise(obj: dict) -> bool:
     )
 
 
-def _assistant_chunks(obj: dict) -> Iterator:
-    """The ``TextChunk``/``ToolUseChunk``s in one ``assistant`` stream-json
-    object's content blocks."""
+def _delta_chunk(obj: dict) -> TextChunk | ThinkingChunk | None:
+    """The chunk for one ``stream_event``, or None for the ones that carry no
+    text (block starts/stops, signature deltas, message deltas)."""
+    event = obj.get("event") or {}
+    if event.get("type") != "content_block_delta":
+        return None
+    delta = event.get("delta") or {}
+    kind = delta.get("type")
+    if kind == "text_delta":
+        text = delta.get("text") or ""
+        return TextChunk(text) if text else None
+    if kind == "thinking_delta":
+        thinking = delta.get("thinking") or ""
+        return ThinkingChunk(thinking) if thinking else None
+    return None
+
+
+def _tool_use_chunks(obj: dict) -> Iterator[ToolUseChunk]:
+    """The ``tool_use`` blocks of one ``assistant`` object. Its text/thinking
+    blocks are skipped: the deltas already carried them."""
     for block in (obj.get("message") or {}).get("content") or []:
-        btype = block.get("type")
-        if btype == "text":
-            text = (block.get("text", "") or "").strip()
-            if text:
-                yield TextChunk(text)
-        elif btype == "tool_use":
+        if block.get("type") == "tool_use":
             yield ToolUseChunk(
                 name=block.get("name", "tool"),
                 tool_input=block.get("input") or {},
@@ -326,22 +370,6 @@ def _user_chunks(obj: dict) -> Iterator:
             )
 
 
-def _stream_chunks(kind: str, obj: dict) -> Iterator:
-    """Dispatch one ``assistant``/``user`` stream-json object to
-    :func:`_assistant_chunks`/:func:`_user_chunks`. A plain (sync) generator —
-    unlike ``consume_cli_stream`` it CAN ``yield from``, so the caller collapses
-    what would otherwise be two ``elif``/``for`` pairs into one."""
-    if kind == "assistant":
-        yield from _assistant_chunks(obj)
-    elif kind == "user":
-        yield from _user_chunks(obj)
-
-
-def _merge_session_id(session_id: str | None, obj: dict) -> str | None:
-    """The first-seen session id: keep the existing one, else take ``obj``'s."""
-    return session_id or obj.get("session_id")
-
-
 def _result_error_subtype(obj: dict) -> str | None:
     """The failure label for a ``result`` event that errored, else None.
 
@@ -356,112 +384,111 @@ def _result_error_subtype(obj: dict) -> str | None:
     return None
 
 
-def _result_done_chunk(
-    results: list[dict], obj: dict, session_id: str | None, *, produced_text: bool
-) -> tuple[str | None, DoneChunk]:
-    """Fold one ``result`` stream-json object into ``results`` and build the
-    ``DoneChunk`` for it (usage folded across every result seen so far via
-    ``sum_result_usages``, cost = the last result's cumulative total).
+# terminal_reason values of the aborted result an ``interrupt`` control request
+# produces (probe s7): a normal, if truncated, end of turn — not a failure.
+_ABORTED_REASONS = frozenset({"aborted_tools", "aborted_streaming"})
 
-    Do NOT return early from the caller after this: an async sub-agent's
-    completion re-invokes the main agent, so more turns (and another result)
-    may follow. Consumers keep the LAST ``DoneChunk``.
 
-    An *errored* result (``is_error`` / an ``error_*`` subtype) must not
-    masquerade as a clean turn — that was the bug. The deliberate policy:
-      * always log the failure subtype so it is never silently swallowed;
-      * KEEP any assistant prose already streamed this turn (partial output beats
-        none) by leaving ``complete=True`` — the error rides along in
-        ``error_detail`` for logging/annotation;
-      * with NO usable text (``produced_text`` False) the turn is a bare failure:
-        ``complete=False`` makes ``request()``/``_finalize_done`` raise a
-        ``CliModelError`` instead of returning an empty "successful" response."""
-    from ..subagents.cli_backend import sum_result_usages
+def _result_chunk(obj: dict, *, produced_text: bool) -> DoneChunk:
+    """The ``DoneChunk`` for a turn's ``result``.
 
-    session_id = _merge_session_id(session_id, obj)
-    results.append(obj)
-    summed, _turns, cost = sum_result_usages(results)
+    An *errored* result must not masquerade as a clean turn, but an interrupted
+    one is not an error: ``is_error`` with an aborted ``terminal_reason`` is how
+    the CLI ends a turn marim itself cut short. Otherwise the pre-existing
+    policy holds — log the failure subtype; KEEP any prose already streamed
+    (partial output beats none) by leaving ``complete=True`` with the error in
+    ``error_detail``; with NO usable text the turn is a bare failure and
+    ``complete=False`` makes the model raise ``CliModelError``."""
+    usage = request_usage_from_cli(obj.get("usage"), obj.get("total_cost_usd"))
+    session_id = obj.get("session_id")
     error = _result_error_subtype(obj)
-    if error is not None:
-        logger.warning("claude CLI result reported an error: %s", error)
-    return session_id, DoneChunk(
+    if error is None:
+        return DoneChunk(session_id=session_id, usage=usage, complete=True)
+    if obj.get("terminal_reason") in _ABORTED_REASONS:
+        return DoneChunk(session_id=session_id, usage=usage, complete=True, aborted=True)
+    logger.warning("claude CLI result reported an error: %s", error)
+    return DoneChunk(
         session_id=session_id,
-        usage=request_usage_from_cli(summed, cost),
-        complete=error is None or produced_text,
-        error_detail=f"CLI result error: {error}" if error is not None else "",
+        usage=usage,
+        complete=produced_text,
+        error_detail=f"CLI result error: {error}",
     )
 
 
+def _closed_detail(obj: dict) -> str:
+    """The failure text for a turn that ended with the process closing: the
+    exit code plus the stderr tail the process captured (a stack tail, "Invalid
+    API key", "No conversation found with session ID …")."""
+    stderr = str(obj.get("stderr") or "").strip()
+    return f"claude exited (code {obj.get('returncode')}): {stderr}"
+
+
+def _event_chunks(obj: dict) -> Iterator:
+    """The chunks for one NON-terminal turn object. A plain (sync) generator so
+    ``consume_cli_stream`` spends one branch on the whole mid-turn vocabulary
+    instead of an ``elif`` per object kind — which is what keeps that async
+    generator (which cannot ``yield from``) under the complexity ceiling."""
+    kind = obj.get("type")
+    if kind == "system":
+        # Every other system subtype (status, thinking_tokens, the sub-agent
+        # lifecycle noise `_is_subagent_noise` already dropped) carries nothing
+        # the transcript needs.
+        if obj.get("subtype") == "init":
+            yield InitChunk(
+                session_id=obj.get("session_id") or None,
+                version=str(obj.get("claude_code_version") or ""),
+                model=str(obj.get("model") or ""),
+            )
+    elif kind == "stream_event":
+        chunk = _delta_chunk(obj)
+        if chunk is not None:
+            yield chunk
+    elif kind == "assistant":
+        yield from _tool_use_chunks(obj)
+    elif kind == "user" and not obj.get("isReplay"):
+        # `isReplay` is the CLI echoing back a message marim itself sent (the
+        # turn's prompt, or a steer) — never a tool result.
+        yield from _user_chunks(obj)
+
+
 async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncGenerator:
-    """Turn parsed stream-json objects into structured chunks then one or more
-    ``DoneChunk``s.
+    """One turn's stream-json objects → structured chunks, ending with exactly
+    one ``DoneChunk``.
 
-    Assistant ``text`` blocks become ``TextChunk``s; ``tool_use`` blocks become
-    ``ToolUseChunk``s; ``tool_result`` blocks (in ``user`` messages) become
-    ``ToolResultChunk``s. Keeping tool activity structured (rather than pre-folded
-    into text) lets the TUI render native tool cards, while the headless paths fold
-    it back to ``▸`` lines via ``fold_chunk_text``.
+    Prose/thinking come from ``stream_event`` deltas (``TextChunk`` /
+    ``ThinkingChunk``); ``assistant`` objects add ``ToolUseChunk``s; ``user``
+    objects add ``ToolResultChunk``s (``isReplay`` echoes of our own messages
+    are dropped); ``system/init`` becomes an ``InitChunk``; every other
+    ``system`` subtype (status, thinking_tokens, the sub-agent lifecycle noise)
+    is skipped. Objects tagged ``parent_tool_use_id`` belong to a Claude-side
+    sub-agent: with a UI the demux tee consumed them before we see them;
+    headless they are dropped here so a child's prose never leaks into the main
+    text.
 
-    Objects tagged ``parent_tool_use_id`` belong to a Claude-side sub-agent, not
-    the main turn; headless there is no demux to route them to, so they are
-    dropped here — otherwise a child's prose would leak into the main response
-    text. ``task_started``/``task_updated``/``task_notification`` system events are
-    the same sub-agent's lifecycle noise and are skipped too.
-
-    A ``result`` event used to end the generator with ``return``. That's a bug:
-    closing the generator runs ``spawn_cli_objects``'s ``finally``, which kills the
-    CLI process — but `claude -p` can emit MULTIPLE ``result`` events in one
-    process, because an async sub-agent's completion re-invokes the main agent for
-    another turn, ending in another ``result``. Returning early killed the CLI
-    while that sub-agent was still running. So each ``result`` now yields a
-    ``DoneChunk`` (usage folded across every result seen so far via
-    ``sum_result_usages``, cost = the last result's cumulative total) and the loop
-    keeps reading to EOF; consumers keep the LAST ``DoneChunk`` (``request()``
-    already ``continue``s past each one). A stream that ends without any ``result``
-    yields a trailing ``DoneChunk(complete=False)``."""
-    session_id: str | None = None
-    results: list[dict] = []
-    error_detail = ""
-    # Whether the turn streamed any assistant prose. An errored result with no
-    # usable text is a bare failure (see _result_done_chunk); with text we keep the
-    # partial output.
+    The turn ends at its ``result`` (one per turn on the bidirectional
+    transport — the process layer closes the turn there) or at the synthetic
+    ``CLOSED`` object the process publishes when the CLI exits mid-turn."""
     produced_text = False
     async for obj in objs:
         if _is_subagent_noise(obj):
-            # Sub-agent-internal traffic, or its lifecycle noise. With a UI the
-            # demux tee (see ClaudeCliStreamedResponse) consumes the traffic
-            # before we ever see it; headless it is dropped here so a child's
-            # prose never pollutes the main response text.
             continue
         kind = obj.get("type")
-        if kind == "__cli_error__":
-            # Synthetic sentinel from spawn_cli_objects at EOF carrying a tail of
-            # the CLI's stderr (and exit code) when the process failed. Not a real
-            # stream event — captured here so a "no result" turn can explain itself.
-            error_detail = str(obj.get("stderr") or "").strip() or error_detail
-            continue
-        if kind == "system":
-            session_id = _merge_session_id(session_id, obj)
-        elif kind in ("assistant", "user"):
-            for chunk in _stream_chunks(kind, obj):
-                if isinstance(chunk, TextChunk):
-                    produced_text = True
-                yield chunk
-        elif kind == "result":
-            # Do NOT return early: an async sub-agent's completion re-invokes the
-            # main agent, so more turns (and another result) may follow.
-            # Consumers keep the LAST DoneChunk.
-            session_id, done = _result_done_chunk(
-                results, obj, session_id, produced_text=produced_text
+        if kind == CLOSED:
+            yield DoneChunk(
+                session_id=None,
+                usage=RequestUsage(),
+                complete=False,
+                error_detail=_closed_detail(obj),
             )
-            yield done
-    if not results:
-        yield DoneChunk(
-            session_id=session_id,
-            usage=RequestUsage(),
-            complete=False,
-            error_detail=error_detail,
-        )
+            return
+        if kind == "result":
+            yield _result_chunk(obj, produced_text=produced_text)
+            return
+        for chunk in _event_chunks(obj):
+            if isinstance(chunk, TextChunk):
+                produced_text = True
+            yield chunk
+    yield DoneChunk(session_id=None, usage=RequestUsage(), complete=False)
 
 
 def fold_chunk_text(chunk, *, leading: bool) -> str:
@@ -517,21 +544,30 @@ def cli_activity_events(chunk) -> list:
     return []
 
 
-_ask_noticed = False
+class _FoldedText:
+    """The headless (``request()``) counterpart of ``TextFolder``'s fold mode.
 
+    Prose arrives one ``text_delta`` at a time — a few characters each — so the
+    blank line ``fold_chunk_text`` puts between *segments* must separate a ``▸``
+    tool line from the prose around it, never one delta from the next (that
+    would shred every sentence). Only a folded tool line arms the separator."""
 
-def note_ask_limitation_once(mode: str) -> None:
-    """Warn once per process that ``ask`` can't do per-tool gating in this provider,
-    so it runs read-only (``plan``) rather than silently escalating to unattended
-    edits. Kept out of the pure mapping so tests stay quiet."""
-    global _ask_noticed
-    if mode == "ask" and not _ask_noticed:
-        _ask_noticed = True
-        logger.warning(
-            "claude-cli provider: 'ask' mode cannot gate individual tools "
-            "(headless claude can't prompt) — running read-only ('plan'). "
-            "Switch to 'auto' to let this provider edit files."
-        )
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._after_tool = False
+
+    def add(self, chunk) -> None:
+        if isinstance(chunk, TextChunk):
+            self._parts.append(f"\n\n{chunk.delta}" if self._after_tool else chunk.delta)
+            self._after_tool = False
+            return
+        segment = fold_chunk_text(chunk, leading=not self._parts)
+        if segment:
+            self._parts.append(segment)
+            self._after_tool = True
+
+    def text(self) -> str:
+        return "".join(self._parts)
 
 
 def _no_result_message(done: DoneChunk | None) -> str:
@@ -544,162 +580,270 @@ def _no_result_message(done: DoneChunk | None) -> str:
     return f"{base}: {detail}" if detail else f"{base}."
 
 
-# How much of a failing CLI's stderr to fold into the raised error. Enough to carry
-# a real diagnostic (a stack tail, "Invalid API key", "not logged in") without
-# dumping an unbounded log into the message.
-_STDERR_TAIL_CHARS = 2000
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """``"2.1.261"`` → ``(2, 1, 261)``; non-numeric segments end the tuple so a
+    ``2.1.0-beta`` compares as ``(2, 1, 0)``."""
+    out: list[int] = []
+    for piece in version.split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        if not digits:
+            break
+        out.append(int(digits))
+    return tuple(out)
 
 
-async def spawn_cli_objects(argv: list[str], cwd: str) -> AsyncGenerator[dict]:
-    """Spawn ``claude`` and yield each stream-json line as a parsed dict. Reaps the
-    child on exit; drains stderr to avoid a pipe-buffer deadlock. Non-JSON noise is
-    skipped. This is the only I/O seam — tests replace it via ``model.spawn``.
+_version_warned = False
 
-    On a nonzero exit the drained stderr is not discarded: a tail of it is yielded
-    as a synthetic ``{"type": "__cli_error__", ...}`` sentinel so ``consume_cli_stream``
-    can attach it to the terminal ``DoneChunk`` and the "no result" ``CliModelError``
-    can explain the failure (crash, bad flag, not logged in) instead of staying
-    silent."""
-    from ..ndjson import iter_ndjson_lines as _iter_ndjson_lines
 
-    proc = await asyncio.create_subprocess_exec(  # pragma: no cover
-        *argv,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stderr_task = (  # pragma: no cover
-        asyncio.ensure_future(proc.stderr.read()) if proc.stderr is not None else None
-    )
-    try:  # pragma: no cover
-        assert proc.stdout is not None
-        async for raw in _iter_ndjson_lines(proc.stdout):
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                continue
-        stderr_bytes = b""
-        if stderr_task is not None:
-            stderr_bytes = await stderr_task
-            stderr_task = None
-        code = await proc.wait()
-        if code not in (0, None):
-            detail = stderr_bytes.decode("utf-8", "replace").strip()[-_STDERR_TAIL_CHARS:]
-            yield {"type": "__cli_error__", "stderr": detail, "returncode": code}
-    finally:  # pragma: no cover
-        if stderr_task is not None:
-            stderr_task.cancel()
-        if proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(BaseException):
-                await proc.wait()
+def note_old_version_once(version: str) -> None:
+    """Warn once per process when the CLI predates the protocol this provider
+    was built against (``MIN_CLAUDE_VERSION``). The turn still runs — the check
+    is a hint for the "why does approval never prompt?" support question, not
+    a gate (spec §Version check)."""
+    global _version_warned
+    if _version_warned or not version:
+        return
+    if _version_tuple(version) < _version_tuple(MIN_CLAUDE_VERSION):
+        _version_warned = True
+        logger.warning(
+            "claude %s is older than %s; marim's approval/steer integration may not work. "
+            "Update Claude Code (`claude update`).",
+            version,
+            MIN_CLAUDE_VERSION,
+        )
+
+
+def _turn_stream(
+    process: ClaudeProcess, handle: TurnHandle, first: dict
+) -> AsyncGenerator[dict, None]:
+    """``turn_objects`` for one turn, typed as the async *generator* it is.
+
+    Its declared ``AsyncIterator`` return type hides ``aclose()``, which both
+    entry points below must call in their ``finally`` so an abandoned or
+    cancelled turn is finalized deterministically instead of at GC time."""
+    return cast("AsyncGenerator[dict, None]", turn_objects(process, handle, first))
+
+
+def _log_steer_failure(task: asyncio.Task) -> None:
+    """Retrieve a fire-and-forget steer's exception so asyncio does not report
+    it as never-retrieved, and leave a trace: the send can fail (the process
+    died between the turn_open check and the write) and the user sees only
+    that their steer went nowhere."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.debug("claude steer failed", exc_info=exc)
+
+
+def _is_missing_session(obj: dict) -> bool:
+    """True when a ``--resume`` start died because the CLI no longer has the
+    session (probe s8: stderr ``No conversation found with session ID: …``,
+    exit 1) — the one CLOSED the model recovers from by starting fresh."""
+    return obj.get("type") == CLOSED and "No conversation found" in str(obj.get("stderr") or "")
 
 
 class ClaudeCliModel(ExternalCliModel):
-    """A Pydantic AI model backed by the ``claude`` CLI (a Claude subscription).
+    """A Pydantic AI model backed by one long-lived ``claude`` process.
 
-    Each request spawns ``claude -p`` (resuming Claude's session when one is known)
-    and returns a single text-only ``ModelResponse``; Claude runs its own tools
-    internally. The late-bound seams (``mode_getter``, ``cwd``, ``on_activity``,
-    ``on_subagent*``) live on ``ExternalCliModel`` and are bound by
-    ``Harness.wire_cli_model``; ``session_id`` is held in-memory across turns of
-    one process."""
+    The late-bound seams (``mode_getter``, ``cwd``, ``request_approval``,
+    ``ask_user``, ``on_activity``, ``on_subagent*``, ``scratchpad_getter``,
+    ``session_ref_getter``/``on_session_ref``) live on ``ExternalCliModel`` and
+    are bound by ``Harness.wire_cli_model``. The approval broker snapshots the
+    UI seams when the process starts; ``bind_ui`` after the first turn is
+    picked up by the next process (a documented residual)."""
 
     provider_id = "claude-cli"
 
     def __init__(self, model_id: str | None, *, ephemeral: bool = False) -> None:
         super().__init__()
         self._model_id = model_id
-        self.session_id: str | None = None
         # See ExternalCliModel.ephemeral / ``ephemeral_clone``: aux agents never
         # resume or store a session, so they can't hijack the user's live one.
         self.ephemeral = ephemeral
-        self.spawn = spawn_cli_objects  # I/O seam; tests monkeypatch this
+        self._process: ClaudeProcess | None = None
+        # Clones made by ephemeral_clone(); closed with their parent, because
+        # nothing else holds them (Harness.aclose knows only the session's
+        # current model, and the aux titler/summarizer/advisor keep theirs
+        # inside a pydantic-ai Agent). Mirrors CodexCliModel._clones.
+        self._clones: list[ClaudeCliModel] = []
+        self._broker: ClaudeApprovalBroker | None = None
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
         """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
 
         It never resumes or stores a Claude session — so titling/summarizing can't
         continue or hijack the user's live conversation — always sends its own
-        instructions, and runs in plan (read-only) mode so it can't edit files."""
+        instructions, runs in plan (read-only) mode so it can't edit files, and
+        closes its process after every call."""
         clone = ClaudeCliModel(self._model_id, ephemeral=True)
         clone.cwd = cwd
         clone.mode_getter = lambda: "plan"
+        self._clones.append(clone)
         return clone
 
     @property
     def model_name(self) -> str:
         return self._model_id or "default"
 
-    def _argv(self, messages: list) -> list[str]:
-        from ..subagents.cli_backend import build_cli_argv as _build
-        from ..subagents.cli_backend import resolve_cli_binary
+    @property
+    def session_id(self) -> str | None:
+        """The live process's session id, else the persisted one (the key the
+        next process resumes with)."""
+        if self._process is not None and self._process.session_id:
+            return self._process.session_id
+        return self._persisted_session_id()
 
-        binary = resolve_cli_binary()
-        if binary is None:
-            raise CliModelError(
-                "claude CLI not found (set MARIM_CLAUDE_CLI_BIN or install Claude Code)."
-            )
-        mode = self.mode_getter() if self.mode_getter is not None else "plan"
-        note_ask_limitation_once(mode)
-        if self.session_id and not self.ephemeral:
-            prompt, append_system, resume = latest_user_text(messages), False, self.session_id
-        else:
-            # Cold turn: re-seed Claude with the whole conversation (resumed marim
-            # session, first turn, or any ephemeral aux call). For a brand-new
-            # session this is just the one user message. Ephemeral models always
-            # take this path — never resuming the user's live session.
-            prompt, append_system, resume = flatten_history(messages), True, None
-        return _build(
-            binary,
-            prompt,
-            extract_system(messages),
-            permission_mode_for(mode),
-            [],  # let Claude use its own native toolset for the permission mode
-            self._model_id,
-            resume_session_id=resume,
-            append_system=append_system,
-            # Isolate from the user's plugins/hooks (notably agentmemory's
-            # cross-session context injection) so a marim turn isn't polluted by —
-            # or recorded into — other Claude sessions' memory. Auth/model/tools
-            # keep working.
-            safe_mode=True,
+    # --- collaborators ------------------------------------------------------------
+    def _mode(self) -> Mode:
+        raw = self.mode_getter() if self.mode_getter is not None else "plan"
+        try:
+            return Mode(raw)
+        except ValueError:
+            return Mode.plan
+
+    def _scratchpad(self) -> Path | None:
+        return self.scratchpad_getter() if self.scratchpad_getter is not None else None
+
+    def _make_broker(self) -> ClaudeApprovalBroker:
+        return ClaudeApprovalBroker(
+            mode_getter=self._mode,
+            workspace_root=Path(self.cwd),
+            scratchpad_getter=self._scratchpad,
+            ui=UiSeams(request_approval=self.request_approval, ask_user=self.ask_user),
         )
 
+    def _persisted_session_id(self) -> str | None:
+        if self.ephemeral or self.session_ref_getter is None:
+            return None
+        ref = self.session_ref_getter()
+        if not ref or not ref.startswith(SESSION_REF_PREFIX):
+            return None  # another provider's ref (e.g. codex-cli) — ignore
+        return ref[len(SESSION_REF_PREFIX) :] or None
+
+    def _options(self, *, resume_id: str | None, system: str | None) -> ProcessOptions:
+        binary = resolve_cli_binary()
+        if binary is None:
+            raise CliModelError(f"claude CLI not found. {INSTALL_HINT}")
+        return ProcessOptions(
+            binary=binary,
+            cwd=self.cwd,
+            model=self._model_id or None,
+            resume_id=resume_id,
+            append_system=system,
+            persist=not self.ephemeral,
+        )
+
+    # --- process lifecycle --------------------------------------------------------
+    async def _spawn(self, *, resume_id: str | None, system: str | None) -> ClaudeProcess:
+        self._broker = self._make_broker()
+        process = ClaudeProcess(
+            self._options(resume_id=resume_id, system=system),
+            on_request=self._broker.handle,
+            silence_timeout=cli_timeout(),
+            # Aux clones close after every call, so they never idle.
+            idle_timeout=0.0 if self.ephemeral else cli_idle_timeout(),
+        )
+        await process.start()
+        self._process = process
+        return process
+
+    async def _ensure_process(self, messages: list) -> tuple[ClaudeProcess, bool]:
+        """The process to run this turn on and whether it RESUMES a Claude
+        session (so the turn sends only the newest user text). Order: the live
+        process; a respawn on a dead process's session id (idle close, crash,
+        an ignored interrupt); the persisted session ref; a cold start carrying
+        the flattened history and the system prompt."""
+        process = self._process
+        if process is not None:
+            # The idle reaper may be inside aclose() right now: wait it out
+            # rather than race it (cancelling a close half-done leaves a
+            # process that answers nothing), then fall through and respawn on
+            # its session id.
+            await process.wait_closing()
+        if process is not None and process.alive:
+            return process, True
+        resume_id = process.session_id if process is not None else self._persisted_session_id()
+        if resume_id:
+            return await self._spawn(resume_id=resume_id, system=None), True
+        return await self._spawn(resume_id=None, system=extract_system(messages) or None), False
+
+    async def _start_turn(self, messages: list) -> tuple[ClaudeProcess, TurnHandle, dict]:
+        """Send the turn and pull its first object, so a resume of a session the
+        CLI no longer has (probe s8) is caught here and retried as a cold start
+        — the caller then streams the rest uniformly."""
+        try:
+            return await self._open_turn(messages)
+        except BaseException:
+            # This runs BEFORE request()/request_stream()'s try/finally, so
+            # nothing there can clean up after a failure here (a silence
+            # timeout, a spawn error, a cancel). A long-lived model keeps its
+            # process on purpose — aclose() still reaches it and the next turn
+            # resumes on it — but an ephemeral clone's process is owned by this
+            # one call: leave it running and the next aux call resumes the leak.
+            if self.ephemeral and self._process is not None:
+                await self._process.aclose()
+                self._process = None
+            raise
+
+    async def _open_turn(self, messages: list) -> tuple[ClaudeProcess, TurnHandle, dict]:
+        process, resumed = await self._ensure_process(messages)
+        text = latest_user_text(messages) if resumed else flatten_history(messages)
+        handle = await process.send_turn(text)
+        first = await next_turn_object(process, handle)
+        if resumed and _is_missing_session(first):
+            logger.warning(
+                "claude session %s is gone; starting a fresh one from the flattened history",
+                process.session_id,
+            )
+            await process.aclose()
+            process = await self._spawn(resume_id=None, system=extract_system(messages) or None)
+            handle = await process.send_turn(flatten_history(messages))
+            first = await next_turn_object(process, handle)
+        return process, handle, first
+
+    async def _after_turn(self, process: ClaudeProcess, handle: TurnHandle) -> None:
+        """Every exit path of a turn: a turn still open (the consumer abandoned
+        or cancelled the stream) is interrupted so Claude stops working on an
+        answer nobody reads; an ephemeral clone's process is closed outright."""
+        if handle.open and process.alive:
+            await process.interrupt(handle)
+        if self.ephemeral:
+            await process.aclose()
+            self._process = None
+
+    def _note_init(self, chunk: InitChunk) -> None:
+        note_old_version_once(chunk.version)
+        if chunk.session_id and not self.ephemeral and self.on_session_ref is not None:
+            self.on_session_ref(SESSION_REF_PREFIX + chunk.session_id)
+
+    # --- pydantic-ai entry points --------------------------------------------------
     async def request(
         self,
         messages: list,
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
-        argv = self._argv(messages)
+        process, handle, first = await self._start_turn(messages)
         done: DoneChunk | None = None
-        parts: list[str] = []  # assistant prose + folded ▸ tool lines (no UI here)
-        # Hold the spawn generator so we can aclose() it deterministically. Its
-        # finally kills the child `claude` process; without an explicit aclose on
-        # consumer cancellation (Ctrl-C mid-turn) that kill would be deferred to
-        # nondeterministic GC, leaking a live subprocess until then.
-        objs = self.spawn(argv, self.cwd)
+        folded = _FoldedText()  # assistant prose + folded ▸ tool lines (no UI here)
+        objs = _turn_stream(process, handle, first)
         try:
-            async for chunk in consume_cli_stream(objs):
-                if isinstance(chunk, DoneChunk):
-                    done = chunk
-                    continue
-                segment = fold_chunk_text(chunk, leading=not parts)
-                if segment:
-                    parts.append(segment)
+            async with aclosing(consume_cli_stream(objs)) as stream:
+                async for chunk in stream:
+                    if isinstance(chunk, InitChunk):
+                        self._note_init(chunk)
+                    elif isinstance(chunk, DoneChunk):
+                        done = chunk
+                    else:
+                        folded.add(chunk)
         finally:
             await objs.aclose()
+            await self._after_turn(process, handle)
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
-        if done.session_id and not self.ephemeral:
-            self.session_id = done.session_id
         return ModelResponse(
-            parts=[TextPart(content="".join(parts))],
+            parts=[TextPart(content=folded.text())],
             model_name=self.model_name,
             # Stamp each response with the current time — not a shared
             # construction-time value — so a multi-turn history doesn't carry
@@ -717,8 +861,8 @@ class ClaudeCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
-        argv = self._argv(messages)
-        objs = self.spawn(argv, self.cwd)
+        process, handle, first = await self._start_turn(messages)
+        objs = _turn_stream(process, handle, first)
         stream = ClaudeCliStreamedResponse(
             model_request_parameters=model_request_parameters,
             _objs=objs,
@@ -726,7 +870,7 @@ class ClaudeCliModel(ExternalCliModel):
             # Per-response timestamp (see request()): stamped when the stream is
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
-            _set_session=(None if self.ephemeral else lambda sid: setattr(self, "session_id", sid)),
+            _on_init=self._note_init,
             _on_activity=self.on_activity,
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
@@ -734,11 +878,36 @@ class ClaudeCliModel(ExternalCliModel):
         try:
             yield stream
         finally:
-            # Deterministically kill the child `claude` on any exit path — normal
-            # completion, error, or Ctrl-C mid-turn. Closing the spawn generator
-            # runs spawn_cli_objects' finally (the process-group kill); leaving it
-            # to GC would let an abandoned turn's subprocess linger.
+            # Deterministic on every exit path — normal completion, error, or
+            # Ctrl-C mid-turn: finish the turn iterator, then interrupt the turn
+            # if it is still open (the process itself stays for the next turn).
             await objs.aclose()
+            await self._after_turn(process, handle)
+
+    # --- live controls -------------------------------------------------------------
+    def steer(self, text: str) -> bool:
+        """Fold ``text`` into the open turn (a mid-turn user message — probe s6).
+        Fire-and-forget on the running loop: the harness calls this
+        synchronously from the input path. False (harness keeps buffering) when
+        no turn is open."""
+        process = self._process
+        if process is None or not process.turn_open:
+            return False
+        task = asyncio.get_running_loop().create_task(process.send_user(text))
+        task.add_done_callback(_log_steer_failure)
+        return True
+
+    async def aclose(self) -> None:
+        """Close the process. The session id survives on it, so a later turn on
+        this model resumes; ``Harness.set_model`` calls this on the outgoing
+        model and ``Harness.aclose`` on teardown. Ephemeral clones go first:
+        nothing else holds one, and a clone that failed mid-start would
+        otherwise keep a ``claude`` process alive for the whole run."""
+        for clone in self._clones:
+            await clone.aclose()
+        self._clones.clear()
+        if self._process is not None:
+            await self._process.aclose()
 
 
 # Moved to config/external_cli.py (shared with codex-cli); the old name stays
@@ -746,15 +915,44 @@ class ClaudeCliModel(ExternalCliModel):
 _TextFolder = TextFolder
 
 
+class _ThinkingParts:
+    """Vendor-part-id bookkeeping for thinking deltas: one thinking part per
+    contiguous run, a fresh id once prose or a tool card intervened — the same
+    interleaving rule ``TextFolder`` applies to text."""
+
+    def __init__(self, parts_manager) -> None:
+        self._parts_manager = parts_manager
+        self._n = 0
+        self._open = False
+
+    def close(self) -> None:
+        self._open = False
+
+    def emit(self, delta: str):
+        part_id = f"think-{self._n}"
+        if not self._open:
+            self._n += 1
+            self._open = True
+            part_id = f"think-{self._n}"
+            # Same bootstrap as TextFolder._emit: a brand-new vendor_part_id's
+            # first handle_thinking_delta is reported as a PartStartEvent, never
+            # a PartDeltaEvent, so a consumer that accumulates only deltas would
+            # drop the run's first chunk. Open the part with an empty delta and
+            # let the real content arrive as a proper delta below.
+            yield from self._parts_manager.handle_thinking_delta(vendor_part_id=part_id, content="")
+        yield from self._parts_manager.handle_thinking_delta(vendor_part_id=part_id, content=delta)
+
+
 @dataclass
 class ClaudeCliStreamedResponse(StreamedResponse):
-    """Streams ``consume_cli_stream`` output as text-delta events. Stores Claude's
-    session id back on the model when the terminal chunk arrives."""
+    """Streams ``consume_cli_stream`` output as text/thinking-delta events plus
+    out-of-band tool cards (``_on_activity``), folding ``▸`` lines instead when
+    no UI is bound."""
 
     _objs: AsyncIterator[dict] | None = None
     _model_id: str = "default"
     _ts: datetime | None = None
-    _set_session: Callable[[str], None] | None = None
+    _on_init: Callable[[InitChunk], None] | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
     _on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
     _on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
@@ -764,12 +962,21 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         traffic is delivered out-of-band (the synthesized spawn_agent call/
         return via _on_activity — the top-level sink claims those and builds
         the live card — and child events via _on_subagent, keyed by the spawn's
-        tool_use id); everything else flows on to the chunk pipeline."""
+        tool_use id); everything else flows on to the chunk pipeline.
+
+        ``stream_event`` objects bypass the demux: it only knows whole
+        assistant/user messages. The main turn's deltas pass straight through;
+        a child's (tagged ``parent_tool_use_id``) are dropped — the child's
+        whole assistant message reaches its card via the demux anyway."""
         from ..subagents.cli_demux import CliSubagentDemux
 
         demux = CliSubagentDemux()
         assert self._objs is not None
         async for obj in self._objs:
+            if obj.get("type") == "stream_event":
+                if not obj.get("parent_tool_use_id"):
+                    yield obj
+                continue
             routed, remainder = demux.route(obj)
             for r in routed:
                 if r.stream_id is None:
@@ -784,20 +991,28 @@ class ClaudeCliStreamedResponse(StreamedResponse):
 
     def _finalize_done(self, done: DoneChunk | None) -> None:
         """Mirror ``request()``: a stream that ends without a proper ``result``
-        event (Claude crashed / produced no result) is a FAILED turn — raise so
-        the harness flushes its resumable baseline (clean failure).
-
-        Called once, AFTER ``_get_event_iterator``'s loop — not applied as each
-        DoneChunk arrives — because `claude -p` can emit several ``result``
-        events in one process (an async sub-agent's completion re-invokes the
-        main agent for another turn), and marking the stream finished on the
-        first one would cut the run short. The last DoneChunk wins."""
+        (Claude died / produced no result) is a FAILED turn — raise so the
+        harness flushes its resumable baseline (clean failure)."""
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
         self._usage = done.usage
-        if done.session_id and self._set_session is not None:
-            self._set_session(done.session_id)
         self._finished = True
+
+    async def _events_for(self, chunk, folder: TextFolder, thinking: _ThinkingParts):
+        """The pydantic-ai events for one non-terminal chunk."""
+        if isinstance(chunk, TextChunk):
+            thinking.close()
+            async for ev in folder.emit_text(chunk.delta):
+                yield ev
+        elif isinstance(chunk, ThinkingChunk):
+            for ev in thinking.emit(chunk.delta):
+                yield ev
+        elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
+            thinking.close()
+            async for ev in folder.emit_tool(chunk):
+                yield ev
+        elif isinstance(chunk, InitChunk) and self._on_init is not None:
+            self._on_init(chunk)
 
     async def _get_event_iterator(self):
         if self._objs is None:
@@ -813,22 +1028,21 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
         )
-
+        thinking = _ThinkingParts(self._parts_manager)
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk
-        # pipeline (and, transitively, the demux wrapper) rather than leaking it to
-        # GC. The child process itself is killed by request_stream's finally, which
-        # closes the underlying spawn generator (self._objs).
+        # pipeline rather than leaving it to GC. It reaches only that one
+        # generator: the demux wrapper below it is left to the loop's
+        # async-generator finalization, which is fine because it owns nothing
+        # of its own — the turn iterator it reads from is closed explicitly by
+        # request_stream's finally, which also interrupts the turn.
         async with aclosing(consume_cli_stream(objs)) as stream:
             async for chunk in stream:
-                if isinstance(chunk, TextChunk):
-                    async for ev in folder.emit_text(chunk.delta):
-                        yield ev
-                elif isinstance(chunk, (ToolUseChunk, ToolResultChunk)):
-                    async for ev in folder.emit_tool(chunk):
-                        yield ev
-                elif isinstance(chunk, DoneChunk):
-                    done = chunk  # last one wins (multi-result runs)
+                if isinstance(chunk, DoneChunk):
+                    done = chunk
+                    continue
+                async for ev in self._events_for(chunk, folder, thinking):
+                    yield ev
         self._finalize_done(done)
 
     @property

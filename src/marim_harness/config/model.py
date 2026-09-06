@@ -444,7 +444,7 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
 def _claude_cli_available() -> bool:
     """True when a ``claude`` binary can be resolved (the only 'cred' this provider
     needs; a not-logged-in CLI fails clearly at first use)."""
-    from ..subagents.cli_backend import resolve_cli_binary
+    from ..claude.env import resolve_cli_binary
 
     return resolve_cli_binary() is not None
 

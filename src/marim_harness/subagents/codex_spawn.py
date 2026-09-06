@@ -454,7 +454,7 @@ class CodexSpawnOrchestrator:
             async for item in turn_events(server, handle, state, turn_id=turn_id):
                 events = tx.feed(item)
                 # Checkpoint whenever the transcript grows (mirrors
-                # cli_backend._process_line's growth-gated checkpoint) so a
+                # cli_backend._consume's growth-gated checkpoint) so a
                 # cancellation mid-turn loses at most the segment since the
                 # last item, not the whole run.
                 if request.checkpoint is not None and len(tx.messages) != last_ckpt_len:

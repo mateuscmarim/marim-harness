@@ -160,7 +160,8 @@ cycles.
   worktrees, snapshots, and the per-session scratchpad.
 - **`subagents/`** — spawn lifecycle (`runner.py`), model-loop recovery
   (`run_driver.py`), context masking, model tiers (`tiers.py`), and the
-  optional `claude -p` CLI backend.
+  `backend: claude-cli` orchestration (`cli_spawn.py`, `cli_backend.py`)
+  that drives one bidirectional `claude` process per spawn.
 - **`workflows/`** — the gated `run_workflow` tool executes model-authored
   Python in a pydantic-monty sandbox; never cancel the Monty VM task — aborts
   flow through host functions (see `engine.py`'s module docstring).

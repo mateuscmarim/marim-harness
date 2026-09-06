@@ -410,10 +410,14 @@ async def _captured_cli_run_kwargs(
 
 @pytest.mark.anyio
 async def test_cli_spawn_in_plan_mode_strips_net_tools(tmp_path: Path, monkeypatch):
+    from marim_harness.claude.approvals import ClaudeApprovalBroker
+
     kwargs, _ = await _captured_cli_run_kwargs(tmp_path, monkeypatch, Mode.plan)
     tools = set(kwargs["allowed_tools"])
     assert not (tools & NET_TOOLS)
     assert "read_file" in tools
+    # Every remaining tool is still gated per use, through the spawn's broker.
+    assert isinstance(kwargs["broker"], ClaudeApprovalBroker)
 
 
 @pytest.mark.anyio
@@ -466,23 +470,3 @@ async def test_cli_spawn_never_receives_marim_mcp_config(
     structured = {k: v for k, v in kwargs.items() if k not in {"prompt", "system_prompt"}}
     assert not any("mcp" in str(v).lower() for v in structured.values())
     assert "not forwarded" in out and "mddocs" in out
-
-
-def test_cli_argv_carries_no_mcp_flags():
-    """Belt over braces for the same assumption at the argv layer: the CLI
-    argv builder has no MCP-config surface at all, so a spawn can't smuggle
-    marim MCP servers to the external process."""
-    from marim_harness.subagents.cli_backend import build_cli_argv
-
-    argv = build_cli_argv(
-        binary="/bin/claude",
-        prompt="do the task",
-        permission_mode="plan",
-        system_prompt="role",
-        allowed_tools=["Read"],
-        disallowed_tools=["WebFetch", "WebSearch"],
-        model="opus",
-        resume_session_id="sid",
-        safe_mode=True,
-    )
-    assert not any("mcp" in a.lower() for a in argv)

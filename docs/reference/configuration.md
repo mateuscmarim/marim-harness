@@ -29,7 +29,7 @@ blocked keys are honored only from the shell environment or the global config:
 - `MARIM_PROVIDER`, `MARIM_BASE_URL`, `MARIM_SEARXNG_URL`
 - `MARIM_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`,
   `OPENCODE_API_KEY`
-- `MARIM_CLAUDE_CLI_BIN`, `MARIM_CLAUDE_CLI_TIMEOUT`
+- `MARIM_CLAUDE_CLI_BIN`, `MARIM_CLAUDE_CLI_TIMEOUT`, `MARIM_CLAUDE_CLI_IDLE_TIMEOUT`
 - `XDG_CONFIG_HOME`, `XDG_DATA_HOME` (a project `.env` redirecting the XDG
   dirs could relocate the "trusted" global config into the clone itself)
 
@@ -71,7 +71,8 @@ non-positive values and fall back to the default (exceptions are noted).
 | `GEMINI_API_KEY` | unset | Alternative Google key; checked after `GOOGLE_API_KEY`, before `MARIM_API_KEY`. |
 | `MARIM_CLAUDE_CLI_BIN` | `claude` (resolved on PATH) | Claude Code executable to launch for the `claude-cli` provider and `backend: claude-cli` spawns. |
 | `MARIM_CLAUDE_CLI_MODEL` | unset (CLI's own default) | Claude Code model for `backend: claude-cli` **sub-agent** spawns (alias like `sonnet` or a full id). |
-| `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Wall-clock ceiling in seconds for one claude-cli spawn. |
+| `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Seconds of silence (no stream object) allowed inside one open claude-cli turn, excluding time an approval prompt is waiting in the panel; on expiry marim interrupts, waits 2 s, then kills the process. |
+| `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` | `600` | Seconds a main-loop `claude` process may sit with no turn open before marim closes it; the next turn resumes the same Claude session by id. `0` disables reaping. Spawns and aux clones never idle (their process closes at run end). |
 | `MARIM_CODEX_CLI_BIN` | `codex` (resolved on PATH) | Path to the `codex` binary when it is not on PATH (used by the `codex-cli` provider and `backend: codex-cli` sub-agents). |
 | `MARIM_CODEX_CLI_TIMEOUT` | `600` | Seconds a Codex turn may sit idle (no notification) before marim interrupts it. Default `600`. |
 | `MARIM_CODEX_CLI_MODEL` | unset (CLI's own default) | Default model for `backend: codex-cli` sub-agents (a Codex model id such as `gpt-5.4-mini`). The spec's `model:` and a spawn's `model=` override it. |
@@ -108,16 +109,32 @@ without an active Go subscription lists the provider but fails clearly at the
 first chat request. Billing is flat monthly with usage windows, so marim shows
 no per-token cost for it.
 
-Under the `claude-cli` provider marim delegates each turn to `claude -p` on a
-Claude subscription: Claude runs its own tools and loop, so marim's tools,
-approval gating, LSP, and MCP do not apply, and no API key is read (the CLI
-owns auth). `MARIM_CLAUDE_CLI_MODEL` applies only to sub-agent specs with
+`claude-cli` runs your Claude subscription through the `claude` CLI. marim keeps
+one long-lived `claude` process per conversation and talks to it over its
+stream-json control protocol: every tool Claude wants to run comes back to marim
+as a permission request, so `auto`/`ask`/`plan`, the approval panel and
+`ask_user` apply exactly as with a native model; a steer folds into the running
+turn; an interrupt is a control request (the process is killed only if it
+ignores the interrupt for 2 s). The conversation resumes by session id after an
+idle close (`MARIM_CLAUDE_CLI_IDLE_TIMEOUT`), a crash, a model switch, or a
+marim restart. Claude runs its own tools, LSP and MCP servers — marim's tools,
+LSP and MCP do not apply. The process is launched with `--safe-mode
+--strict-mcp-config --setting-sources ""`, so Claude's own hooks, MCP servers,
+plugins and settings do NOT load; its skills and `CLAUDE.md` files are plain
+files under the workspace and remain readable (the CLI's `--bare` flag would
+close that gap but breaks subscription auth, so it is not used). Requires Claude
+Code 2.1 or newer (older versions log a warning). The thinking level (`/think`)
+is a no-op under this provider.
+
+No API key is read for this provider — the CLI owns its own subscription auth.
+`MARIM_CLAUDE_CLI_MODEL` applies only to sub-agent specs with
 `backend: claude-cli` (precedence: per-spawn override, then the spec's
 frontmatter model, then this variable, then the CLI's default); the main-loop
 claude-cli model comes from `MARIM_MODEL`. `MARIM_CLAUDE_CLI_BIN` may be a
 name resolved on PATH or a path; a non-positive or unparseable
-`MARIM_CLAUDE_CLI_TIMEOUT` (float, seconds) falls back to 600 rather than
-disabling the guard.
+`MARIM_CLAUDE_CLI_TIMEOUT` or `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` (float, seconds)
+falls back to its default rather than disabling the guard (`0` for the idle
+timeout means never reap).
 
 Under the `codex-cli` provider marim delegates each turn to `codex app-server`
 (the Codex CLI's JSON-RPC front end): one app-server per marim *process* — a

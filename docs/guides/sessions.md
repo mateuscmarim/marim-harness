@@ -247,6 +247,10 @@ ends with unanswered tool calls, and that dirty state is *never* persisted.
 Cancelling an approval rolls back to the last cleanly persisted point, so a
 resumed session always starts from a coherent conversation.
 
+`claude-cli` sessions persist the Claude session id as `claude-cli:<id>` and
+resume it on the next turn, even after a restart; if Claude no longer has the
+session, marim starts a fresh one from the flattened history.
+
 A `codex-cli` session also stores its Codex thread id and resumes that thread;
 if Codex has forgotten it, the turn starts a fresh thread seeded with the saved
 history.

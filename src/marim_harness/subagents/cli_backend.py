@@ -1,27 +1,23 @@
-"""Run the Claude Code CLI (`claude -p`) as a sub-agent backend.
+"""Optional Claude Code backend for sub-agents: one long-lived, bidirectional
+``claude`` per spawn.
 
-An authored agent with `backend: claude-cli` is spawned as an external `claude`
-process in headless stream-json mode instead of the in-process Pydantic AI loop.
-This module is backend-only: the pure translation helpers (binary resolve, argv
-build, harness→Claude-Code tool-name mapping, permission-mode selection, usage
-synthesis), the stream-event translator, and the thin `ClaudeCliRunner` that
-spawns the process and forwards its activity to the UI — including handing the
-CLI's own Agent/Task sub-agent traffic off to `cli_demux.CliSubagentDemux` so it
-renders as native cards. The harness wrapping
-(worktree, hooks bracketing, output cap, background persist) stays in
-`subagents.py`, so this module is unit-tested without the rest of the harness.
+A ``backend: claude-cli`` sub-agent runs on the user's Claude subscription: the
+spawn's task goes down a ``ClaudeProcess`` (``claude/process.py``) as one
+stream-json turn, Claude's tool calls are approved per tool through the spawn's
+``ClaudeApprovalBroker`` (marim's ``auto``/``ask``/``plan`` mode, the approval
+panel, ``ask_user``), and the assistant/user objects it emits are translated
+into pydantic-ai streaming events for the sub-agents screen. The process is
+closed when the spawn ends; an interrupted spawn resumes by session id.
+
+The harness wrapping (worktree, hooks bracketing, output cap, background
+persist) stays in ``cli_spawn.py``, so this module is unit-tested without the
+rest of the harness.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import json
 import logging
-import os
-import shutil
-import signal
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -42,65 +38,29 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.usage import RunUsage
 
-from ..ndjson import iter_ndjson_lines
+from ..claude.env import (
+    CLI_BINARY_ENV,  # noqa: F401 — re-exported for tests
+    CLI_MODEL_ENV,  # noqa: F401 — re-exported for tests
+    CLI_TIMEOUT_ENV,  # noqa: F401 — re-exported for tests
+    CliUnavailable,  # noqa: F401 — re-exported: cli_spawn imports this here
+    resolve_cli_binary,  # noqa: F401 — re-exported for tests/config/settings
+)
+from ..claude.env import DEFAULT_CLI_TIMEOUT as _DEFAULT_CLI_TIMEOUT  # noqa: F401 — re-exported
+from ..claude.env import cli_timeout as _cli_timeout
+from ..claude.process import ClaudeProcess, ProcessOptions, turn_objects
+from ..claude.protocol import CLOSED
+from ..config.external_cli import CliModelError
 
 if TYPE_CHECKING:
+    from ..claude.approvals import ClaudeApprovalBroker
     from .cli_demux import CliSubagentDemux, RoutedEvent
 
 logger = logging.getLogger(__name__)
 
-CLI_BINARY_ENV = "MARIM_CLAUDE_CLI_BIN"
-CLI_MODEL_ENV = "MARIM_CLAUDE_CLI_MODEL"
-CLI_TIMEOUT_ENV = "MARIM_CLAUDE_CLI_TIMEOUT"
-
-# Wall-clock ceiling for one CLI spawn. `claude -p` inherits stdin, so a network
-# hang, an unexpected interactive prompt, or a wedged tool would otherwise never
-# EOF: run() would never return, and the spawn would hold its concurrency slot
-# forever, starving every later spawn. This bounds the whole run. It is generous
-# (a real sub-agent task legitimately takes minutes) and overridable via
-# MARIM_CLAUDE_CLI_TIMEOUT (seconds); a non-positive / unparseable override falls
-# back to the default rather than disabling the guard.
-_DEFAULT_CLI_TIMEOUT = 600.0
-
-
-def _cli_timeout() -> float:
-    """The per-spawn wall-clock timeout in seconds (``MARIM_CLAUDE_CLI_TIMEOUT``,
-    else ``_DEFAULT_CLI_TIMEOUT``). Garbage / non-positive values fall back to the
-    default so a bad env can never remove the ceiling."""
-    raw = os.environ.get(CLI_TIMEOUT_ENV)
-    if raw is None:
-        return _DEFAULT_CLI_TIMEOUT
-    try:
-        value = float(raw.strip())
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; using default.", CLI_TIMEOUT_ENV, raw)
-        return _DEFAULT_CLI_TIMEOUT
-    return value if value > 0 else _DEFAULT_CLI_TIMEOUT
-
-
-def _kill_process_group(proc) -> None:
-    """SIGKILL the spawn and all descendants (deep child cleanup).
-
-    Walks ``/proc`` to find every descendant process — including MCP servers
-    in their own process groups that ``os.killpg`` on the parent alone
-    wouldn't reach — and kills each group.  Falls back to the plain group
-    kill when the tree walk fails (non-Linux, unreadable ``/proc``)."""
-    if proc.returncode is not None:
-        return
-    from ..tools.impl.process import kill_process_tree
-
-    try:
-        kill_process_tree(proc.pid)
-    except Exception:  # noqa: BLE001 - best-effort: degrade to group-only
-        with contextlib.suppress(OSError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-
 
 # Harness tool name → Claude Code tool name. Names with no Claude Code equivalent
 # (tree, the LSP navigation tools) are absent on purpose: the CLI has its own
-# navigation, so we don't fabricate a mapping. The result feeds --allowedTools.
+# navigation, so we don't fabricate a mapping. The result feeds --tools.
 _CC_TOOL_MAP = {
     "read_file": "Read",
     "glob": "Glob",
@@ -152,10 +112,6 @@ def normalize_cc_tool(name: str, args: dict) -> tuple[str, dict]:
     return harness, args
 
 
-class CliUnavailable(Exception):
-    """No `claude` binary could be found to back a claude-cli spawn."""
-
-
 class CliRunError(Exception):
     """The CLI ran but produced no terminal result event (crash / bad output)."""
 
@@ -176,86 +132,11 @@ class CliResult:
     session_id: str | None = None
 
 
-def resolve_cli_binary() -> str | None:
-    """The Claude Code executable to spawn: ``$MARIM_CLAUDE_CLI_BIN`` if set, else
-    ``claude`` on PATH. Returns an absolute path, or None when nothing is found so
-    the caller reports a clean error instead of crashing."""
-    name = os.environ.get(CLI_BINARY_ENV) or "claude"
-    return shutil.which(name)
-
-
-def cli_permission_mode(allow_gated: bool) -> str:
-    """The ``--permission-mode`` for a spawn: ``acceptEdits`` in auto mode (gated
-    tools allowed), else ``plan`` (read-only — the headless CLI can't prompt, so
-    anything not pre-authorized is simply unavailable)."""
-    return "acceptEdits" if allow_gated else "plan"
-
-
 def map_tools_to_cc(tool_names) -> list[str]:
-    """Translate granted harness tool names to Claude Code ``--allowedTools``
-    names, dropping any without a Claude Code equivalent. Sorted for a stable
-    argv (and stable tests)."""
+    """Translate granted harness tool names to Claude Code ``--tools`` names,
+    dropping any without a Claude Code equivalent. Sorted for a stable argv
+    (and stable tests)."""
     return sorted({_CC_TOOL_MAP[n] for n in tool_names if n in _CC_TOOL_MAP})
-
-
-def build_cli_argv(
-    binary: str,
-    prompt: str,
-    system_prompt: str,
-    permission_mode: str,
-    allowed_tools: list[str],
-    model: str | None,
-    *,
-    disallowed_tools: list[str] | None = None,
-    resume_session_id: str | None = None,
-    append_system: bool = True,
-    safe_mode: bool = False,
-) -> list[str]:
-    """The argv for one headless spawn. ``stream-json`` requires ``--verbose``.
-    The task is a single positional arg (we exec, not shell — no quoting hazard);
-    the agent's role prompt is appended to the CLI's own system prompt. ``--model``
-    is omitted when None so the CLI uses its configured default; ``--allowedTools``
-    is omitted when empty.
-
-    ``--allowedTools`` is ADDITIVE pre-approval only — absence from it (or an
-    omitted flag) is NOT a denial: a permissive ``--permission-mode`` still
-    permits tools never named (Claude Code's plan mode, for one, auto-allows
-    its web research tools). The hard deny headless ``-p`` honors is
-    ``--disallowedTools``; a caller that must block a tool (the plan-mode
-    net-egress boundary in ``CliSpawnOrchestrator.run_cli``) names it in
-    ``disallowed_tools``, which is emitted even when the allowlist is empty.
-
-    The main-loop ``ClaudeCliModel`` uses ``resume_session_id`` to continue an
-    existing Claude session (sending only the new user message), and sets
-    ``append_system=False`` on those resumed turns so the system prompt — already
-    set when the session was created — is not appended again. It also sets
-    ``safe_mode`` so ``--safe-mode`` disables the user's plugins/hooks (e.g.
-    agentmemory's SessionStart context injection, which otherwise bleeds
-    cross-session observations into the turn and derails Claude); auth, model, and
-    built-in tools still work normally."""
-    argv = [
-        binary,
-        "-p",
-        prompt,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--permission-mode",
-        permission_mode,
-    ]
-    if safe_mode:
-        argv.append("--safe-mode")
-    if append_system:
-        argv += ["--append-system-prompt", system_prompt]
-    if resume_session_id:
-        argv += ["--resume", resume_session_id]
-    if allowed_tools:
-        argv += ["--allowedTools", ",".join(allowed_tools)]
-    if disallowed_tools:
-        argv += ["--disallowedTools", ",".join(disallowed_tools)]
-    if model:
-        argv += ["--model", model]
-    return argv
 
 
 def synth_usage(
@@ -455,75 +336,36 @@ def _flatten_tool_result(content) -> str:
     return "" if content is None else str(content)
 
 
-# Grace window for the post-loop stderr drain and the final process reap. Once
-# stdout has EOF'd (the child exited), a well-behaved process's stderr closes
-# essentially immediately, so this is generous. It exists to bound the ONE case
-# that would otherwise hang forever: a spawn whose Bash tool backgrounded a
-# daemon (`nohup … &`) that inherited the child's stderr — `claude` exits and
-# stdout EOFs, but the daemon holds stderr's write end open so it never EOFs. An
-# unbounded `await stderr_task` there pins the run (and its concurrency slot)
-# forever, violating this module's own invariant. On expiry we SIGKILL the group
-# (which reaps the daemon too — a bare `&`/nohup child stays in the group) and
-# proceed with whatever stderr was collected.
-_POST_LOOP_GRACE = 2.0
-
-# The chunked NDJSON reader lives in the package-level leaf ``ndjson`` module
-# (shared with the codex transport, which must be importable without pulling
-# this package in); the private alias is kept because
-# ``config/claude_cli_model.py`` imports it lazily under this name.
-_iter_ndjson_lines = iter_ndjson_lines
-
-
 @dataclass
 class _RunState:
-    """The `run` read-loop's mutated locals, pulled into one object so they can
-    be threaded through `_process_line`/`_finalize` without an in/out tuple per
-    call. `output` is the last-seen result event's text (a run can emit several
-    — see the result-handling comment in `_process_line`); `results` accumulates
-    every result event for `_finalize`'s usage fold; `model_sent` latches once
-    the CLI's reported model has been surfaced to the UI; `session_id` is the
-    resume key captured from the stream; `last_ckpt_len` is the transcript
-    length as of the last checkpoint, so growth-only checkpointing can compare
-    against it."""
+    """The turn loop's mutated locals, pulled into one object so they can be
+    threaded through `_consume`/`_finalize` without an in/out tuple per call.
+    `output` is the last-seen result object's text; `results` accumulates every
+    result object for `_finalize`'s usage fold; `model_sent` latches once the
+    CLI's reported model has been surfaced to the UI; `session_id` is the resume
+    key, deliberately left UNSEEDED by a resume and filled only from the stream,
+    so newest-id-wins still holds when `--resume` forks the conversation onto a
+    new id; `last_ckpt_len` is the transcript length as of the last checkpoint,
+    so growth-only checkpointing can compare against it."""
 
     output: str = ""
     results: list[dict] = field(default_factory=list)
     model_sent: bool = False
     session_id: str | None = None
     last_ckpt_len: int = 0
-
-
-async def _read_next_line(line_iter, deadline: float, proc, timeout_msg: str) -> str | None:
-    """Read one NDJSON line off `line_iter`, bounded by the shared wall-clock
-    `deadline` rather than a per-read idle gap: a chatty spawn keeps resetting a
-    per-read window and could run unbounded, so each read is shrunk to the time
-    remaining. On expiry (or a `wait_for` timeout racing it) the process group is
-    SIGKILLed and CliRunError is raised — a hung `claude -p` (network hang, an
-    interactive prompt on the inherited stdin) must not pin its concurrency slot
-    forever. Returns None on a clean EOF (StopAsyncIteration) so the caller's
-    loop can fall through to `_finalize`."""
-    loop = asyncio.get_event_loop()
-    remaining = deadline - loop.time()
-    if remaining <= 0:
-        _kill_process_group(proc)
-        raise CliRunError(timeout_msg)
-    try:
-        return await asyncio.wait_for(line_iter.__anext__(), timeout=remaining)
-    except StopAsyncIteration:
-        return None
-    except (TimeoutError, asyncio.TimeoutError):
-        _kill_process_group(proc)
-        raise CliRunError(timeout_msg) from None
+    closed_detail: str = ""  # "claude exited (code N): <stderr>" when the process died mid-turn
 
 
 class ClaudeCliRunner:
-    """Spawns the Claude Code CLI for one sub-agent task and forwards its activity.
+    """Runs one sub-agent task on its own ``claude`` process and forwards its
+    activity.
 
-    Reads the process's stream-json stdout line by line, translates each event for
-    the UI (when a foreground ``stream_id`` and an ``on_event`` sink are present),
-    and captures the terminal ``result`` event's text + usage. Raises CliRunError
-    if the process ends without a result. The harness wraps this with hooks,
-    output cap, and worktree handling — see CliSpawnOrchestrator.execute.
+    Sends the task as a single turn, translates every object the CLI streams
+    back for the UI (when a foreground ``stream_id`` and an ``on_event`` sink
+    are present), and captures the terminal ``result`` object's text + usage.
+    Raises CliRunError if the turn ends without a result. The harness wraps
+    this with hooks, output cap, and worktree handling — see
+    CliSpawnOrchestrator.execute.
     """
 
     def __init__(self, on_event, on_notice, on_model=None) -> None:
@@ -542,162 +384,115 @@ class ClaudeCliRunner:
         prompt: str,
         system_prompt: str,
         cwd: str,
-        allow_gated: bool,
-        allowed_tools,
+        allowed_tools: Iterable[str],
         model: str | None,
-        stream_id: str,
-        disallowed_tools: list[str] | None = None,
+        stream_id: str | None,
+        disallowed_tools: Iterable[str] | None = None,
         checkpoint: Callable[[list, str | None], None] | None = None,
         resume_session_id: str | None = None,
+        broker: ClaudeApprovalBroker | None = None,
     ) -> CliResult:
-        argv = build_cli_argv(
-            binary,
-            prompt,
-            system_prompt,
-            cli_permission_mode(allow_gated),
-            map_tools_to_cc(allowed_tools),
-            model,
-            disallowed_tools=disallowed_tools,
-            resume_session_id=resume_session_id,
-            # A resumed session already carries its system prompt from creation;
-            # re-appending would duplicate it (same rule as ClaudeCliModel's
-            # resumed turns — see build_cli_argv's docstring).
-            append_system=resume_session_id is None,
-        )
-        # start_new_session so the child leads its own process group: a timeout can
-        # then SIGKILL the whole group (Claude + any tool subprocesses it spawned),
-        # not just the top process — see _kill_process_group.
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
+        """Run one spawn to completion on its own ``claude`` process.
+
+        ``allowed_tools`` are marim tool names (mapped to Claude Code's via
+        ``map_tools_to_cc``); ``disallowed_tools`` are Claude Code names the
+        caller hard-denies (plan mode's web tools). ``broker`` answers the
+        process's ``can_use_tool`` requests; without one the process replies
+        with an error response (Claude treats it as a denial) — tests only,
+        ``cli_spawn.run_cli`` always builds one. On ``resume_session_id`` the
+        system prompt is omitted (the session already has it) and ``prompt``
+        is the resume text.
+
+        A silence timeout (``MARIM_CLAUDE_CLI_TIMEOUT``, paused while a prompt
+        waits in the panel) interrupts and then kills a hung spawn: it must not
+        pin its concurrency slot forever."""
+        options = ProcessOptions(
+            binary=binary,
             cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
+            model=model,
+            resume_id=resume_session_id,
+            tools=tuple(map_tools_to_cc(allowed_tools)),
+            disallowed_tools=tuple(disallowed_tools or ()),
+            append_system=None if resume_session_id else system_prompt,
         )
-        # Drain stderr concurrently: if the child floods stderr past the OS pipe
-        # buffer before finishing stdout, a sequential "read stdout then stderr"
-        # would deadlock (child blocks writing stderr, parent waits on stdout EOF).
-        stderr_task = asyncio.ensure_future(proc.stderr.read()) if proc.stderr is not None else None
+        process = ClaudeProcess(
+            options,
+            on_request=broker.handle if broker is not None else None,
+            silence_timeout=_cli_timeout(),
+        )
+        from .cli_demux import CliSubagentDemux  # lazy: cli_demux imports us
+
+        translator = CliStreamTranslator()
+        demux = CliSubagentDemux()
+        # Deliberately unseeded on resume: `claude --resume` may fork into a
+        # FRESH session, and the first object it emits carries the new id.
+        # Capturing that (rather than pre-seeding `resume_session_id`) is what
+        # lets a later re-resume key off the fork, not the exhausted original.
+        state = _RunState()
+        await process.start()
         try:
-            from .cli_demux import CliSubagentDemux  # lazy: cli_demux imports us
-
-            translator = CliStreamTranslator()
-            demux = CliSubagentDemux()
-            state = _RunState()
-            assert proc.stdout is not None
-            # Bound the whole read loop by a single wall-clock deadline rather than a
-            # per-read idle gap: a chatty spawn keeps resetting a per-read window and
-            # could run unbounded, so we shrink each read to the time remaining. On
-            # expiry we SIGKILL the group and fail the spawn — a hung `claude -p`
-            # (network hang, an interactive prompt on the inherited stdin) must not
-            # pin its concurrency slot forever.
-            line_iter = _iter_ndjson_lines(proc.stdout)
-            loop = asyncio.get_event_loop()
-            timeout = _cli_timeout()
-            deadline = loop.time() + timeout
-            timeout_msg = f"claude timed out after {timeout:.0f}s with no result (killed)"
-            while True:
-                raw = await _read_next_line(line_iter, deadline, proc, timeout_msg)
-                if raw is None:
-                    break
-                outcome = await self._process_line(
-                    raw,
-                    state,
-                    translator=translator,
-                    demux=demux,
-                    checkpoint=checkpoint,
-                    stream_id=stream_id,
-                )
-                if outcome == "break":
-                    break
-            # Final checkpoint after the loop exits, so a clean-EOF run's last
-            # line is reflected even though the growth-checkpoint above only
-            # fires from inside the loop.
-            if checkpoint is not None:
-                snapshot = translator.transcript()
-                if len(snapshot) != state.last_ckpt_len:
-                    checkpoint(snapshot, state.session_id)
-            # Bounded, not `await stderr_task`: a backgrounded daemon that
-            # inherited the child's stderr would never let this EOF — see
-            # _POST_LOOP_GRACE. _drain_stderr kills the group on expiry, so this
-            # can't hang the run.
-            stderr_bytes = await self._drain_stderr(stderr_task, proc)
-            stderr_task = None  # consumed — don't cancel it in finally
-            return await self._finalize(state, stderr_bytes, proc, translator, demux)
+            handle = await process.send_turn(prompt)
+            async for obj in turn_objects(process, handle):
+                await self._consume(obj, state, translator, demux, stream_id, checkpoint)
+        except CliModelError as exc:
+            # next_turn_object's silence timeout (already interrupted the turn).
+            raise CliRunError(str(exc)) from exc
         finally:
-            # On an exceptional/cancelled exit, reap the child so an auto-mode CLI
-            # can't keep editing files after the spawn was abandoned, and never leave
-            # stderr_task un-retrieved (which would log an asyncio "Future destroyed"
-            # warning and suppress the real exception on Python 3.11+).
-            if stderr_task is not None:
-                stderr_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await stderr_task
-            if proc.returncode is None:
-                _kill_process_group(proc)
-                with contextlib.suppress(BaseException):
-                    await proc.wait()
+            # One process per spawn: whatever happened (a sink raised, the
+            # spawn was cancelled, the CLI died), nothing outlives the spawn.
+            await process.aclose()
+        return self._finalize(state, translator, demux)
 
-    async def _process_line(
+    async def _consume(
         self,
-        raw: str,
+        obj: dict,
         state: _RunState,
-        *,
         translator: CliStreamTranslator,
         demux: CliSubagentDemux,
+        stream_id: str | None,
         checkpoint: Callable[[list, str | None], None] | None,
-        stream_id: str,
-    ) -> str | None:
-        """Handle one NDJSON line from the CLI's stdout, mutating `state` in
-        place. Returns ``"break"`` when the caller's read loop should stop
-        (no line currently triggers that — kept for symmetry with
-        `_read_next_line`'s EOF signal), else None to read the next line."""
-        # Checkpoint the transcript accumulated so far whenever it has
-        # grown. Placed at the top of the iteration (not the bottom) so a
-        # single call site covers every path the loop body takes — the
-        # translate branch, the demux record_call/record_return path, and
-        # all the early-return paths below. The cost is a one-line lag: a
-        # kill mid-stream loses at most the final line's content, and a
-        # clean run's completion-time write supersedes the last checkpoint
-        # anyway.
+    ) -> None:
+        """Route one turn object: checkpoint the transcript growth seen so far
+        (at the top, so the message that fails to deliver is not lost), capture
+        the session id, note a mid-turn death, and split Claude-side sub-agent
+        traffic off through the demux. ``stream_event`` deltas are dropped —
+        the spawn card renders whole messages."""
         if checkpoint is not None:
             snapshot = translator.transcript()
             if len(snapshot) != state.last_ckpt_len:
                 state.last_ckpt_len = len(snapshot)
                 checkpoint(snapshot, state.session_id)
-        line = raw.strip()
-        if not line:
-            return None
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            return None  # non-JSON noise on stdout — skip
+        if obj.get("type") == CLOSED:
+            code = obj.get("returncode")
+            stderr = str(obj.get("stderr") or "").strip()
+            state.closed_detail = f"claude exited (code {code}): {stderr}"
+            return
+        if obj.get("type") == "stream_event":
+            return
         if state.session_id is None:
             sid = obj.get("session_id")
             if isinstance(sid, str) and sid:
                 state.session_id = sid
         # Claude-side sub-agent traffic (Agent/Task spawns, their child
-        # streams, task lifecycle events) is demuxed into per-card
-        # streams; whatever remains is this spawn's own main stream.
+        # streams, task lifecycle events) is demuxed into per-card streams;
+        # whatever remains is this spawn's own main stream.
         routed, remainder = demux.route(obj)
         for r in routed:
             await self._deliver(r, translator, stream_id)
-        if remainder is None:
-            return None
-        await self._dispatch_remainder(remainder, state, translator, stream_id)
-        return None
+        if remainder is not None:
+            await self._dispatch_remainder(remainder, state, translator, stream_id)
 
     async def _dispatch_remainder(
         self,
         obj: dict,
         state: _RunState,
         translator: CliStreamTranslator,
-        stream_id: str,
+        stream_id: str | None,
     ) -> None:
-        """Handle the portion of one line's event left after demux routing:
+        """Handle the portion of one object left after demux routing:
         first-seen model detection, then result-vs-translate dispatch. Split
-        out of `_process_line` so each half stays under the complexity
-        ceiling; mutates `state` in place."""
+        out of `_consume` so each half stays under the complexity ceiling;
+        mutates `state` in place."""
         if not state.model_sent:
             # The system/init event carries the session model at top level;
             # assistant messages carry it under message.model. Surface the
@@ -710,10 +505,10 @@ class ClaudeCliRunner:
                 if self._on_model is not None and stream_id:
                     await self._on_model(stream_id, str(found))
         if obj.get("type") == "result":
-            # One -p process can emit several results (an async
-            # sub-agent's completion notification re-invokes the main
-            # agent). The LAST result's text is the final report;
-            # usage folds across all of them (sum_result_usages).
+            # A turn ends at its result, so a spawn normally sees exactly one.
+            # The fold is kept anyway (the LAST result's text is the report,
+            # usage sums across all of them) because a resumed spawn replays
+            # into the same state — see sum_result_usages.
             state.results.append(obj)
             state.output = obj.get("result", "") or ""
             return
@@ -721,54 +516,14 @@ class ClaudeCliRunner:
             if self._on_event is not None and stream_id:
                 await self._on_event(stream_id, event, None)
 
-    async def _drain_stderr(self, stderr_task, proc) -> bytes:
-        """Collect the child's stderr, bounded by a short grace window. Returns
-        whatever was read; on expiry SIGKILLs the process group (releasing a
-        daemon that inherited stderr and never EOF'd it — see _POST_LOOP_GRACE)
-        and returns empty. Bounding this is the crux of the concurrency-slot
-        invariant: an unbounded ``await stderr_task`` hangs run() forever when a
-        `nohup … &` child holds the write end past the child's own exit."""
-        if stderr_task is None:
-            return b""
-        try:
-            return await asyncio.wait_for(stderr_task, _POST_LOOP_GRACE)
-        except (TimeoutError, asyncio.TimeoutError):
-            # wait_for already cancelled the read; kill the group so the daemon
-            # holding stderr dies with it, then proceed with no stderr.
-            _kill_process_group(proc)
-            return b""
-
-    async def _reap(self, proc) -> int | None:
-        """Wait for the child to exit, bounded so a wedged process can't hang
-        run() on ``proc.wait()``: a first short grace, then a SIGKILL of the
-        group and one more grace. Returns the exit code, or None if it never
-        reaped (the finally block's own kill/wait is the last resort)."""
-        for kill_first in (False, True):
-            if kill_first:
-                _kill_process_group(proc)
-            try:
-                return await asyncio.wait_for(proc.wait(), _POST_LOOP_GRACE)
-            except (TimeoutError, asyncio.TimeoutError):
-                continue
-        return None
-
-    async def _finalize(
-        self,
-        state: _RunState,
-        stderr_bytes: bytes,
-        proc,
-        translator: CliStreamTranslator,
-        demux: CliSubagentDemux,
+    def _finalize(
+        self, state: _RunState, translator: CliStreamTranslator, demux: CliSubagentDemux
     ) -> CliResult:
-        """The post-loop drain: wait (bounded) for the process's exit code, raise
-        CliRunError when the stream never produced a result event, else build
-        the finished CliResult. Called from `run` only after the
-        `stderr_task = None` "consumed" handshake has already run in that
-        frame — see the comment there — so this never touches `stderr_task`
-        itself."""
-        code = await self._reap(proc)
+        """Raise CliRunError when the turn never produced a result object (the
+        process died — `closed_detail` carries its exit code and stderr — or
+        the stream simply ended), else build the finished CliResult."""
         if not state.results:
-            detail = stderr_bytes.decode("utf-8", "replace").strip() or f"exit code {code}"
+            detail = state.closed_detail or "the turn ended without a result object"
             raise CliRunError(f"claude produced no result ({detail})")
         return CliResult(
             output=state.output,
@@ -779,7 +534,7 @@ class ClaudeCliRunner:
         )
 
     async def _deliver(
-        self, routed: RoutedEvent, translator: CliStreamTranslator, stream_id: str
+        self, routed: RoutedEvent, translator: CliStreamTranslator, stream_id: str | None
     ) -> None:
         """Forward one demux-routed event. Main-routed events (the synthesized
         spawn_agent call/return for a Claude-side spawn) go to this spawn's own

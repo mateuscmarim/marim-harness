@@ -55,9 +55,10 @@ class ExternalCliModel(Model):
         self.on_activity: Callable[[list], Awaitable[None]] | None = None
         self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
         self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
-        # Interactive gating (Deps.ui.request_approval / ask_user). claude-cli
-        # cannot use them (headless claude can't prompt); codex-cli brokers its
-        # server-side approval requests through them.
+        # Interactive gating (Deps.ui.request_approval / ask_user). Both
+        # external CLIs broker their tool-permission requests through them:
+        # codex-cli its server-side approval requests, claude-cli the
+        # `can_use_tool` control requests of its long-lived process.
         self.request_approval: Callable[[object], Awaitable[object]] | None = None
         self.ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None = None
         # The session scratchpad (auto-approved writes in ask mode).
@@ -90,6 +91,12 @@ class ExternalCliModel(Model):
         copy). No-op by default."""
         return None
 
+    async def aclose(self) -> None:
+        """Release whatever the provider holds open (a subprocess, a server
+        thread). Called by the harness when the model is switched away from
+        and at teardown. The base does nothing."""
+        return None
+
 
 class TextFolder:
     """The vendor-part-id bookkeeping for a streamed response's two rendering
@@ -100,10 +107,10 @@ class TextFolder:
     run of assistant prose gets its own text part (a fresh vendor_part_id after
     every tool) so the cards interleave between text blocks. Headless (fold
     mode, no side-channel) folds tool use into the text as ``▸`` lines in one
-    growing part. ``part_n`` (cards mode) and ``folded_any`` (fold mode, for
-    blank-line separation) both mutate across chunks AND across the text/tool
-    arms, so they're threaded via this small stateful object rather than loose
-    locals passed in/out of each arm.
+    growing part. ``part_n`` (cards mode) and ``folded_any``/``after_tool``
+    (fold mode, for blank-line separation) all mutate across chunks AND across
+    the text/tool arms, so they're threaded via this small stateful object
+    rather than loose locals passed in/out of each arm.
 
     ``activity_events`` / ``fold_text`` are the provider's chunk -> events and
     chunk -> ``▸`` line translators (claude-cli passes ``cli_activity_events``
@@ -126,6 +133,12 @@ class TextFolder:
         self._is_call = is_call
         self.part_n = 0
         self.folded_any = False
+        # Whether the LAST thing folded into text-0 was a ``▸`` tool line. Prose
+        # arrives one small delta at a time (claude-cli streams a few characters
+        # per text_delta), so the blank line below must separate a tool line
+        # from the prose around it — never one delta from the next, which would
+        # shred every sentence.
+        self.after_tool = False
         self._started_ids: set[str] = set()
 
     async def _emit(self, content: str, part_id: str):
@@ -147,15 +160,16 @@ class TextFolder:
     async def emit_text(self, delta: str):
         """Cards mode gives prose its own vendor part id (``text-{part_n}``);
         fold mode grows the single ``text-0`` part, blank-line-separated from
-        anything already folded into it."""
+        any ``▸`` tool line already folded into it."""
         if self._cards:
             async for ev in self._emit(delta, f"text-{self.part_n}"):
                 yield ev
             return
-        seg = delta if not self.folded_any else f"\n\n{delta}"
+        seg = f"\n\n{delta}" if self.after_tool else delta
         async for ev in self._emit(seg, "text-0"):
             yield ev
         self.folded_any = True
+        self.after_tool = False
 
     async def emit_tool(self, chunk):
         """Cards mode pushes the chunk out-of-band via ``on_activity`` and, for
@@ -173,3 +187,4 @@ class TextFolder:
             async for ev in self._emit(seg, "text-0"):
                 yield ev
             self.folded_any = True
+            self.after_tool = True

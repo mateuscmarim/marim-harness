@@ -31,7 +31,7 @@ Fields:
 | `tools` | `frozenset` of tool names it may use (see grantable set below). |
 | `source` | Provenance label (`"programmatic"` is fine for SDK use; the CLI uses `built-in`/discovery roots). |
 | `plugin` | Owning plugin name, or `None`. Namespaces the agent as `plugin:name`. |
-| `backend` | `"native"` (in-process pydantic-ai loop, default) or `"claude-cli"` (spawns the Claude Code CLI — requires a `claude` binary and subscription; CLI-oriented). |
+| `backend` | `"native"` (in-process pydantic-ai loop, default) or `"claude-cli"` — `backend: claude-cli` runs the spawn on its own bidirectional `claude` process; each tool Claude runs is approved through marim's mode and panel (the panel names the sub-agent), and an interrupted spawn resumes by session id. |
 | `model` | Backend-specific model override; `None` tracks the harness model (native backend). |
 
 `with_subagent(defn)` registers the spec **and implies the `spawn` group** —
