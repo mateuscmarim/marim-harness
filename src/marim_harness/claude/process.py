@@ -264,22 +264,40 @@ class ClaudeProcess:
         try:
             await client.run()
         finally:
-            await self._settle_exit()
-            self._deliver_closed()
-            self.closed.set()
+            # Delivering CLOSED is the invariant, settling the exit is only
+            # polish: nested so that nothing `_settle_exit` does — however it
+            # fails — can leave the open turn without its CLOSED object. Skip
+            # it and the consumer blocks for the whole silence timeout (600 s
+            # by default) while `alive` still reads True.
+            try:
+                await self._settle_exit()
+            finally:
+                self._deliver_closed()
+                self.closed.set()
 
     async def _settle_exit(self) -> None:
         """stdout EOF means the process is gone (or going): give stderr and the
         child reaper a moment to land so the synthetic CLOSED object carries
         the real reason and the real exit code. It runs concurrently with
-        ``aclose``'s own wait on the process, so it adds no shutdown latency."""
+        ``aclose``'s own wait on the process, so it adds no shutdown latency.
+
+        Every failure is swallowed (not just the timeouts): a re-raised
+        exception on the shielded stderr task, or a ProcessLookupError/OSError
+        from a `proc.wait()` whose child another reaper already took, would
+        otherwise abort a best-effort step whose only product is a nicer
+        CLOSED payload. The caller's `finally` delivers CLOSED either way; a
+        missing stderr tail or returncode is the whole cost."""
         if self._stderr_task is not None:
-            with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+            try:
                 await asyncio.wait_for(asyncio.shield(self._stderr_task), _EXIT_SETTLE)
+            except Exception:
+                logger.debug("claude stderr settle failed", exc_info=True)
         proc = self._proc
         if proc is not None:
-            with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+            try:
                 await asyncio.wait_for(proc.wait(), _EXIT_SETTLE)
+            except Exception:
+                logger.debug("claude exit settle failed", exc_info=True)
 
     async def _pump_stderr(self, stream: asyncio.StreamReader) -> None:
         while True:
@@ -359,6 +377,11 @@ class ClaudeProcess:
         """Open a turn and send its user message. A dead process still returns
         a handle — one whose queue already holds the ``CLOSED`` object — so the
         consumer has a single code path."""
+        # One turn at a time: both callers (`ClaudeCliModel._start_turn` and
+        # `ClaudeCliRunner`) finish or interrupt a turn before opening the
+        # next, and overwriting `self._turn` here would silently strand the
+        # previous handle's consumer on a queue nothing ever finishes.
+        assert not self.turn_open, "send_turn while a turn is open"
         self._cancel_idle()
         handle = TurnHandle()
         self._turn = handle

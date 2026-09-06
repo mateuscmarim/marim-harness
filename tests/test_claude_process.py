@@ -151,6 +151,41 @@ async def test_death_mid_turn_delivers_closed_with_stderr(tmp_path: Path):
     assert "boom" in process.last_stderr
 
 
+async def test_closed_is_delivered_even_when_settling_the_exit_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`_settle_exit` is best-effort polish (stderr tail + exit code). If it
+    raises — `proc.wait()` on an already-reaped pid, a stored exception on the
+    shielded stderr task — the open turn must still get its CLOSED object;
+    otherwise the consumer blocks for the whole silence timeout (600 s by
+    default) while `alive` still reads True."""
+
+    async def boom(self) -> None:
+        raise OSError("reaper lost the child")
+
+    monkeypatch.setattr(ClaudeProcess, "_settle_exit", boom)
+    scenario = {"turns": [[{"text": "a"}, {"exit": {"code": 3, "stderr": "boom"}}]]}
+    process = _process(tmp_path, scenario)
+    await process.start()
+    try:
+        objs = await asyncio.wait_for(_collect(process, "go"), 5.0)
+    finally:
+        await process.aclose()
+    assert objs[-1]["type"] == CLOSED
+    assert process.closed.is_set() and process.alive is False
+
+
+async def test_send_turn_rejects_a_second_turn_while_one_is_open(tmp_path: Path):
+    process = _process(tmp_path, {"turns": [[{"text": "a"}, {"sleep": 30}]]})
+    await process.start()
+    try:
+        await process.send_turn("one")
+        with pytest.raises(AssertionError):
+            await process.send_turn("two")
+    finally:
+        await process.aclose()
+
+
 async def test_send_turn_on_dead_process_yields_closed(tmp_path: Path):
     binary = fake_claude_bin(tmp_path, {"known_sessions": ["S1"], "turns": [[{"text": "a"}]]})
     process = ClaudeProcess(ProcessOptions(binary=binary, cwd=str(tmp_path), resume_id="NOPE"))
