@@ -339,8 +339,10 @@ servers, but every tool call comes back to marim as a permission request, so
 `auto` mode lets Claude edit inside the workspace, and any tool that would
 need the approval panel (a write outside the workspace, anything in `ask`
 mode, `AskUserQuestion`) is denied with a message telling Claude to explain
-what it would have done instead. `--think` does not apply to the turn (the
-CLI's own reasoning settings are not reachable from marim). Output formats
+what it would have done instead. `plan` mode is read-only and also denies
+Claude Code's `WebFetch`/`WebSearch` — plan mode is local research. `--think`
+does not apply to the turn (the CLI's own reasoning settings are not
+reachable from marim). Output formats
 work the same shape-wise, but with a twist: without a UI attached, Claude
 Code's internal tool activity is folded into the assistant text as `▸`
 activity lines, so `stream-json` carries it in `text` events rather than

@@ -265,7 +265,8 @@ becomes a thin adapter over a transport-neutral function in
 ```python
 @dataclass(frozen=True)
 class ExternalRequest:
-    mutating: bool          # would change files, run commands, or reach the network
+    mutating: bool          # would change files or run commands
+    network: bool           # would reach the network (WebFetch/WebSearch); non-mutating but denied in plan
     paths: tuple[Path, ...] # file paths the request names, when known
 
 def decide_external(mode, req, workspace_root, scratchpad) -> Decision
@@ -274,17 +275,18 @@ def decide_external(mode, req, workspace_root, scratchpad) -> Decision
 `Decision(accept, reason, ask)` moves alongside it (codex keeps re-exporting
 it). The table is the one codex already has, stated once:
 
-| `Mode` | non-mutating | mutating inside workspace ∪ scratchpad | mutating outside | mutating, paths unknown (e.g. Bash) |
-|---|---|---|---|---|
-| `plan` | accept | deny `"plan mode: read-only — describe the change instead of making it"` | deny (same) | deny (same) |
-| `auto` | accept | accept | **ask** (`"outside workspace: <path>"`) | accept |
-| `ask` | accept | scratchpad-only → accept (`"scratchpad write"`); otherwise **ask** | ask | ask |
+| `Mode` | non-mutating | network (non-mutating) | mutating inside workspace ∪ scratchpad | mutating outside | mutating, paths unknown (e.g. Bash) |
+|---|---|---|---|---|---|
+| `plan` | accept | deny `"plan mode: read-only — describe the change instead of making it"` | deny (same) | deny (same) | deny (same) |
+| `auto` | accept | accept | accept | **ask** (`"outside workspace: <path>"`) | accept |
+| `ask` | accept | accept | scratchpad-only → accept (`"scratchpad write"`); otherwise **ask** | ask | ask |
 
 `ask` means "prompt if a `request_approval` seam is bound"; with no seam
-(headless, spawn without UI) the answer is **accept** — the same headless
-default codex uses, and the one `SubagentRunner` already relies on for
-codex spawns. A prompt dismissed by interrupt is a deny with
-`"cancelled by user"`.
+(headless, spawn without UI) the answer is **deny** with
+`HEADLESS_DENY_MESSAGE` (Claude is told to explain what it would have done
+instead) — nothing there can grant approval. `auto` still allows in-workspace
+mutations outright, so unattended runs that must write use `auto` or `plan`.
+A prompt dismissed by interrupt is a deny with `"cancelled by user"`.
 
 ## Data flow: one main-loop turn
 
@@ -443,8 +445,9 @@ becomes a bidi run:
   today.
 - Tool reach is still decided by `--tools`; `plan` and `ask` correctness now
   come from the broker instead of from `cli_permission_mode`. Headless spawns
-  (no seams) get the headless default (accept in `ask`, deny mutating in
-  `plan`).
+  (no seams) get the headless default (deny anything that would prompt in
+  `ask`, deny mutating and network in `plan`, accept in-workspace mutations
+  in `auto`).
 - `MARIM_CLAUDE_CLI_TIMEOUT` keeps bounding one spawn, now as the silence
   ceiling of its single turn (see supervisor); on expiry the runner interrupts
   and then kills, and the spawn finalizes as a timeout with partial output, as

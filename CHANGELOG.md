@@ -36,7 +36,7 @@ pre-1.0, minor versions may contain breaking changes.
   stream-json control protocol instead of launching `claude -p` per turn. marim's
   `auto`/`ask`/`plan` modes, the approval panel and `ask_user` now apply to Claude's
   tool calls (`--permission-mode` is no longer passed); steer folds into the live turn;
-  Ctrl-C sends an interrupt (kill after a 2 s grace); the session resumes by id after
+  Esc in the TUI (Ctrl-C headless) sends an interrupt (kill after a 2 s grace); the session resumes by id after
   an idle close, crash, model switch or restart. New knob
   `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` (default 600 s) closes an idle process;
   `MARIM_CLAUDE_CLI_TIMEOUT` is now a per-turn *silence* bound that pauses while an

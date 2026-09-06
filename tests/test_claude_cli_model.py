@@ -697,6 +697,7 @@ async def test_idle_reaper_racing_a_turn_respawns_on_the_session_id(tmp_path, mo
         await asyncio.wait_for(entered.wait(), 5.0)  # the reaper is inside aclose()
         turn = asyncio.ensure_future(model.request(_user("b"), None, ModelRequestParameters()))
         await asyncio.sleep(0.05)  # let the turn reach _ensure_process
+        assert model._process is not None and model._process.closing
         release.set()
         second = await asyncio.wait_for(turn, 20.0)
     finally:
