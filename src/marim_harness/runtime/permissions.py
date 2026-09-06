@@ -59,10 +59,18 @@ class UiSeams:
 class ExternalRequest:
     """A transport-neutral view of one thing an external CLI (codex-cli,
     claude-cli) wants to do: would it change files / run commands / reach the
-    network, and which file paths does it name (when known)."""
+    network, and which file paths does it name (when known).
+
+    ``network`` is a separate axis from ``mutating`` because a web fetch or a
+    web search changes nothing locally yet is still outbound egress — the one
+    class of request plan mode has to refuse for a reason other than mutation
+    (see ``decide_external``). Defaulting to False keeps every caller that
+    only knows about mutations (codex's ``decide``) unchanged.
+    """
 
     mutating: bool
     paths: tuple[Path, ...] = ()
+    network: bool = False
 
 
 PLAN_READ_ONLY = "plan mode: read-only"
@@ -90,7 +98,8 @@ def decide_external(
     policy core). ``ask`` means "prompt if a request_approval seam is bound";
     with no seam the caller accepts (the headless default codex spawns rely on).
 
-    plan  -> non-mutating accepted; every mutation denied, never prompts.
+    plan  -> non-mutating, non-network accepted; every mutation AND every
+             outbound-network request denied, never prompts.
     auto  -> accepted, except a mutation naming a path outside the workspace
              root AND outside the scratchpad, which is escalated to a prompt.
     ask   -> non-mutating accepted; a mutation whose paths all sit inside the
@@ -98,6 +107,15 @@ def decide_external(
              native tools); everything else prompts.
     """
     if not req.mutating:
+        # Plan mode is read-only *local* research. A prompt-injected agent could
+        # otherwise read any host file and exfiltrate it through a fetch URL or
+        # a search query with zero approval — the same reasoning that makes
+        # ``_plan_decision`` deny marim's own NET_TOOLS, and that makes
+        # ``cli_spawn.run_cli`` hard-deny the CLI's web tools at argv time for
+        # spawns. The main loop cannot use argv (its Mode flips live via /mode
+        # with no respawn), so the denial has to happen here, per request.
+        if req.network and mode is Mode.plan:
+            return Decision(accept=False, reason=PLAN_READ_ONLY)
         return Decision(accept=True)
     if mode is Mode.plan:
         return Decision(accept=False, reason=PLAN_READ_ONLY)

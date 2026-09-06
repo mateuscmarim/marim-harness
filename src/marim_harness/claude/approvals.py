@@ -39,8 +39,6 @@ READ_ONLY_TOOLS = frozenset(
         "Glob",
         "Grep",
         "LS",
-        "WebFetch",
-        "WebSearch",
         "TodoRead",
         "TaskGet",
         "TaskList",
@@ -48,6 +46,12 @@ READ_ONLY_TOOLS = frozenset(
         "ToolSearch",
     }
 )
+# Read-only locally, but outbound egress — a third class, not a subset of the
+# set above: plan mode has to refuse these while ask/auto let them through
+# ungated (marim's own fetch_url/web_search are ungated there too). Kept apart
+# from READ_ONLY_TOOLS so a tool can never be added to the wrong one by
+# accident.
+NETWORK_TOOLS = frozenset({"WebFetch", "WebSearch"})
 _PATH_KEYS = {
     "Write": "file_path",
     "Edit": "file_path",
@@ -72,6 +76,7 @@ class ToolRequest:
     mutating: bool
     paths: tuple[Path, ...] = ()
     question: bool = False
+    network: bool = False
 
 
 def classify(tool_name: str, tool_input: dict, annotations: dict | None = None) -> ToolRequest:
@@ -79,9 +84,16 @@ def classify(tool_name: str, tool_input: dict, annotations: dict | None = None) 
     an MCP tool is read-only only when the CLI's annotations say so."""
     if tool_name == QUESTION_TOOL:
         return ToolRequest(mutating=False, question=True)
+    if tool_name in NETWORK_TOOLS:
+        return ToolRequest(mutating=False, network=True)
     if tool_name in READ_ONLY_TOOLS:
         return ToolRequest(mutating=False)
     if tool_name.startswith("mcp__"):
+        # Trusting the server's own ``readOnlyHint`` is inside the trust
+        # boundary: an MCP server only reaches a marim session at all once the
+        # project (or plugin) that declares it has been trusted, and a trusted
+        # server is already running arbitrary code of its own. See mcp/ and
+        # docs/guides/trust.md.
         return ToolRequest(mutating=not bool((annotations or {}).get("readOnlyHint")))
     key = _PATH_KEYS.get(tool_name)
     if key is not None:
@@ -201,7 +213,7 @@ class ClaudeApprovalBroker:
         policy check rather than against marim's own cwd."""
         root = self._root or Path(".")
         paths = tuple(p if p.is_absolute() else root / p for p in req.paths)
-        return ExternalRequest(mutating=req.mutating, paths=paths)
+        return ExternalRequest(mutating=req.mutating, paths=paths, network=req.network)
 
     async def _prompt(
         self, tool_name: str, tool_input: dict, request: dict, decision: Decision

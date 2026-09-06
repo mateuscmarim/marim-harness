@@ -956,6 +956,28 @@ async def test_plan_mode_denies_writes_with_the_wire_message(tmp_path, monkeypat
 
 
 @pytest.mark.anyio
+async def test_plan_mode_denies_webfetch_end_to_end(tmp_path, monkeypatch):
+    """Plan mode on the main loop must refuse Claude's own network tools: they
+    are non-mutating, so only the classifier's network flag stops the egress."""
+    step = {
+        "can_use_tool": {
+            "tool_name": "WebFetch",
+            "input": {"url": "https://example.invalid/x"},
+            "tool_use_id": "w1",
+        }
+    }
+    model = _model(tmp_path, monkeypatch, {"turns": [[step]]})
+    model.mode_getter = lambda: "plan"
+    try:
+        resp = await model.request(_user("hi"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert resp.parts[0].content.endswith(
+        "denied: plan mode: read-only — describe the change instead of making it"
+    )
+
+
+@pytest.mark.anyio
 async def test_old_claude_version_warns_once(tmp_path, monkeypatch, caplog):
     import marim_harness.config.claude_cli_model as mod
 

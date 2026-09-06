@@ -19,6 +19,17 @@ def _req(mutating: bool, *paths: Path) -> ExternalRequest:
     return ExternalRequest(mutating=mutating, paths=tuple(paths))
 
 
+def test_plan_denies_outbound_network_even_though_it_is_not_mutating(tmp_path: Path):
+    """Plan mode is read-only *local* research: egress is denied there for the
+    same reason ``_plan_decision`` denies marim's own net tools."""
+    net = ExternalRequest(mutating=False, network=True)
+    d = decide_external(Mode.plan, net, tmp_path, None)
+    assert d == Decision(accept=False, reason=PLAN_READ_ONLY)
+    assert not d.ask
+    for mode in (Mode.ask, Mode.auto):
+        assert decide_external(mode, net, tmp_path, None) == Decision(accept=True)
+
+
 def test_plan_accepts_reads_and_denies_every_mutation(tmp_path: Path):
     inside = tmp_path / "a.txt"
     assert decide_external(Mode.plan, _req(False), tmp_path, None) == Decision(accept=True)

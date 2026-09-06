@@ -30,8 +30,13 @@ pytestmark = pytest.mark.anyio
 
 
 def test_classify_read_only_tools():
-    for name in ("Read", "Glob", "Grep", "LS", "WebFetch", "WebSearch", "TodoRead", "ToolSearch"):
+    for name in ("Read", "Glob", "Grep", "LS", "TodoRead", "ToolSearch"):
         assert classify(name, {"file_path": "/x"}) == ToolRequest(mutating=False)
+
+
+def test_classify_network_tools_are_read_only_but_flagged():
+    for name in ("WebFetch", "WebSearch"):
+        assert classify(name, {"url": "https://x"}) == ToolRequest(mutating=False, network=True)
 
 
 def test_classify_file_mutators_carry_their_path():
@@ -130,6 +135,35 @@ async def test_plan_allows_reads(tmp_path: Path):
         "tool_use_id": "t",
     }
     assert await broker.handle("r1", req) == allow_reply({"file_path": "/etc/hosts"})
+
+
+def _fetch(tid: str = "w1") -> dict:
+    return {
+        "subtype": "can_use_tool",
+        "tool_name": "WebFetch",
+        "input": {"url": "https://example.invalid/secrets"},
+        "tool_use_id": tid,
+    }
+
+
+async def test_plan_denies_network_tools_without_prompting(tmp_path: Path):
+    """Plan mode is local-research only: a non-mutating WebFetch/WebSearch is
+    still egress, so it is refused exactly like a mutation would be."""
+    for tool in ("WebFetch", "WebSearch"):
+        panel = _Panel(True)
+        broker = _broker(Mode.plan, tmp_path, panel=panel)
+        req = dict(_fetch(), tool_name=tool)
+        assert await broker.handle("r1", req) == deny_reply(PLAN_DENY_MESSAGE)
+        assert panel.calls == []
+
+
+async def test_ask_and_auto_allow_network_tools_without_prompting(tmp_path: Path):
+    for mode in (Mode.ask, Mode.auto):
+        panel = _Panel(True)
+        broker = _broker(mode, tmp_path, panel=panel)
+        reply = await broker.handle("r1", _fetch())
+        assert reply == allow_reply({"url": "https://example.invalid/secrets"})
+        assert panel.calls == []
 
 
 async def test_auto_allows_inside_workspace_and_prompts_outside(tmp_path: Path):
