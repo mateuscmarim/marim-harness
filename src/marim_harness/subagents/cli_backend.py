@@ -343,9 +343,10 @@ class _RunState:
     `output` is the last-seen result object's text; `results` accumulates every
     result object for `_finalize`'s usage fold; `model_sent` latches once the
     CLI's reported model has been surfaced to the UI; `session_id` is the resume
-    key (seeded from a resume, else captured from the stream); `last_ckpt_len`
-    is the transcript length as of the last checkpoint, so growth-only
-    checkpointing can compare against it."""
+    key, deliberately left UNSEEDED by a resume and filled only from the stream,
+    so newest-id-wins still holds when `--resume` forks the conversation onto a
+    new id; `last_ckpt_len` is the transcript length as of the last checkpoint,
+    so growth-only checkpointing can compare against it."""
 
     output: str = ""
     results: list[dict] = field(default_factory=list)

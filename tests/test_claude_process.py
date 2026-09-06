@@ -323,13 +323,16 @@ async def test_idle_timeout_closes_process_between_turns(tmp_path: Path):
 
 
 async def test_idle_timer_is_disarmed_by_the_next_turn(tmp_path: Path):
-    process = _process(tmp_path, {"turns": [[{"text": "a"}]]}, idle_timeout=0.4)
+    # Generous margins on purpose: the point is that the second turn re-arms
+    # the timer, and a loaded CI leg must not be able to turn "the old timer
+    # did not fire" into a scheduling flake.
+    process = _process(tmp_path, {"turns": [[{"text": "a"}]]}, idle_timeout=1.5)
     await process.start()
     try:
         await _collect(process, "one")
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.6)
         await _collect(process, "two")  # re-arms: the old timer must not fire
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.6)
         assert process.alive is True
     finally:
         await process.aclose()

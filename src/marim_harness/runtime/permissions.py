@@ -96,7 +96,10 @@ def decide_external(
 ) -> Decision:
     """The one approval table both external-CLI brokers apply (spec §Shared
     policy core). ``ask`` means "prompt if a request_approval seam is bound";
-    with no seam the caller accepts (the headless default codex spawns rely on).
+    with no seam the caller DENIES, because nothing there can grant approval.
+    Both brokers do exactly that (``HEADLESS_DENY_MESSAGE`` on the claude
+    side, the ``_prompt`` guard on the codex side); an unattended run that
+    must write needs ``--mode auto``.
 
     plan  -> non-mutating, non-network accepted; every mutation AND every
              outbound-network request denied, never prompts.

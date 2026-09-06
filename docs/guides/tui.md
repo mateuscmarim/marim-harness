@@ -127,7 +127,9 @@ and `bash` (and `run_workflow` when workflows are enabled). Cycle modes with
   session scratchpad directory are pre-approved (that's what it is for).
 - **auto** — every gated call is approved automatically.
 - **plan** — mutations are denied; read-only `bash` commands are approved.
-  The agent researches and presents a plan instead of editing.
+  Outbound network (`fetch_url`/`web_search`, and Claude Code's `WebFetch`/
+  `WebSearch` under the `claude-cli` provider) is denied too — plan mode is
+  local research. The agent researches and presents a plan instead of editing.
 
 Under the `claude-cli` main-loop provider, Claude Code runs its own tools,
 but its approval requests are brokered into this same panel (labelled for

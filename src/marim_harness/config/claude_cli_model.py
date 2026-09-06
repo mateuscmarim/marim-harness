@@ -624,6 +624,18 @@ def _turn_stream(
     return cast("AsyncGenerator[dict, None]", turn_objects(process, handle, first))
 
 
+def _log_steer_failure(task: asyncio.Task) -> None:
+    """Retrieve a fire-and-forget steer's exception so asyncio does not report
+    it as never-retrieved, and leave a trace: the send can fail (the process
+    died between the turn_open check and the write) and the user sees only
+    that their steer went nowhere."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.debug("claude steer failed", exc_info=exc)
+
+
 def _is_missing_session(obj: dict) -> bool:
     """True when a ``--resume`` start died because the CLI no longer has the
     session (probe s8: stderr ``No conversation found with session ID: …``,
@@ -882,7 +894,7 @@ class ClaudeCliModel(ExternalCliModel):
         if process is None or not process.turn_open:
             return False
         task = asyncio.get_running_loop().create_task(process.send_user(text))
-        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        task.add_done_callback(_log_steer_failure)
         return True
 
     async def aclose(self) -> None:
@@ -1019,8 +1031,11 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         thinking = _ThinkingParts(self._parts_manager)
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk
-        # pipeline (and, transitively, the demux wrapper) rather than leaking it
-        # to GC. The turn itself is interrupted by request_stream's finally.
+        # pipeline rather than leaving it to GC. It reaches only that one
+        # generator: the demux wrapper below it is left to the loop's
+        # async-generator finalization, which is fine because it owns nothing
+        # of its own — the turn iterator it reads from is closed explicitly by
+        # request_stream's finally, which also interrupts the turn.
         async with aclosing(consume_cli_stream(objs)) as stream:
             async for chunk in stream:
                 if isinstance(chunk, DoneChunk):

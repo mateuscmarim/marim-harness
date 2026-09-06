@@ -586,8 +586,11 @@ auto-compacts on its own).
 - **Shared policy core in `runtime/permissions.py`**: the codex table is the
   right one; stating it once and adapting request shapes on each side keeps
   the two CLI backends from drifting.
-- **Headless `ask` = accept**, matching codex, so the two backends behave the
-  same in headless and in background spawns.
+- **Headless `ask` = deny**, matching codex, so the two backends behave the
+  same in headless and in background spawns: with no approver bound there is
+  nothing that could grant approval, so anything needing a prompt is refused
+  (with wording that tells the model to say what it would have done). An
+  unattended run that must write needs `--mode auto`.
 - **Deltas for text, whole messages for tools and transcripts**: the model
   streams from `stream_event`s and ignores `assistant` text; spawns keep
   `CliStreamTranslator` on whole objects, so `cli_demux.py` and the sidecar
