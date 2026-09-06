@@ -29,6 +29,7 @@ from pydantic_ai.models import ModelRequestParameters
 
 from marim_harness.claude.env import CLI_BINARY_ENV
 from marim_harness.claude.protocol import CLOSED
+from marim_harness.config import claude_cli_model
 from marim_harness.config.claude_cli_model import (
     SESSION_REF_PREFIX,
     ClaudeCliModel,
@@ -617,6 +618,53 @@ async def test_ephemeral_model_never_resumes_never_persists_and_closes(tmp_path,
     for argv in argvs:
         assert "--resume" not in argv and "--no-session-persistence" in argv
     assert refs == [] and clone._process is None
+
+
+@pytest.mark.anyio
+async def test_failed_first_turn_on_an_ephemeral_clone_leaves_no_live_process(
+    tmp_path, monkeypatch
+):
+    """`_start_turn` runs before `request`'s try/finally, so a failure there
+    used to leave the clone's process running with nothing holding it — and the
+    next aux call resumed the leak instead of starting clean."""
+    base = _model(tmp_path, monkeypatch, {"turns": [[{"text": "t"}]]})
+    clone = base.ephemeral_clone(cwd=str(tmp_path))
+    spawned: list = []
+    real_spawn = ClaudeCliModel._spawn
+
+    async def spy(self, **kwargs):
+        process = await real_spawn(self, **kwargs)
+        spawned.append(process)
+        return process
+
+    monkeypatch.setattr(ClaudeCliModel, "_spawn", spy)
+
+    # The real trigger is the silence timeout `next_turn_object` raises. The
+    # fake replays the user message immediately, so it can never time out
+    # naturally here — raise the same error from the same call instead.
+    async def boom(process, handle):
+        raise CliModelError("claude went silent")
+
+    monkeypatch.setattr(claude_cli_model, "next_turn_object", boom)
+    with pytest.raises(CliModelError):
+        await clone.request(_user("title this"), None, ModelRequestParameters())
+    assert len(spawned) == 1
+    assert spawned[0].alive is False
+    assert clone._process is None
+
+
+@pytest.mark.anyio
+async def test_parent_aclose_closes_a_clone_that_still_holds_a_process(tmp_path, monkeypatch):
+    """Nothing else holds an aux clone: `Harness.aclose` knows only the
+    session's current model, and the titler/summarizer/advisor keep theirs
+    inside a pydantic-ai Agent. So the parent closes them."""
+    base = _model(tmp_path, monkeypatch, {"turns": [[{"text": "t"}]]})
+    clone = base.ephemeral_clone(cwd=str(tmp_path))
+    # Stands in for any path that leaves a clone holding a live process.
+    process = await clone._spawn(resume_id=None, system=None)
+    assert process.alive is True
+    await base.aclose()
+    assert process.alive is False
 
 
 @pytest.mark.anyio

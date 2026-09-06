@@ -650,6 +650,11 @@ class ClaudeCliModel(ExternalCliModel):
         # resume or store a session, so they can't hijack the user's live one.
         self.ephemeral = ephemeral
         self._process: ClaudeProcess | None = None
+        # Clones made by ephemeral_clone(); closed with their parent, because
+        # nothing else holds them (Harness.aclose knows only the session's
+        # current model, and the aux titler/summarizer/advisor keep theirs
+        # inside a pydantic-ai Agent). Mirrors CodexCliModel._clones.
+        self._clones: list[ClaudeCliModel] = []
         self._broker: ClaudeApprovalBroker | None = None
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
@@ -662,6 +667,7 @@ class ClaudeCliModel(ExternalCliModel):
         clone = ClaudeCliModel(self._model_id, ephemeral=True)
         clone.cwd = cwd
         clone.mode_getter = lambda: "plan"
+        self._clones.append(clone)
         return clone
 
     @property
@@ -748,6 +754,21 @@ class ClaudeCliModel(ExternalCliModel):
         """Send the turn and pull its first object, so a resume of a session the
         CLI no longer has (probe s8) is caught here and retried as a cold start
         — the caller then streams the rest uniformly."""
+        try:
+            return await self._open_turn(messages)
+        except BaseException:
+            # This runs BEFORE request()/request_stream()'s try/finally, so
+            # nothing there can clean up after a failure here (a silence
+            # timeout, a spawn error, a cancel). A long-lived model keeps its
+            # process on purpose — aclose() still reaches it and the next turn
+            # resumes on it — but an ephemeral clone's process is owned by this
+            # one call: leave it running and the next aux call resumes the leak.
+            if self.ephemeral and self._process is not None:
+                await self._process.aclose()
+                self._process = None
+            raise
+
+    async def _open_turn(self, messages: list) -> tuple[ClaudeProcess, TurnHandle, dict]:
         process, resumed = await self._ensure_process(messages)
         text = latest_user_text(messages) if resumed else flatten_history(messages)
         handle = await process.send_turn(text)
@@ -861,7 +882,12 @@ class ClaudeCliModel(ExternalCliModel):
     async def aclose(self) -> None:
         """Close the process. The session id survives on it, so a later turn on
         this model resumes; ``Harness.set_model`` calls this on the outgoing
-        model and ``Harness.aclose`` on teardown."""
+        model and ``Harness.aclose`` on teardown. Ephemeral clones go first:
+        nothing else holds one, and a clone that failed mid-start would
+        otherwise keep a ``claude`` process alive for the whole run."""
+        for clone in self._clones:
+            await clone.aclose()
+        self._clones.clear()
         if self._process is not None:
             await self._process.aclose()
 
