@@ -55,6 +55,12 @@ class QueueController:
         self._queue.enqueue(text, attachments)
         self.render()
 
+    def prepend(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
+        """Re-stage a submission at the FRONT so it runs next — a prompt the
+        host refused (queue full) comes back here rather than being lost."""
+        self._queue.prepend(text, attachments)
+        self.render()
+
     def remove(self, id: str) -> None:
         """Drop a pending queued message before it runs."""
         self._queue.remove(id)
@@ -105,8 +111,9 @@ class QueueController:
         prompt.focus()
 
     async def after_turn(self) -> None:
-        """Called from _run_turn's finally. Drain the next queued item on a
-        clean, unpaused turn; otherwise fall through to the background-job wake."""
+        """Called on the session.status idle edge, whichever way the turn
+        ended. Drain the next queued item on a clean, unpaused turn; otherwise
+        fall through to the background-job wake."""
         # A steer that landed in the finishing gap (never flushed onto a live
         # run) falls back to the front of the queue so it runs next — kept even
         # on a paused (cancel/error) finish, matching how the queue itself is
@@ -116,11 +123,11 @@ class QueueController:
             for text, atts in reversed(leftover):
                 self._queue.prepend(text, atts)
             self.render()
-        # after_turn runs from _run_turn's finally; an exception escaping here
-        # would kill the worker before it unwinds cleanly. Draining starts the
-        # next turn (worker scheduling, widget mounts) and the wake path touches
-        # jobs — both can fail. Pause the queue and surface the error rather than
-        # let it propagate out of the finally and strand the session.
+        # after_turn runs inside the event pump's dispatch; an exception
+        # escaping here is logged and the event dropped, but the queue would be
+        # left half-drained. Draining submits the next turn and the wake path
+        # touches jobs — both can fail. Pause the queue and surface the error
+        # rather than strand the session.
         try:
             if not self._queue.paused and self._queue:
                 await self.drain_next()
