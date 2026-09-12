@@ -929,6 +929,12 @@ class HarnessApp(App):
             # a queued tool.result was about to finish. (The cancel arm above
             # deliberately stays synchronous — it is unwinding a cancel.)
             await self._drain_pump()
+            # The host publishes turn.error here, never turn.finished, so the
+            # wire never reaches the run-end finalize: the thought/text the turn
+            # died on would stay open (expanded thought, unfinalized reply)
+            # above the error card until the next turn's first event swept it
+            # as stale. Close it the way the finished path does.
+            self.stream.end_run()
             self.queue.paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             self.append_log(ErrorMessage(detail))

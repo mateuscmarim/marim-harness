@@ -4323,6 +4323,33 @@ async def test_turn_finished_on_the_wire_finalizes_a_trailing_thought(tmp_path: 
 
 
 @pytest.mark.anyio
+async def test_errored_turn_finalizes_the_trailing_block_before_the_error_card(tmp_path: Path):
+    """A provider error mid-stream publishes turn.error, never turn.finished, so
+    the wire alone never calls end_run(): the thought the turn died on would sit
+    fully expanded above the error card (and the assistant text unfinalized)
+    until the NEXT turn's first event finalized it as a stale block. The error
+    arm must run the same finalize as the finished path, after the drain."""
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+
+        async def stream_then_boom(*a, **k):
+            bus.publish("turn.started", {"turn_id": "t1", "prompt": "think"})
+            bus.publish("thinking.delta", {"text": "let me think about this"})
+            bus.publish("turn.error", {"turn_id": "t1", "error": "upstream exploded"})
+            raise RuntimeError("upstream exploded")
+
+        app.host.run_turn = stream_then_boom
+        await app._run_turn("hi")
+        await pilot.pause()
+        assert list(app.query(ErrorMessage))
+        assert app.stream.current_thinking is None  # end_run() ran: thought capped
+
+
+@pytest.mark.anyio
 async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import ErrorMessage, TurnMeta
 
