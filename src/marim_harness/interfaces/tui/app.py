@@ -1,7 +1,15 @@
 import json
 import logging
 import time
-from asyncio import CancelledError, Task, create_task
+from asyncio import (
+    CancelledError,
+    Event,
+    Task,
+    TimeoutError,
+    create_task,
+    get_running_loop,
+    wait_for,
+)
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
@@ -19,6 +27,7 @@ from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...server.bus import EventBus, Subscription
 from ...server.host import SessionHost
+from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
     AskPending,
     AskResolved,
@@ -40,7 +49,9 @@ from ...server.wire_events import (
     ThinkingDelta,
     ToolCall,
     ToolResult,
+    TurnFinished,
     TurnStarted,
+    TurnUsage,
     WireEvent,
     WorkflowFinished,
     WorkflowLogged,
@@ -137,7 +148,15 @@ async def _handle_stream_wire(app: "HarnessApp", wire: WireEvent) -> None:
 
 
 async def _handle_subagent_event(app: "HarnessApp", wire: SubagentEvent) -> None:
-    nested = parse_wire_event(wire.event)
+    # The host publishes the sub-agent's stream event verbatim — the daemon
+    # contract (serve-api.md) keeps the inner "type" as the raw stream-event
+    # kind (text/thinking/tool_call/tool_result) — while parse_wire_event only
+    # speaks wire types (text.delta/...). Remap here, the way the host does for
+    # cli_activity, or every sub-agent stream parses as unknown and vanishes.
+    wire_type = STREAM_EVENT_TYPES.get(str(wire.event.get("type")))
+    if wire_type is None:
+        return
+    nested = parse_wire_event({**wire.event, "type": wire_type})
     if nested is None:
         return
     await app.stream.on_subagent_wire(wire.stream_id, nested, wire.usage)
@@ -220,12 +239,31 @@ async def _handle_compaction_finished(app: "HarnessApp", wire: CompactionFinishe
 
 
 async def _handle_turn_started(app: "HarnessApp", _wire: TurnStarted) -> None:
-    # Mirrors StreamRenderer.on_events' per-run reset: a run boundary always
-    # closes any block left open by the prior run. With on_events gone from the
-    # pure-wire pump, turn.started is the only remaining signal for that reset —
-    # otherwise a stale text_open=True from a prior run reopens into this one
-    # (the cross-turn leak fixed for on_events in commit 23462072).
-    app.stream.text_open = False
+    # The pure-wire pump never calls StreamRenderer.on_events, so turn.started
+    # is the only run boundary it sees — this is where the per-run reset lives
+    # (stale text_open reopening into the new turn was the leak fixed for
+    # on_events in commit 23462072; stale tool_group/solo_tool would splice the
+    # new turn's first tool call into the previous turn's group). One caveat the
+    # stream path did not have: an approval round inside a turn is a run
+    # boundary on the harness side but publishes nothing on the wire, so tool
+    # cards either side of an approval share one group.
+    app.stream.begin_run()
+
+
+async def _handle_turn_usage(app: "HarnessApp", wire: TurnUsage) -> None:
+    # Folded into the status bar's live "+N" counter on the next flush tick
+    # (flush_streams syncs it to the StatusBar reactive); begin_run zeroes it.
+    app.stream.live_run_tokens = wire.total_tokens
+
+
+async def _handle_turn_finished(app: "HarnessApp", _wire: TurnFinished) -> None:
+    # The run-end counterpart of turn.started: on_events finalized the trailing
+    # thought/text block when the stream generator ran dry; on the wire that
+    # moment is turn.finished (published after the outcome persists, before
+    # run_turn returns — so it lands ahead of TurnMeta once _run_turn has
+    # drained the pump). Interrupted turns publish it too, so a cancelled
+    # thought still collapses to its preview.
+    app.stream.end_run()
 
 
 def _approval_args(raw: Any) -> dict:
@@ -278,9 +316,11 @@ async def _handle_ask_resolved(app: "HarnessApp", wire: AskResolved) -> None:
     app._dismiss_ask(wire.id)
 
 
-# Every wire type not listed here (turn.finished/error, session.status,
-# stream.gap, steer.accepted) is a deliberate no-op in 3a: completion/status/gap
-# belong to 3b/remote clients.
+# Every wire type not listed here (turn.error, session.status, stream.gap,
+# steer.accepted) is a deliberate no-op in 3a: error/status/gap belong to
+# 3b/remote clients. turn.finished is consumed only for its run-boundary
+# meaning (finalize the trailing block); its output/usage payload is not
+# rendered from the wire in 3a — _run_turn still reads the outcome in-process.
 _WIRE_HANDLERS: dict[type, _WireHandler] = {
     TextDelta: _handle_stream_wire,
     ThinkingDelta: _handle_stream_wire,
@@ -306,6 +346,8 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     CompactionStarted: _handle_compaction_started,
     CompactionFinished: _handle_compaction_finished,
     TurnStarted: _handle_turn_started,
+    TurnUsage: _handle_turn_usage,
+    TurnFinished: _handle_turn_finished,
     AskPending: _handle_ask_pending,
     AskResolved: _handle_ask_resolved,
 }
@@ -389,6 +431,11 @@ class HarnessApp(App):
         # app.workers.wait_for_complete(), which a never-ending pump would
         # block forever.
         self._pump_task: Task[None] | None = None
+        # Drain barrier bookkeeping (see _drain_pump): the seq of the last bus
+        # event the pump has finished dispatching, and a wake-up the pump sets
+        # after every event so a waiter can block instead of polling.
+        self._pump_seq = 0
+        self._pump_advanced = Event()
         # Panels mounted for parked asks, keyed by ask id: ask.pending mounts one,
         # ask.resolved (local OR another client's answer, or an interrupt) removes
         # it. Value is (panel, focus-before-mount) so removal restores focus the
@@ -541,13 +588,50 @@ class HarnessApp(App):
                     continue
                 wire = parse_wire_event({"type": event.type, **event.data})
                 if wire is None:
-                    continue
-                try:
-                    await self._dispatch_wire(wire)
-                except Exception:  # noqa: BLE001 - one bad event must not blind the app
-                    logger.exception("event pump: dispatch failed for %s", type(wire).__name__)
+                    # Unknown type or a payload that failed validation. Debug,
+                    # not warning: a newer daemon's vocabulary is expected to
+                    # outrun an older client's, and this is the one place a
+                    # silently dropped event leaves any trace.
+                    logger.debug("event pump: dropped %s (seq %s)", event.type, event.seq)
+                if wire is not None:
+                    try:
+                        await self._dispatch_wire(wire)
+                    except Exception:  # noqa: BLE001 - one bad event must not blind the app
+                        logger.exception("event pump: dispatch failed for %s", type(wire).__name__)
+                # Advance past unknown/unhandled events too: the barrier counts
+                # bus seqs, not renders, so an ignored event must not stall it.
+                self._pump_seq = event.seq
+                self._pump_advanced.set()
         finally:
             sub.close()
+
+    async def _drain_pump(self, timeout: float = 2.0) -> None:
+        """Block until the pump has dispatched every event published so far.
+
+        ``host.run_turn`` returns the moment the host's turn task completes,
+        but the turn's tail — the last tool.result, text.delta, turn.finished —
+        is still sitting in the subscription queue until the pump gets the
+        loop back. Anything _run_turn does after the await (mount TurnMeta,
+        settle pending rows, drain the next queued prompt) would otherwise run
+        ahead of the rendering it is supposed to follow, so cards land below
+        the duration stamp or the next user message. The target is the bus's
+        seq at call time, so events published *after* this starts (a sub-agent
+        still streaming) don't extend the wait. Bounded: a wedged pump costs
+        one late stamp, never a stuck turn worker."""
+        target = self.host.bus.last_seq
+        deadline = get_running_loop().time() + timeout
+        while self._pump_seq < target:
+            if self._pump_task is None or self._pump_task.done():
+                return
+            remaining = deadline - get_running_loop().time()
+            if remaining <= 0:
+                logger.warning("event pump: drain barrier timed out at seq %s", self._pump_seq)
+                return
+            # clear-then-wait with no await in between: the pump can only set
+            # the event while we are suspended in wait(), so no wake-up is lost.
+            self._pump_advanced.clear()
+            with suppress(TimeoutError):
+                await wait_for(self._pump_advanced.wait(), remaining)
 
     async def _dispatch_wire(self, wire: WireEvent) -> None:
         handler = _WIRE_HANDLERS.get(type(wire))
@@ -801,6 +885,7 @@ class HarnessApp(App):
         log = self.query_one("#log", VerticalScroll)
         try:
             await self.host.run_turn(text, attachments=attachments)
+            await self._drain_pump()
             # Stamp the just-finished turn's duration under its reply (success
             # only; cancelled/errored turns surface an ErrorMessage instead).
             elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
@@ -817,6 +902,11 @@ class HarnessApp(App):
             self.stream.settle_pending("cancelled")
             raise
         except Exception as exc:  # keep the session alive on any turn failure
+            # Let the failed turn's last events render before the error card
+            # and the settle sweep below, or the sweep marks a row failed that
+            # a queued tool.result was about to finish. (The cancel arm above
+            # deliberately stays synchronous — it is unwinding a cancel.)
+            await self._drain_pump()
             self.queue.paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             self.append_log(ErrorMessage(detail))

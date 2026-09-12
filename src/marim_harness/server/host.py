@@ -238,6 +238,31 @@ class SessionHost:
         self._publish_status()
         return ask
 
+    async def _await_ask(self, ask: PendingAsk) -> dict:
+        """Wait for a parked ask's answer, owning its resolution on the way out.
+
+        Two exits. Answered (answer_ask): the ask was popped and ``ask.resolved``
+        published there — nothing to do. Interrupted: the turn task is cancelled
+        while awaiting, which cancels the future *and* runs this frame's cleanup
+        before the turn's ``finally`` reaches ``_cancel_pending`` — so by then the
+        ask is gone from ``_pending`` and nobody would publish its resolution.
+        The client's panel would sit open forever against a turn that is already
+        finished. Publish it here, on the exit that actually observes the cancel;
+        popping first keeps it single-shot when ``_cancel_pending`` (aclose) got
+        there first and already announced it.
+        """
+        try:
+            return await ask.future
+        except asyncio.CancelledError:
+            if self._pending.pop(ask.id, None) is not None:
+                self.bus.publish(
+                    "ask.resolved", {"id": ask.id, "cancelled": True, "reason": "interrupted"}
+                )
+            raise
+        finally:
+            self._pending.pop(ask.id, None)
+            self._publish_status()
+
     async def _request_approval(self, call: object):
         payload = {
             "tool_name": getattr(call, "tool_name", None),
@@ -245,11 +270,7 @@ class SessionHost:
             "tool_call_id": getattr(call, "tool_call_id", None),
         }
         ask = self._park("approval", payload)
-        try:
-            answer = await ask.future
-        finally:
-            self._pending.pop(ask.id, None)
-            self._publish_status()
+        answer = await self._await_ask(ask)
         if answer.get("approve"):
             return True
         return ToolDenied(str(answer.get("reason") or "denied by client"))
@@ -269,11 +290,7 @@ class SessionHost:
             ]
         }
         ask = self._park("question", payload)
-        try:
-            answer = await ask.future
-        finally:
-            self._pending.pop(ask.id, None)
-            self._publish_status()
+        answer = await self._await_ask(ask)
         if answer.get("cancel"):
             return None
         answers = answer.get("answers")
@@ -288,11 +305,7 @@ class SessionHost:
             "choices": [{"label": c.label, "description": c.description} for c in choices],
         }
         ask = self._park("plan", payload)
-        try:
-            answer = await ask.future
-        finally:
-            self._pending.pop(ask.id, None)
-            self._publish_status()
+        answer = await self._await_ask(ask)
         if answer.get("cancel"):
             # Mirrors PlanCard.action_dismiss_card: Escape means "keep planning",
             # not a bare cancel — present_plan reads the choice label, not a
@@ -419,8 +432,17 @@ class SessionHost:
         self.bus.publish("turn.started", {"turn_id": turn_id, "prompt": prompt, "trigger": trigger})
         self._publish_status()
 
-        async def handler(_ctx, events):
+        async def handler(ctx, events):
+            # ctx.usage is the run's live running total (each agent.run round
+            # gets its own, cumulative for that round). It moves once per model
+            # response rather than per delta, so publishing on change keeps the
+            # bus at ~one turn.usage per request instead of one per event.
+            last_total = None
             async for event in events:
+                total = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
+                if total != last_total:
+                    last_total = total
+                    self.bus.publish("turn.usage", {"turn_id": turn_id, "total_tokens": total})
                 obj = event_to_dict(event)
                 if obj is None:
                     continue

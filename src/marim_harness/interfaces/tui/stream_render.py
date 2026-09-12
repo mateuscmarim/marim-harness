@@ -973,12 +973,18 @@ class StreamRenderer:
         widget.pane = pane
         return pane
 
-    async def on_events(self, ctx, events) -> None:
+    def begin_run(self) -> None:
+        """Per-run reset, shared by ``on_events`` (the in-process stream path)
+        and the pump's ``turn.started`` handler. Both must agree on what a run
+        boundary clears: a wire-driven turn that resets less than the stream
+        path leaks the prior turn's state into this one."""
         # Fresh run: clear any in-flight tally from a prior approval round so the
         # next round's usage replaces it rather than stacking (each agent.run gets
         # its own ctx.usage, cumulative for that run).
         self.live_run_tokens = 0
-        # A new run starts a fresh run of consecutive tool calls.
+        # A new run starts a fresh run of consecutive tool calls. Left stale, the
+        # next turn's first tool call would join the previous turn's group
+        # widget — mounted above the new user message.
         self.tool_group = None
         self.solo_tool = None
         # A run boundary is always a part boundary: close any block left open by
@@ -987,12 +993,23 @@ class StreamRenderer:
         # into the previous turn's finalized reply — the old part-start path got
         # this for free (a new run's text always arrived as a PartStartEvent).
         self.text_open = False
+
+    async def on_events(self, ctx, events) -> None:
+        self.begin_run()
         sink = _TopLevelSink(self, self._log_container())
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
             self.live_run_tokens = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             await self.dispatch_stream_event(event, sink)
+        self.end_run()
+
+    def end_run(self) -> None:
+        """Run-end finalize for the top-level stream, shared by ``on_events``
+        and the pump's ``turn.finished`` handler. Per-event finalization only
+        fires when a *following* event arrives (``_finalize_stale_blocks``), so
+        whatever block the run ended on is still open here."""
+        sink = _TopLevelSink(self, self._log_container())
         # A round that ends on a thought (no following text/tool to trigger the
         # per-event cap) still collapses to its preview.
         trailing_thought = sink.get_thinking()

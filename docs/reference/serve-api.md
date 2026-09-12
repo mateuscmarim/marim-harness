@@ -725,6 +725,7 @@ Turn lifecycle:
 | Type            | `data`                                                       |
 | --------------- | ------------------------------------------------------------ |
 | `turn.started`  | `{"turn_id": "...", "prompt": "..."}`                        |
+| `turn.usage`    | `{"turn_id": "...", "total_tokens": <n>}` — the running total of the turn's current model run, republished whenever it changes (≈ once per model response); the live in-flight counter, not the per-turn summary |
 | `turn.finished` | `{"turn_id": "...", "output": "...", "usage": {...}}` — or `{"turn_id": "...", "interrupted": true}` for an interrupted turn |
 | `turn.error`    | `{"turn_id": "...", "error": "<detail>"}`                    |
 | `steer.accepted`| `{"text": "..."}`                                            |

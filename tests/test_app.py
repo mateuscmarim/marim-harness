@@ -2191,6 +2191,54 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_subagent_event_on_the_bus_reaches_the_widget(tmp_path: Path):
+    """The pump path: the host publishes ``subagent.event`` with the inner
+    event in raw stream shape (``"type": "tool_call"``, the documented daemon
+    contract), not wire shape (``tool.call``). The TUI handler must remap
+    before parsing, or every sub-agent stream is silently dropped."""
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    spawn = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "look around"},
+            tool_call_id="s1",
+        )
+    )
+
+    async def spawn_gen():
+        yield spawn
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, spawn_gen())
+        await pilot.pause()
+        parent = app.stream.tool_widgets["s1"]
+        assert isinstance(parent, SubAgentWidget)
+
+        app.host.bus.publish(
+            "subagent.event",
+            {
+                "stream_id": "s1",
+                "event": {
+                    "type": "tool_call",
+                    "name": "read_file",
+                    "args": {"path": "x.py"},
+                    "id": "nested-1",
+                },
+            },
+        )
+        assert await _pump_until(
+            pilot,
+            lambda: any(isinstance(c, ToolCallWidget) for c in parent.pane.walk_children()),
+        )
+
+
+@pytest.mark.anyio
 async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
     """A sub-agent event for an unknown stream id must not raise."""
     from pydantic_ai.messages import PartStartEvent, TextPart
@@ -3920,6 +3968,33 @@ async def test_pump_renders_scripted_turn_via_wire(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_turn_started_on_the_wire_breaks_the_tool_group(tmp_path: Path):
+    """turn.started is the pump's only run boundary. It must reset the
+    consecutive-tool run the way on_events did, or the next turn's first tool
+    call joins the previous turn's ToolGroupWidget — above the new user
+    message — instead of starting its own."""
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "one"})
+        for cid, path in (("r1", "a.py"), ("r2", "b.py")):
+            bus.publish("tool.call", {"id": cid, "name": "read_file", "args": {"path": path}})
+            bus.publish("tool.result", {"id": cid, "content": "x"})
+        assert await _pump_until(pilot, lambda: "r2" in app.stream.tool_widgets)
+        first_group = app.stream.tool_group
+        assert isinstance(first_group, ToolGroupWidget)
+
+        bus.publish("turn.started", {"turn_id": "t2", "prompt": "two"})
+        bus.publish("tool.call", {"id": "r3", "name": "read_file", "args": {"path": "c.py"}})
+        assert await _pump_until(pilot, lambda: "r3" in app.stream.tool_widgets)
+        assert app.stream.tool_widgets["r3"] not in first_group.walk_children()
+        assert app.stream.tool_group is not first_group
+
+
+@pytest.mark.anyio
 async def test_publish_tasks_changed_reaches_activity_ui(tmp_path: Path, monkeypatch):
     """tasks.changed published on the bus reaches the ActivityMonitor through
     the pump — the callback no longer runs inline from bind_ui."""
@@ -4008,6 +4083,67 @@ async def test_successful_turn_stamps_duration(tmp_path: Path):
         metas = list(app.query(TurnMeta))
         assert len(metas) == 1
         assert "s" in str(metas[0].render())
+
+
+@pytest.mark.anyio
+async def test_turn_meta_lands_after_the_turns_last_wire_event(tmp_path: Path):
+    """host.run_turn returns before the pump has rendered the turn's tail, so
+    _run_turn must drain the pump before stamping TurnMeta — otherwise the
+    stamp (and the queue drain after it) runs ahead of the last tool card."""
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, TurnMeta
+
+    app = _app(tmp_path)
+
+    async def fake_run_turn(*a, **k):
+        # Publish the tail synchronously and return without yielding: the
+        # pump has provably not run when _run_turn regains control.
+        bus = app.host.bus
+        bus.publish("tool.call", {"id": "t1", "name": "read_file", "args": {"path": "a.py"}})
+        bus.publish("tool.result", {"id": "t1", "content": "x"})
+        return "ok"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
+        await app._run_turn("hi")
+        assert await _pump_until(pilot, lambda: bool(list(app.query(TurnMeta))))
+        log = app.query_one("#log", VerticalScroll)
+        kinds = [type(w) for w in log.walk_children() if isinstance(w, (ToolCallWidget, TurnMeta))]
+        assert kinds == [ToolCallWidget, TurnMeta]
+
+
+@pytest.mark.anyio
+async def test_turn_usage_on_the_wire_feeds_the_live_counter(tmp_path: Path):
+    """The status bar's in-flight "+N" counter read ctx.usage off on_events;
+    the pump has no ctx, so turn.usage carries it."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "go"})
+        bus.publish("turn.usage", {"turn_id": "t1", "total_tokens": 1234})
+        assert await _pump_until(pilot, lambda: app.stream.live_run_tokens == 1234)
+        # The next run boundary zeroes it, as on_events did per round.
+        bus.publish("turn.started", {"turn_id": "t2", "prompt": "again"})
+        assert await _pump_until(pilot, lambda: app.stream.live_run_tokens == 0)
+
+
+@pytest.mark.anyio
+async def test_turn_finished_on_the_wire_finalizes_a_trailing_thought(tmp_path: Path):
+    """on_events collapsed a run-ending thought when its generator drained; on
+    the wire, turn.finished is that boundary. Without it the thought stays
+    'open' (current_thinking set) and never caps to its preview."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "think"})
+        bus.publish("thinking.delta", {"text": "let me think about this"})
+        assert await _pump_until(pilot, lambda: app.stream.current_thinking is not None)
+        bus.publish("turn.finished", {"turn_id": "t1", "output": ""})
+        assert await _pump_until(pilot, lambda: app.stream.current_thinking is None)
 
 
 @pytest.mark.anyio

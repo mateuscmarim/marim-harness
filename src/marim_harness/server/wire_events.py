@@ -31,6 +31,17 @@ class TurnFinished(BaseModel):
     interrupted: bool = False
 
 
+class TurnUsage(BaseModel):
+    """The running token total of the turn's current model run, republished
+    whenever it changes (roughly once per model response, not per delta). A
+    live client renders it as the in-flight ``+N`` counter; ``turn.finished``
+    still carries the authoritative per-turn summary."""
+
+    type: Literal["turn.usage"]
+    turn_id: str
+    total_tokens: int = 0
+
+
 class TurnError(BaseModel):
     type: Literal["turn.error"]
     turn_id: str
@@ -202,6 +213,7 @@ WireEvent = Annotated[
     (
         TurnStarted
         | TurnFinished
+        | TurnUsage
         | TurnError
         | TextDelta
         | ThinkingDelta

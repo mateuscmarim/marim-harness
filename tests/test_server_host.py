@@ -200,6 +200,12 @@ async def test_simple_turn_publishes_lifecycle_events(tmp_path):
     assert "usage" in finished.data
     assert any(e.type == "turn.started" for e in events)
     assert any(e.type == "text.delta" for e in events)
+    # The live running total rides the wire as turn.usage — published on change
+    # only, so a one-response turn yields a single one, ahead of its stream.
+    usages = [e for e in events if e.type == "turn.usage"]
+    assert len(usages) == 1
+    assert usages[0].data == {"turn_id": turn_id, "total_tokens": usages[0].data["total_tokens"]}
+    assert events.index(usages[0]) < events.index(next(e for e in events if e.type == "text.delta"))
     await _wait_for(lambda: host.status == "idle")
     await host.aclose()
 
@@ -251,11 +257,16 @@ async def test_interrupt_cancels_parked_turn(tmp_path):
     events = _spy(host.bus)
     host.submit("edit it")
     await _wait_for(lambda: host.status == "waiting_ask")
+    parked = next(e for e in events if e.type == "ask.pending").data["id"]
     assert host.interrupt()
     finished = await _drain_until(events, "turn.finished")
     assert finished.data.get("interrupted") is True
     await _wait_for(lambda: host.status == "idle")
     assert host.pending_asks() == []
+    # The parked ask must be announced as cancelled — exactly once — or a
+    # client's approval panel outlives the turn it belonged to.
+    resolved = [e.data for e in events if e.type == "ask.resolved"]
+    assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
     assert not host.interrupt()  # nothing running now
     await host.aclose()
 
@@ -670,11 +681,14 @@ async def test_run_turn_interrupt_publishes_finished_interrupted(tmp_path):
 
     task = asyncio.create_task(host.run_turn("edit it"))
     await _wait_for(lambda: host.pending_asks() != [])
+    parked = host.pending_asks()[0]["id"]
     assert host.interrupt()
     with pytest.raises(asyncio.CancelledError):
         await task
 
     finished = next(e for e in events if e.type == "turn.finished")
     assert finished.data.get("interrupted") is True
+    resolved = [e.data for e in events if e.type == "ask.resolved"]
+    assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
     await _wait_for(lambda: host.status == "idle")
     await host.aclose()

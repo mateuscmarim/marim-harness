@@ -23,6 +23,7 @@ def test_parse_every_known_type():
             {"type": "turn.finished", "turn_id": "t1", "interrupted": True},
             "turn.finished",
         ),
+        ({"type": "turn.usage", "turn_id": "t1", "total_tokens": 42}, "turn.usage"),
         ({"type": "turn.error", "turn_id": "t1", "error": "boom"}, "turn.error"),
         ({"type": "text.delta", "text": "hel"}, "text.delta"),
         ({"type": "thinking.delta", "text": "hmm"}, "thinking.delta"),
