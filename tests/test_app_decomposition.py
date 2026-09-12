@@ -81,9 +81,9 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
 
 
 def test_refresh_title_swallows_driver_errors_during_teardown():
-    """refresh_title runs from set_busy in _run_turn's finally block. A driver
-    mid-teardown can raise BrokenPipeError on write/flush; it must not escape,
-    or _after_turn() is skipped and the queue/wake chain stalls."""
+    """refresh_title runs from set_busy in the session.status idle-edge handler.
+    A driver mid-teardown can raise BrokenPipeError on write/flush; it must not
+    escape, or after_turn() is skipped and the queue/wake chain stalls."""
     from textual._context import active_app
 
     class _BrokenDriver:

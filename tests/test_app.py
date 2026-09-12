@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -5,7 +6,14 @@ import pytest
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_deps, _settle
+from tests.conftest import (
+    _make_deps,
+    _ok_outcome,
+    _pretend_busy,
+    _settle,
+    _spy_submit,
+    _turn_to_idle,
+)
 
 
 def _app(tmp_path: Path) -> HarnessApp:
@@ -41,9 +49,9 @@ async def test_status_bar_shows_mode(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_after_turn_survives_drain_failure(tmp_path: Path):
-    """_after_turn runs from _run_turn's finally; if starting the next queued
-    turn raises, it must not propagate (which would kill the worker before it
-    unwinds). The queue pauses and the error surfaces instead."""
+    """after_turn runs from the session.status idle-edge handler, inside the
+    pump's dispatch; if starting the next queued turn raises, it must not
+    propagate. The queue pauses and the error surfaces instead."""
     from marim_harness.interfaces.tui.widgets import ErrorMessage
 
     app = _app(tmp_path)
@@ -351,9 +359,9 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
 @pytest.mark.anyio
 async def test_on_events_closes_text_open_across_a_run_boundary(tmp_path: Path):
     """A run that ends on assistant text must not leak its open block into the
-    NEXT run — e.g. HarnessApp.mount_wake_turn spawns a fresh ``_run_turn("")``
-    without clearing ``current_assistant`` (unlike start_turn/start_system_turn),
-    so on_events itself must close the block at the top of every run. Otherwise
+    NEXT run — e.g. HarnessApp.mount_wake_turn submits a fresh autonomous turn
+    without clearing ``current_assistant``, so on_events itself must close the
+    block at the top of every run. Otherwise
     the wake turn's first text.delta finds text_open=True and the still-live
     pointer, and appends into the previous (already finalized) turn's message."""
     from pydantic_ai.messages import PartStartEvent, TextPart
@@ -731,21 +739,6 @@ def _submit(app, text):
     return app.on_prompt_input_submitted(PromptInput.Submitted(text))
 
 
-def _non_pump(started):
-    """Workers recorded by a stubbed ``run_worker``, minus the event pump.
-
-    Phase 3a starts ``HarnessApp._event_pump`` unconditionally in ``on_mount``,
-    so tests that stub ``run_worker`` to assert "no turn worker started" must
-    filter it out. Recorded items may be bare coroutines or args tuples."""
-
-    def _name(item):
-        coro = item[0] if isinstance(item, tuple) else item
-        code = getattr(coro, "cr_code", None)
-        return code.co_name if code is not None else None
-
-    return [item for item in started if _name(item) != "_event_pump"]
-
-
 @pytest.mark.anyio
 async def test_submitting_records_prompt_history(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
@@ -758,11 +751,6 @@ async def test_submitting_records_prompt_history(tmp_path: Path):
     harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
     hist = PromptHistory()
     app = HarnessApp(harness, history=hist)
-
-    def _swallow(coro, *a, **k):  # don't actually run the turn worker
-        coro.close()
-
-    app.run_worker = _swallow  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
         await _submit(app, "remember this")
@@ -779,15 +767,13 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
     app = _app(tmp_path)
     exited = []
     app.exit = lambda *a, **k: exited.append(True)  # type: ignore[method-assign]
-    started = []
-    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         await _submit(app, cmd)  # /exit quits immediately
         await pilot.pause()
     assert exited == [True]
-    # on_mount always starts the bus pump; /exit must start no turn worker.
-    assert _non_pump(started) == []
+    assert submitted == []  # /exit must start no turn
 
 
 def _log_text(app) -> str:
@@ -804,29 +790,27 @@ def _log_text(app) -> str:
 @pytest.mark.anyio
 async def test_slash_help_lists_commands(tmp_path: Path):
     app = _app(tmp_path)
-    started = []
-    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         await _submit(app, "/help")
         await pilot.pause()
         text = _log_text(app)
         assert "/mode" in text and "/clear" in text
         assert "AGENTS.md" in text  # project-instructions discoverability
-        assert _non_pump(started) == []  # never sent to the model
+        assert submitted == []  # never sent to the model
 
 
 @pytest.mark.anyio
 async def test_slash_unknown_command_reports_error(tmp_path: Path):
     app = _app(tmp_path)
-    started = []
-    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         await _submit(app, "/wat")
         await pilot.pause()
         assert "unknown command" in _log_text(app).lower()
-        assert _non_pump(started) == []
+        assert submitted == []
 
 
 @pytest.mark.anyio
@@ -928,8 +912,8 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = boom  # type: ignore[method-assign]
-        await app._run_turn("hello")
+        app.harness.run_turn = boom  # type: ignore[method-assign]
+        await _turn_to_idle(app, "hello")
         await pilot.pause()
         # the app survives the failure
         assert app.is_running is True
@@ -956,19 +940,13 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = hang  # type: ignore[method-assign]
+        app.harness.run_turn = hang  # type: ignore[method-assign]
         await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
-        for _ in range(50):
-            await pilot.pause()
-            if started.is_set():
-                break
+        await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
         assert app.status.busy is True
 
         app.action_cancel_turn()
-        for _ in range(50):
-            await pilot.pause()
-            if not app.status.busy:
-                break
+        await _settle(pilot, lambda: not app.status.busy, what="the cancelled turn to go idle")
 
         assert app.status.busy is False
         assert app.is_running is True
@@ -1007,7 +985,7 @@ async def test_status_bar_shows_busy_indicator(tmp_path: Path):
 @pytest.mark.anyio
 async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
     """Regression: a turn finishing while the app tears down (e.g. /exit fired
-    mid-turn) runs `_run_turn`'s finally -> `_set_busy(False)` -> `_refresh_status`
+    mid-turn) runs the idle-edge handler -> `set_busy(False)` -> `refresh_status`
     after the status bar has already been removed. It must not raise NoMatches."""
     from textual.widgets import Static
 
@@ -1025,17 +1003,16 @@ async def test_set_busy_survives_missing_status_bar(tmp_path: Path):
 @pytest.mark.anyio
 async def test_turn_finally_survives_a_missing_compact_notice(tmp_path: Path):
     """Sibling regression to test_set_busy_survives_missing_status_bar: the
-    finally's `query_one(CompactNotice).compacting = False` sat unguarded,
-    *before* `await self.queue.after_turn()`. If the notice is already gone
-    (e.g. torn down mid-turn) the NoMatches propagates out of _run_turn,
-    skipping after_turn() — stranding the queue and the wake chain — and,
-    since the turn worker has no exit_on_error=False, would take the app
-    down. Guarding it (mirroring StatusBar.refresh_title's identical guard)
-    must let a normal turn finish cleanly and still drain the queue."""
+    idle-edge handler's `query_one(CompactNotice).compacting = False` sat
+    unguarded, *before* `await self.queue.after_turn()`. If the notice is
+    already gone (e.g. torn down mid-turn) the NoMatches skips after_turn()
+    — stranding the queue and the wake chain. Guarding it (mirroring
+    StatusBar.refresh_title's identical guard) must let a normal turn finish
+    cleanly and still drain the queue."""
     from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
 
     async def fake_run_turn(*a, **k):
-        return "ok"
+        return _ok_outcome()
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -1051,10 +1028,10 @@ async def test_turn_finally_survives_a_missing_compact_notice(tmp_path: Path):
             await real_after_turn()
 
         app.queue.after_turn = spy_after_turn  # type: ignore[method-assign]
-        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
+        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
 
         # Must not raise NoMatches.
-        await app._run_turn("hi")
+        await _turn_to_idle(app)
 
         assert pilot.app.is_running is True
         assert ran["after_turn"] is True
@@ -1082,7 +1059,7 @@ async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = hang  # type: ignore[method-assign]
+        app.harness.run_turn = hang  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})
@@ -1105,16 +1082,10 @@ async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path
         assert card._spinner_timer is not None and card._spinner_timer._task is not None
 
         await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
-        for _ in range(50):
-            await pilot.pause()
-            if started.is_set():
-                break
+        await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
 
         app.action_cancel_turn()
-        for _ in range(50):
-            await pilot.pause()
-            if not app.status.busy:
-                break
+        await _settle(pilot, lambda: not app.status.busy, what="the cancelled turn to go idle")
         assert app.status.busy is False
 
         assert tool.status == "failed"
@@ -1142,7 +1113,7 @@ async def test_errored_turn_also_settles_pending_widgets(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = boom  # type: ignore[method-assign]
+        app.harness.run_turn = boom  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})
@@ -1155,7 +1126,7 @@ async def test_errored_turn_also_settles_pending_widgets(tmp_path: Path):
         app.stream.tool_widgets["s1"] = card
         await pilot.pause()
 
-        await app._run_turn("hi")
+        await _turn_to_idle(app)
 
         assert tool.status == "failed"
         assert tool._spinner_timer._task is None
@@ -1382,7 +1353,7 @@ async def test_gated_tool_renders_one_widget_not_two(tmp_path: Path):
     app = HarnessApp(harness)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._run_turn("run echo")
+        await _turn_to_idle(app, "run echo")
         await pilot.pause()
         tools = list(app.query(ToolCallWidget))
         assert len(tools) == 1
@@ -2766,25 +2737,23 @@ async def test_enter_keypress_submits_and_clears(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import PromptInput, UserMessage
 
     app = _app(tmp_path)
-    started: list = []
-
-    def fake_worker(coro, *a, **k):
-        started.append(coro)
-        coro.close()  # we never run it; close to avoid an un-awaited warning
-
-    app.run_worker = fake_worker  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         pi = app.query_one(PromptInput)
         pi.focus()
         await pilot.pause()
         await pilot.press("h", "i")
         await pilot.press("enter")
-        await pilot.pause()
-        users = [str(w.render()) for w in app.query(UserMessage)]
-        assert any("hi" in u for u in users)
+        # The user bubble is rendered off turn.started, one pump hop later.
+        await _settle(
+            pilot,
+            lambda: any("hi" in str(w.render()) for w in app.query(UserMessage)),
+            what="the user message to render from the wire",
+        )
         assert pi.text == ""  # box cleared after submit
-        assert _non_pump(started)  # a turn worker was started
+        assert submitted == [("hi", "user")]  # a turn was submitted to the host
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
 
 
 @pytest.mark.anyio
@@ -2793,10 +2762,9 @@ async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import PromptInput, UserMessage
 
     app = _app(tmp_path)
-    started: list = []
-    app.run_worker = lambda *a, **k: started.append(a)  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         pi = app.query_one(PromptInput)
         pi.focus()
         await pilot.pause()
@@ -2805,7 +2773,7 @@ async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
         await pilot.press("b")
         await pilot.pause()
         assert pi.text == "a\nb"
-        assert not _non_pump(started)
+        assert submitted == []
         assert not list(app.query(UserMessage))
 
 
@@ -3709,40 +3677,42 @@ def _done(value: str):
 
 @pytest.mark.anyio
 async def test_wake_fires_autonomous_turn_when_job_finishes_idle(tmp_path: Path):
-    """A background job finishing while the turn worker is idle fires exactly one
-    autonomous (empty-prompt) turn and arms the depth counter."""
-    started: list = []
+    """A background job finishing while no turn is running fires exactly one
+    autonomous (empty-prompt) turn and arms the depth counter. The "resumed"
+    notice is rendered off the turn's own turn.started, not by the submitter."""
 
-    def fake_worker(coro, *a, **k):
-        started.append(coro)
-        coro.close()  # don't actually run the turn
-        return "worker"
+    async def fake_run_turn(*a, **k):
+        return _ok_outcome()
 
     app = _app(tmp_path)
-    app.run_worker = fake_worker  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
+        submitted = _spy_submit(app)
         assert app.autonomous_wake is True  # seeded from harness default
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)  # completion fires on_change
-        await pilot.pause()
-        assert len(_non_pump(started)) == 1  # one autonomous turn started
+        await _settle(
+            pilot,
+            lambda: any("Resumed" in str(n.render()) for n in app.query(NoticeMessage)),
+            what="the resumed notice off turn.started",
+        )
+        assert submitted == [("", "autonomous")]  # one autonomous turn submitted
         assert app.activity.wake.controller.depth == 1
-        assert any("Resumed" in str(n.render()) for n in app.query(NoticeMessage))
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
 
 
 @pytest.mark.anyio
 async def test_wake_disabled_does_not_fire(tmp_path: Path):
-    started: list = []
     app = _app(tmp_path)
-    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         app.autonomous_wake = False
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert _non_pump(started) == []
+        assert submitted == []
         # The digest is left for the next user turn, but wake-consumed.
         assert app.harness.deps.jobs.has_finished_pending() is False
         assert "job-1 (agent) done" in app.harness.deps.jobs.take_finished_digest()
@@ -3750,40 +3720,37 @@ async def test_wake_disabled_does_not_fire(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_wake_stops_at_depth_cap(tmp_path: Path):
-    started: list = []
     app = _app(tmp_path)
-    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        submitted = _spy_submit(app)
         for _ in range(app.activity.wake.controller.depth_cap):  # drive the chain up to the cap
             app.activity.wake.controller.record_auto_turn()
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert _non_pump(started) == []  # capped, no further autonomous turn
+        assert submitted == []  # capped, no further autonomous turn
 
 
 @pytest.mark.anyio
 async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
-    started: list = []
     app = _app(tmp_path)
-    app.run_worker = lambda c, *a, **k: (started.append(c), c.close())  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._turn_worker = object()  # pretend a turn is in flight
+        submitted = _spy_submit(app)
+        _pretend_busy(app)  # pretend a turn is in flight
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert _non_pump(started) == []  # queued; but wake-consumed by wait()
-        app._turn_worker = None  # turn ends -> finally calls _maybe_wake
+        assert submitted == []  # queued; but wake-consumed by wait()
+        app.turns.submitted = None  # turn ends -> the idle edge calls maybe_wake
         app.activity.maybe_wake()
-        assert len(_non_pump(started)) == 0  # no redundant wake — result already consumed
+        assert submitted == []  # no redundant wake — result already consumed
 
 
 @pytest.mark.anyio
 async def test_user_turn_resets_auto_depth(tmp_path: Path):
     app = _app(tmp_path)
-    app.run_worker = lambda c, *a, **k: c.close() if hasattr(c, "close") else None  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
         app.activity.wake.controller.record_auto_turn()
@@ -3946,8 +3913,8 @@ async def test_app_builds_host_and_pump(tmp_path: Path):
 @pytest.mark.anyio
 async def test_pump_renders_scripted_turn_via_wire(tmp_path: Path):
     """A turn renders because the host publishes wire events and the pump
-    renders them — _run_turn passes no event_stream_handler, so the bus is the
-    only path from the model stream to the transcript."""
+    renders them — the app passes no event_stream_handler anywhere, so the bus
+    is the only path from the model stream to the transcript."""
     from pydantic_ai.models.test import TestModel
 
     from marim_harness.runtime.harness import Harness
@@ -3963,8 +3930,8 @@ async def test_pump_renders_scripted_turn_via_wire(tmp_path: Path):
     app = HarnessApp(harness)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app._run_turn("hello")
-        assert await _pump_until(pilot, lambda: "wire-rendered reply" in _log_text(app))
+        await _turn_to_idle(app, "hello")
+        assert "wire-rendered reply" in _log_text(app)
 
 
 @pytest.mark.anyio
@@ -4072,13 +4039,13 @@ async def test_successful_turn_stamps_duration(tmp_path: Path):
     from marim_harness.interfaces.tui.widgets import TurnMeta
 
     async def fake_run_turn(*a, **k):
-        return "ok"
+        return _ok_outcome()
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = fake_run_turn
-        await app._run_turn("hi")
+        app.harness.run_turn = fake_run_turn
+        await _turn_to_idle(app)
         await pilot.pause()
         metas = list(app.query(TurnMeta))
         assert len(metas) == 1
@@ -4087,9 +4054,10 @@ async def test_successful_turn_stamps_duration(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_turn_meta_lands_after_the_turns_last_wire_event(tmp_path: Path):
-    """host.run_turn returns before the pump has rendered the turn's tail, so
-    _run_turn must drain the pump before stamping TurnMeta — otherwise the
-    stamp (and the queue drain after it) runs ahead of the last tool card."""
+    """The TurnMeta stamp is the turn.finished handler and the host publishes
+    turn.finished after the turn's last stream event, so bus order alone puts
+    the stamp under the last tool card — there is no barrier to drain and no
+    submitter-side race to lose."""
     from textual.containers import VerticalScroll
 
     from marim_harness.interfaces.tui.widgets import ToolCallWidget, TurnMeta
@@ -4098,55 +4066,66 @@ async def test_turn_meta_lands_after_the_turns_last_wire_event(tmp_path: Path):
 
     async def fake_run_turn(*a, **k):
         # Publish the tail synchronously and return without yielding: the
-        # pump has provably not run when _run_turn regains control.
+        # pump has provably not run when the host stamps turn.finished.
         bus = app.host.bus
         bus.publish("tool.call", {"id": "t1", "name": "read_file", "args": {"path": "a.py"}})
         bus.publish("tool.result", {"id": "t1", "content": "x"})
-        return "ok"
+        return _ok_outcome()
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
-        await app._run_turn("hi")
-        assert await _pump_until(pilot, lambda: bool(list(app.query(TurnMeta))))
+        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
+        await _turn_to_idle(app)
+        assert list(app.query(TurnMeta))
         log = app.query_one("#log", VerticalScroll)
         kinds = [type(w) for w in log.walk_children() if isinstance(w, (ToolCallWidget, TurnMeta))]
         assert kinds == [ToolCallWidget, TurnMeta]
 
 
 @pytest.mark.anyio
-async def test_escape_during_the_render_drain_does_not_cancel_a_finished_turn(tmp_path: Path):
-    """host.run_turn has returned — the turn is done and persisted — but
-    status.busy is still set while _drain_pump waits for the pump to catch
-    up. An Esc there used to cancel the worker and stamp the finished turn
-    as cancelled (error card, paused queue, a settle sweep). Review-bot
-    finding on #116 (comment 6329)."""
+async def test_escape_after_turn_finished_but_before_idle_does_not_cancel_it(tmp_path: Path):
+    """The host has finished the turn — turn.finished is on the bus and the
+    host is idle — but the app stays busy until session.status lands one
+    event later. An Esc in that window used to cancel the worker and stamp
+    the finished turn as cancelled (error card, paused queue, a settle sweep;
+    review-bot finding on #116, comment 6329). Now host.interrupt() finds no
+    turn task and the finished turn stands."""
     from asyncio import Event
 
     from marim_harness.interfaces.tui.widgets import ErrorMessage, TurnMeta
+    from marim_harness.server.wire_events import TurnFinished
 
     app = _app(tmp_path)
-    draining = Event()
+    stalled = Event()
     release = Event()
+    real_dispatch = app._dispatch_wire
 
     async def fake_run_turn(*a, **k):
-        return "ok"
+        return _ok_outcome()
 
-    async def blocking_drain(timeout: float = 2.0):
-        draining.set()
-        await release.wait()
+    async def stalling_dispatch(wire):
+        # Hold the pump on turn.finished so the host provably reaches idle
+        # while the app is still busy.
+        if isinstance(wire, TurnFinished):
+            stalled.set()
+            await release.wait()
+        await real_dispatch(wire)
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
-        app._drain_pump = blocking_drain  # type: ignore[method-assign]
-        app._turn_worker = app.run_worker(app._run_turn("hi"), exclusive=True)
-        assert await _pump_until(pilot, draining.is_set)
+        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
+        app._dispatch_wire = stalling_dispatch  # type: ignore[method-assign]
+        await app.start_turn("hi")
+        await _settle(
+            pilot,
+            lambda: stalled.is_set() and app.host.status == "idle",
+            what="the host to go idle with the pump stalled on turn.finished",
+        )
         assert app.status.busy
-        app.action_cancel_turn()  # Esc, inside the drain window
+        app.action_cancel_turn()  # Esc, inside the window
         await pilot.pause()
         release.set()
-        assert await _pump_until(pilot, lambda: not app.status.busy)
+        await _settle(pilot, lambda: not app.status.busy, what="the idle edge")
         assert list(app.query(TurnMeta)), "the finished turn keeps its duration stamp"
         assert not [w for w in app.query(ErrorMessage) if "cancelled" in str(w.render())]
         assert app.queue.paused is False
@@ -4219,7 +4198,6 @@ async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path)
         assert isinstance(app.stream.tool_widgets["cli-1"], ToolCallWidget)
 
         # Every side channel is a no-op for a stream id with no card.
-        before = app.host.bus.last_seq
         for type_, data in (
             ("subagent.model", {"model": "x"}),
             ("subagent.thinking", {"level": "low"}),
@@ -4228,15 +4206,16 @@ async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path)
             ("subagent.event", {"event": {"type": "text", "text": "hi"}}),
         ):
             bus.publish(type_, {"stream_id": "nope", **data})
-        assert await _pump_until(pilot, lambda: app._pump_seq >= before + 5)
+        bus.publish("session.notice", {"message": "side channels drained"})
+        assert await _pump_until(pilot, lambda: "side channels drained" in _log_text(app))
         assert card.model_label == "claude-cli:opus"  # untouched
 
 
 @pytest.mark.anyio
 async def test_pump_survives_unknown_events_and_a_raising_handler(tmp_path: Path, monkeypatch):
-    """Three things must not stall the pump or the drain barrier: an unknown
-    event type, a known type with a malformed payload, and a handler that
-    raises. Each is logged and the seq still advances past it."""
+    """Three things must not stall the pump: an unknown event type, a known
+    type with a malformed payload, and a handler that raises. Each is logged
+    and the pump still delivers what follows."""
     import marim_harness.interfaces.tui.app as app_module
     from marim_harness.server.wire_events import TurnStarted
 
@@ -4252,40 +4231,9 @@ async def test_pump_survives_unknown_events_and_a_raising_handler(tmp_path: Path
         bus.publish("no.such.type", {"x": 1})
         bus.publish("text.delta", {"text": 123})  # wrong field type → parse fails
         bus.publish("turn.started", {"turn_id": "t1", "prompt": "hi"})  # handler raises
-        target = bus.last_seq
-        await app._drain_pump()
-        assert app._pump_seq == target
+        bus.publish("session.notice", {"message": "still pumping"})
+        assert await _pump_until(pilot, lambda: "still pumping" in _log_text(app))
         assert app._pump_task is not None and not app._pump_task.done()
-
-
-@pytest.mark.anyio
-async def test_drain_pump_is_bounded_and_returns_when_the_pump_is_gone(tmp_path: Path):
-    import asyncio
-    from asyncio import create_task
-    from contextlib import suppress
-
-    app = _app(tmp_path)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        # Nothing published since the pump caught up: returns at once.
-        await app._drain_pump()
-        # A wedged pump (simulated: cancel it, then publish) must not hang the
-        # turn worker — the barrier gives up when the task is gone…
-        assert app._pump_task is not None
-        app._pump_task.cancel()
-        await _pump_until(pilot, lambda: app._pump_task.done())  # type: ignore[union-attr]
-        app.host.bus.publish("text.delta", {"text": "orphaned"})
-        await app._drain_pump()
-        # …and when the task is alive but not draining, after the timeout.
-        app._pump_task = create_task(asyncio.sleep(30))
-        try:
-            await app._drain_pump(timeout=0.05)
-        finally:
-            app._pump_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await app._pump_task
-            app._pump_task = None
-        assert app._pump_seq < app.host.bus.last_seq  # never caught up, still returned
 
 
 def test_ask_payload_maps_each_panel_kind(tmp_path: Path):
@@ -4327,8 +4275,8 @@ async def test_errored_turn_finalizes_the_trailing_block_before_the_error_card(t
     """A provider error mid-stream publishes turn.error, never turn.finished, so
     the wire alone never calls end_run(): the thought the turn died on would sit
     fully expanded above the error card (and the assistant text unfinalized)
-    until the NEXT turn's first event finalized it as a stale block. The error
-    arm must run the same finalize as the finished path, after the drain."""
+    until the NEXT turn's first event finalized it as a stale block. The
+    turn.error handler must run the same finalize as the finished path."""
     from marim_harness.interfaces.tui.widgets import ErrorMessage
 
     app = _app(tmp_path)
@@ -4337,13 +4285,11 @@ async def test_errored_turn_finalizes_the_trailing_block_before_the_error_card(t
         bus = app.host.bus
 
         async def stream_then_boom(*a, **k):
-            bus.publish("turn.started", {"turn_id": "t1", "prompt": "think"})
             bus.publish("thinking.delta", {"text": "let me think about this"})
-            bus.publish("turn.error", {"turn_id": "t1", "error": "upstream exploded"})
             raise RuntimeError("upstream exploded")
 
-        app.host.run_turn = stream_then_boom
-        await app._run_turn("hi")
+        app.harness.run_turn = stream_then_boom
+        await _turn_to_idle(app)
         await pilot.pause()
         assert list(app.query(ErrorMessage))
         assert app.stream.current_thinking is None  # end_run() ran: thought capped
@@ -4359,8 +4305,8 @@ async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.host.run_turn = boom
-        await app._run_turn("hi")
+        app.harness.run_turn = boom
+        await _turn_to_idle(app)
         await pilot.pause()
         assert list(app.query(TurnMeta)) == []
         assert list(app.query(ErrorMessage))  # error surfaced instead
@@ -4637,36 +4583,36 @@ async def test_rewind_command_refuses_while_busy(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_start_system_turn_refused_while_busy(tmp_path: Path):
-    # /remember and /skill spawn an exclusive system turn. Doing so mid-turn would
-    # silently cancel the in-flight worker (Textual exclusivity) and race its
-    # bookkeeping — so it must refuse while a turn is running.
+    # /remember and /skill submit a system turn. Mid-turn it would run behind a
+    # turn the user hasn't seen finish — so it must refuse while a turn is
+    # running, and nothing may reach the host.
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        sentinel = object()
-        app._turn_worker = sentinel  # pretend a turn is running
+        _pretend_busy(app)
+        submitted = _spy_submit(app)
         started = app.start_system_turn("save this fact")
         assert started is False
-        assert app._turn_worker is sentinel  # the running turn was not clobbered
+        assert submitted == []  # the running turn was left alone
+        await pilot.pause()
+        assert any("already running" in str(n.render()) for n in app.query(NoticeMessage))
 
 
 @pytest.mark.anyio
-async def test_start_system_turn_runs_when_idle(tmp_path: Path, monkeypatch):
+async def test_start_system_turn_runs_when_idle(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import UserMessage
+
     app = _app(tmp_path)
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
-        spawned: list[str] = []
-
-        async def fake_run_turn(text, attachments=None):
-            spawned.append(text)
-
-        monkeypatch.setattr(app, "_run_turn", fake_run_turn)
-        assert app._turn_worker is None
+        submitted = _spy_submit(app)
+        assert app.turn_busy is False
         started = app.start_system_turn("save this fact")
         assert started is True
-        assert app._turn_worker is not None
-        await app.workers.wait_for_complete()  # let the spawned worker finish cleanly
-        assert spawned == ["save this fact"]  # the prompt was routed to a turn
+        assert app.turn_busy is True  # latched until the host reports back
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
+        assert submitted == [("save this fact", "system")]  # routed to the host as a system turn
+        assert list(app.query(UserMessage)) == []  # a system prompt mounts no user bubble
 
 
 @pytest.mark.anyio
@@ -4681,7 +4627,7 @@ async def test_clear_refused_while_busy(tmp_path: Path, monkeypatch):
             called = True
 
         monkeypatch.setattr(app.session, "reset_conversation", spy)
-        app._turn_worker = object()  # a turn is running
+        _pretend_busy(app)  # a turn is running
         await app.reset_conversation()
         assert called is False  # refused: did not tear down the live conversation
 
@@ -4698,7 +4644,7 @@ async def test_new_session_refused_while_busy(tmp_path: Path, monkeypatch):
             called = True
 
         monkeypatch.setattr(app.session, "start_new_session", spy)
-        app._turn_worker = object()
+        _pretend_busy(app)
         await app.start_new_session("feature")
         assert called is False
 
@@ -4715,7 +4661,7 @@ async def test_switch_session_refused_while_busy(tmp_path: Path, monkeypatch):
             called = True
 
         monkeypatch.setattr(app.session, "switch_to_session_id", spy)
-        app._turn_worker = object()
+        _pretend_busy(app)
         await app.switch_to_session_id("alpha")
         assert called is False
 
@@ -4954,16 +4900,17 @@ async def test_bang_render_failure_surfaces_error_not_crash(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_bang_survives_a_turn_starting_mid_run(tmp_path: Path):
-    """A turn starting while a ! command runs must not cancel it: the
-    passthrough worker lives in its own worker group, outside the default
-    group that the exclusive turn worker sweeps."""
+    """A turn starting while a ! command runs must not cancel it. The turn
+    no longer runs as a Textual worker (it runs on the host), but the
+    passthrough worker still lives in its own group, outside the default one
+    that any exclusive worker sweeps."""
     from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         await app.on_prompt_input_submitted(PromptInput.Submitted("!sleep 0.3 && echo survived"))
-        await app.start_turn("hello")  # exclusive turn worker joins now
+        await app.start_turn("hello")  # a turn starts now
         await app.workers.wait_for_complete()
         await pilot.pause()
         pending = app.harness.turn_controller._pending_shell_results
@@ -5002,7 +4949,7 @@ async def test_bang_refused_while_turn_busy(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._turn_starting = True  # the turn_busy property's spawn-gap term
+        _pretend_busy(app)  # the submit latch: turn_busy's spawn-gap term
         await app.on_prompt_input_submitted(PromptInput.Submitted("!echo hi"))
         await pilot.pause()
         assert app.harness.turn_controller._pending_shell_results == []
@@ -5089,10 +5036,10 @@ async def test_model_command_refused_mid_turn(tmp_path: Path):
         await pilot.pause()
         calls: list = []
         app.harness.set_model = lambda mid: calls.append(mid)
-        app._turn_worker = object()  # simulate a running turn
+        _pretend_busy(app)  # simulate a running turn
         await dispatch(app, "/model some/other-model")
         await pilot.pause()
-        app._turn_worker = None
+        app.turns.submitted = None
         assert calls == [], "/model applied mid-turn"
 
 

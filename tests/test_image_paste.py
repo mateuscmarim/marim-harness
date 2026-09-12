@@ -2,7 +2,7 @@
 import pytest
 
 from marim_harness.interfaces.tui.app import HarnessApp
-from tests.conftest import _make_deps
+from tests.conftest import _make_deps, _ok_outcome, _settle
 
 
 def _app(tmp_path):
@@ -47,7 +47,7 @@ async def test_submit_forwards_attachments_to_run_turn(tmp_path, monkeypatch):
 
     async def fake_run_turn(prompt, event_stream_handler=None, attachments=None):
         seen["attachments"] = attachments
-        return "ok"
+        return _ok_outcome()
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -58,7 +58,7 @@ async def test_submit_forwards_attachments_to_run_turn(tmp_path, monkeypatch):
         await pilot.press("ctrl+v")
         box.text = "[Image #1] what is this?"
         await pilot.press("enter")
-        await pilot.pause()
+        await _settle(pilot, lambda: "attachments" in seen, what="the host to run the turn")
         assert seen["attachments"] == [(b"\x89PNGbytes", "image/png")]
 
 
@@ -112,7 +112,7 @@ async def test_text_only_model_blocks_image_submit_with_warning(tmp_path, monkey
 
     async def fake_run_turn(*a, **k):
         called["run"] = True
-        return "ok"
+        return _ok_outcome()
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -125,10 +125,12 @@ async def test_text_only_model_blocks_image_submit_with_warning(tmp_path, monkey
         await pilot.press("ctrl+v")
         box.text = "[Image #1] look"
         await pilot.press("enter")
-        await pilot.pause()
+        await _settle(
+            pilot,
+            lambda: any(isinstance(w, NoticeMessage) for w in app.query("#log *")),
+            what="the vision warning",
+        )
         assert called["run"] is False
-        log = app.query_one("#log")
-        assert any(isinstance(w, NoticeMessage) for w in log.walk_children())
 
 
 @pytest.mark.anyio
@@ -160,7 +162,7 @@ async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
 
     async def fake_run_turn(*a, **k):
         called["run"] = True
-        return "ok"
+        return _ok_outcome()
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
@@ -172,8 +174,7 @@ async def test_unknown_capability_allows_image_submit(tmp_path, monkeypatch):
         await pilot.press("ctrl+v")
         box.text = "[Image #1] look"
         await pilot.press("enter")
-        await pilot.pause()
-        assert called["run"] is True
+        await _settle(pilot, lambda: called["run"], what="the host to run the turn")
 
 
 @pytest.mark.anyio

@@ -29,8 +29,26 @@ pre-1.0, minor versions may contain breaking changes.
   (haiku/sonnet/opus and gpt-5.6-luna/terra/sol) with a "Tiered CLI workers"
   section in the sub-agents guide; parsed in CI.
 
+- `turn.started` carries a `trigger` (`user` | `system` | `autonomous`) so a
+  client can tell a typed prompt from a slash command's own prompt or an
+  autonomous wake, and `steer.accepted` carries the attachment count.
+  `SessionHost.submit(..., trigger=)`, `SessionHost.steer(text, attachments)`
+  and `SessionHost.stop()` (interrupt + stop the worker without the daemon's
+  full teardown) are the host-side seams behind them.
+
 ### Changed
 
+- **TUI turns run on the host and complete from the wire.** The TUI no longer
+  awaits a turn: every submit (typed, drained from the queue, `/remember`,
+  wake) goes through `SessionHost.submit()`, and the turn's end reaches the
+  app as `turn.finished` / `turn.error` / `session.status` events — the
+  duration stamp, error card, cancelled marker, queue drain and wake all
+  hang off those handlers (`interfaces/tui/turn_state.py` folds the submit
+  latch and the host's status into the busy flag). Esc calls
+  `host.interrupt()`; steers go through `host.steer()`. An ask this client
+  is showing that another client answers is dismissed with a notice
+  ("Approval granted from another client"). No behavior change intended for
+  a single local user; phase 3b of the cross-process session-event design.
 - **The TUI renders from the event bus.** `HarnessApp` now hosts an in-process
   `SessionHost` — the same one `marim serve` runs — and paints the transcript
   from the typed wire events it publishes (`text.delta`, `tool.call`,

@@ -164,10 +164,11 @@ class StatusBar(Static):
         app.title = f"{mark} {name}"  # in-app Header
         if app._driver is not None:  # the actual terminal tab
             # Best-effort: refresh_title runs from set_busy, which fires in
-            # _run_turn's finally block. If the driver is mid-teardown (e.g.
-            # /exit fired mid-turn) write/flush can raise BrokenPipeError —
-            # letting it escape would skip _after_turn() and stall the queue /
-            # autonomous-wake chain. Swallow it, mirroring on_unmount.
+            # the session.status idle-edge handler. If the driver is
+            # mid-teardown (e.g. /exit fired mid-turn) write/flush can raise
+            # BrokenPipeError — letting it escape would skip after_turn() and
+            # stall the queue / autonomous-wake chain. Swallow it, mirroring
+            # on_unmount.
             try:
                 app._driver.write(osc_title(f"{mark} {name}"))
                 app._driver.flush()

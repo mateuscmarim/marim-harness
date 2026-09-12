@@ -35,6 +35,52 @@ async def _settle(pilot, predicate, *, what: str, timeout: float = 10.0) -> None
     raise AssertionError(f"timed out after {timeout}s waiting for {what}")
 
 
+async def _turn_to_idle(app, text: str = "hi", *, attachments=None, timeout: float = 10.0) -> None:
+    """Submit one user turn through the host and wait for its idle edge.
+
+    Since phase 3b the TUI never awaits a turn: ``start_turn`` hands the prompt
+    to ``SessionHost.submit()`` and the turn's end reaches the app as
+    ``session.status idle`` through the pump. ``turns_idle`` is the app's own
+    edge event for that hop, so waiting on it is exactly "the turn is over
+    *and* rendered", which is what a test asserting on the transcript needs.
+    """
+    import asyncio
+
+    await app.start_turn(text, attachments)
+    await asyncio.wait_for(app.turns_idle.wait(), timeout)
+
+
+def _pretend_busy(app) -> None:
+    """Make ``turn_busy`` true without running anything: latch a submitted turn
+    id the way ``_submit_turn`` does. Tests that only need "a turn is running"
+    as a precondition (queueing, refusals) use this instead of a hanging turn."""
+    app.turns.note_submitted("pretend")
+
+
+def _spy_submit(app) -> list[tuple[str, str]]:
+    """Record every ``(prompt, trigger)`` the app hands to ``host.submit`` while
+    still submitting for real. Since phase 3b a turn is not a Textual worker,
+    so "did a turn start?" is answered at the host seam, not by stubbing
+    ``run_worker``."""
+    submitted: list[tuple[str, str]] = []
+    real_submit = app.host.submit
+
+    def spy(prompt, attachments=None, *, trigger="user"):
+        submitted.append((prompt, trigger))
+        return real_submit(prompt, attachments, trigger=trigger)
+
+    app.host.submit = spy  # type: ignore[method-assign]
+    return submitted
+
+
+def _ok_outcome(result: str = "ok"):
+    """A successful ``TurnOutcome`` for fakes standing in for ``harness.run_turn``
+    — the host reads ``outcome.result`` when it publishes ``turn.finished``."""
+    from marim_harness.runtime.outcome import TurnOutcome
+
+    return TurnOutcome(subtype="success", result=result)
+
+
 def _capture_script(tmp_path, name: str, outfile) -> str:
     """A hook script that appends its stdin (one JSON payload) + a newline to
     *outfile*, so a test can read back every payload the event fired with."""

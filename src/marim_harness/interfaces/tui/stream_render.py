@@ -456,8 +456,8 @@ class StreamRenderer:
         # top-level stream (see _StreamSink.get_text_open). A stale True left
         # over from a prior run would make the next run's first text.delta
         # append into that run's (already finalized) reply — see on_events'
-        # trailing comment and start_turn/start_system_turn, all of which clear
-        # this alongside current_assistant at every run boundary.
+        # trailing comment and begin_run (the pump's turn.started reset), both
+        # of which clear this alongside current_assistant at every run boundary.
         self.text_open = False
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # Workflow RUN cards, keyed by the run_workflow tool_call_id. A

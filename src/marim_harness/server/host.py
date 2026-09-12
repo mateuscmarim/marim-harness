@@ -39,6 +39,9 @@ from .schema import STREAM_EVENT_TYPES
 logger = logging.getLogger(__name__)
 
 
+TURN_TRIGGERS = frozenset({"user", "system", "autonomous"})
+
+
 class TurnQueueFull(Exception):
     """submit() refused: the per-session turn queue is at capacity."""
 
@@ -177,13 +180,26 @@ class SessionHost:
         return asyncio.get_running_loop().time() - self._idle_since
 
     # ----------------------------------------------------------- control --
-    def submit(self, prompt: str, attachments: list | None = None) -> str:
+    def submit(
+        self,
+        prompt: str,
+        attachments: list | None = None,
+        *,
+        trigger: str = "user",
+    ) -> str:
+        """Queue one turn and return its id. ``trigger`` is what a client sees
+        on ``turn.started`` (``user`` | ``system`` | ``autonomous``): only a
+        ``user`` turn resets the autonomous-wake chain, and only a ``user``
+        turn renders as a user bubble in the transcript."""
         if self._closing:
             raise HostClosed()
+        if trigger not in TURN_TRIGGERS:
+            raise ValueError(f"unknown turn trigger {trigger!r}")
         turn_id = secrets.token_hex(8)
-        self._wake.note_user_turn()  # a user turn resets the autonomous-wake chain
+        if trigger == "user":
+            self._wake.note_user_turn()  # a user turn resets the autonomous-wake chain
         try:
-            self._queue.put_nowait((turn_id, prompt, attachments, "user"))
+            self._queue.put_nowait((turn_id, prompt, attachments, trigger))
         except asyncio.QueueFull:
             raise TurnQueueFull() from None
         return turn_id
@@ -197,15 +213,17 @@ class SessionHost:
             self._queue.put_nowait((turn_id, "", None, "autonomous"))
 
     def interrupt(self) -> bool:
-        """Cancel the running turn. Returns False when nothing is running."""
+        """Cancel the running turn. Returns False when nothing is running or
+        the task already finished (``Task.cancel`` on a done task is a no-op)."""
         if self._turn_task is None:
             return False
-        self._turn_task.cancel()
-        return True
+        return self._turn_task.cancel()
 
-    def steer(self, text: str) -> None:
-        self.harness.steer(text)
-        self.bus.publish("steer.accepted", {"text": text})
+    def steer(self, text: str, attachments: list | None = None) -> None:
+        """Buffer a mid-turn steer on the harness and announce it. Attachments
+        are bytes and never cross the wire — clients see only the count."""
+        self.harness.steer(text, attachments)
+        self.bus.publish("steer.accepted", {"text": text, "attachments": len(attachments or ())})
 
     def touch(self) -> None:
         """Reset the idle clock. Called by the supervisor when handing out an
@@ -481,47 +499,25 @@ class SessionHost:
             return
         self._publish_finished(turn_id, outcome)
 
-    async def run_turn(
-        self, prompt: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> TurnOutcome:
-        """Provisional (phase 3a): drive ONE turn synchronously for the
-        in-process TUI, which still awaits turn completion. Bypasses the
-        queue. Publishes the same vocabulary as the queued path. Raises on
-        provider error (the TUI's error arms own the UX) — unlike the queued
-        path, which swallows into turn.error. 3b removes this when turn
-        completion inverts onto the host."""
-        if self._turn_task is not None:
-            raise RuntimeError("a turn is already in flight")
-        loop = asyncio.get_running_loop()
-        turn_id = secrets.token_hex(8)
-        self._turn_task = loop.create_task(self._turn_body(turn_id, prompt, attachments, "user"))
-        try:
-            try:
-                outcome = await self._turn_task
-            except asyncio.CancelledError:
-                if not self._closing:
-                    self.bus.publish("turn.finished", {"turn_id": turn_id, "interrupted": True})
-                raise
-            except Exception as exc:  # publish for event consumers, then surface
-                detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
-                logger.warning("turn %s failed: %s", turn_id, detail, exc_info=True)
-                self.bus.publish("turn.error", {"turn_id": turn_id, "error": detail})
-                raise
-        finally:
-            self._turn_task = None
-            self._cancel_pending("interrupted")
-            self._idle_since = loop.time()
-            self._publish_status()
-            if not self._closing:
-                self._wake.maybe_wake()
-        self._publish_finished(turn_id, outcome)
-        return outcome
-
     # ---------------------------------------------------------- teardown --
+    async def stop(self) -> None:
+        """Interrupt anything running and stop the worker, publishing nothing
+        more. Sets ``_closing`` first so the worker's cancel arm re-raises
+        instead of publishing an interrupted ``turn.finished`` (the front-end
+        is going away; a phantom "turn cancelled" would be wrong) and so the
+        turn-end wake check never enqueues into a worker being torn down.
+        Shared by ``aclose`` (daemon) and the TUI's exit path, which keeps its
+        own snappy teardown after this."""
+        self._closing = True
+        if self._turn_task is not None:
+            self._turn_task.cancel()
+        self._worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await self._worker
+
     async def aclose(self) -> None:
         """Interrupt anything running, then run the same guarded teardown the
         headless CLI does (autoname, final persist, session_end, aclose)."""
-        self._closing = True
         # The whole teardown runs inside try/finally so the release below is
         # unconditional: `await self._worker` only suppresses CancelledError, and
         # the worker's own finally block can raise. Without this, such an escape
@@ -529,11 +525,7 @@ class SessionHost:
         # already popped from the supervisor — and 409 the session for the
         # daemon's whole life, with no host left to close and nothing to retry.
         try:
-            if self._turn_task is not None:
-                self._turn_task.cancel()
-            self._worker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._worker
+            await self.stop()
             for label, step in (
                 ("wait_autoname", self.harness.session.wait_autoname),
                 ("finalize_active_time", self.harness.session.finalize_active_time),

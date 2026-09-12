@@ -1,8 +1,10 @@
-"""Tests for the turn-spawn race latch (``_turn_starting``) and the per-turn
+"""Tests for the submitted-turn latch (``TurnTracker.submitted`` — the window
+between ``host.submit()`` and that turn's ``turn.started``) and the per-turn
 pruning of completed tool-widget entries in the stream renderer."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -23,97 +25,118 @@ def _app(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Turn-spawn race latch
+# Submit latch
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_turn_starting_latch_makes_turn_busy_before_worker_exists(
-    tmp_path: Path,
-):
-    """``turn_busy`` must be true the instant a turn starts, even before the
-    exclusive worker has been created — otherwise a concurrent submit slips
-    through and spawns a duplicate exclusive worker."""
+async def test_submit_latch_makes_turn_busy_before_turn_started_arrives(tmp_path: Path):
+    """``turn_busy`` must be true the instant a turn is submitted — before the
+    host's worker has picked it up and the pump has delivered turn.started —
+    otherwise a concurrent submit slips through as a duplicate."""
+    from marim_harness.interfaces.tui.turn_state import Transition
+
     app = _app(tmp_path)
     async with app.run_test():
         assert app.turn_busy is False
-
-        # Simulate being inside _start_turn after the latch is set but before the
-        # worker is created (the exact window the latch guards).
-        app._turn_starting = True
+        app.host.submit = lambda *a, **k: "t1"  # type: ignore[method-assign]  # never runs
+        await app.start_turn("hello")
         assert app.turn_busy is True
-        assert app._turn_worker is None  # worker not yet created in this window
-        app._turn_starting = False
+        assert app.turns.submitted == "t1"
+        # turn.started for THAT id releases the latch; the turn keeps busy...
+        app.turns.on_started("t1")
+        assert app.turns.submitted is None and app.turn_busy is True
+        # ...and only the host's idle status frees it.
+        assert app.turns.on_status("running") is Transition.NONE
+        assert app.turn_busy is True
+        assert app.turns.on_status("idle") is Transition.BECAME_IDLE
         assert app.turn_busy is False
 
 
 @pytest.mark.anyio
-async def test_concurrent_submit_during_start_gap_enqueues_not_duplicate(
-    tmp_path: Path,
-):
-    """A submit landing while a turn is mid-spawn (latch set, worker not yet
-    created) must be enqueued rather than starting a second exclusive worker."""
+async def test_concurrent_submit_during_start_gap_enqueues_not_duplicate(tmp_path: Path):
+    """A submit landing while a turn is latched (submitted, turn.started not
+    yet delivered) must be enqueued rather than submitted a second time."""
     from marim_harness.interfaces.tui.widgets import PromptInput
 
     app = _app(tmp_path)
-    started: list[str] = []
+    submitted: list[str] = []
 
-    async def _fake_start_turn(text, attachments=None):
-        started.append(text)
-        # Mimic the real latch ordering: turn becomes busy via the worker.
-        app._turn_worker = object()
+    def fake_submit(prompt, attachments=None, *, trigger="user"):
+        submitted.append(prompt)
+        return f"t{len(submitted)}"
 
     async with app.run_test():
-        app.start_turn = _fake_start_turn  # type: ignore[assignment]
+        app.host.submit = fake_submit  # type: ignore[method-assign]
 
-        # First submit: no turn running -> starts a turn.
+        # First submit: no turn running -> submitted.
         await app.on_prompt_input_submitted(PromptInput.Submitted("first", []))
-        assert started == ["first"]
+        assert submitted == ["first"]
 
-        # Now simulate the start-up gap precisely: worker not yet set, latch on.
-        app._turn_worker = None
-        app._turn_starting = True
+        # Still inside the gap: no turn.started has arrived for "first".
         await app.on_prompt_input_submitted(PromptInput.Submitted("second", []))
-        # Second did NOT start a turn; it was enqueued instead.
-        assert started == ["first"]
-        assert any(m.text == "second" for m in app.queue.items)
+        assert submitted == ["first"]  # NOT submitted again...
+        assert any(m.text == "second" for m in app.queue.items)  # ...enqueued instead
 
 
 @pytest.mark.anyio
-async def test_start_turn_clears_latch_on_success(tmp_path: Path):
+async def test_real_turn_releases_the_latch_on_the_idle_edge(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test():
-        # The worker is created before the latch drops, so capture it right after
-        # _start_turn returns (the fast TestModel turn may already have finished and
-        # nulled _turn_worker by the time we check, so don't await a pause first).
         await app.start_turn("hello")
-        # Latch cleared on the success path; the worker (created inside) carries the
-        # busy flag from here on.
-        assert app._turn_starting is False
-        worker = app._turn_worker
-        assert worker is not None
-        # Drain the turn while the screen (and #log) is still mounted: the turn now
-        # yields early (the rewind snapshot is offloaded to a thread), so without this
-        # the un-awaited worker would resume mid-stream after the run_test teardown
-        # has already torn #log down and fail querying it — a teardown race, not a
-        # latch regression.
-        await worker.wait()
+        assert app.turn_busy is True  # latched before the host has reported anything
+        # Drain the turn while the screen (and #log) is still mounted, so its
+        # rendering never lands after run_test's teardown removed the log.
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
+        assert app.turns.submitted is None
+        assert app.turn_busy is False
 
 
 @pytest.mark.anyio
-async def test_start_turn_clears_latch_on_error(tmp_path: Path):
-    """If the mount inside _start_turn raises, the latch must still drop, or the
-    UI wedges (turn_busy stuck true with no worker)."""
+async def test_full_host_queue_restages_the_prompt_and_pauses(tmp_path: Path):
+    """TurnQueueFull: the user's text is kept at the FRONT of the TUI queue,
+    the queue pauses so the user picks when to retry, and a notice says so.
+    Nothing was submitted, so nothing is latched."""
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.server.host import TurnQueueFull
+
     app = _app(tmp_path)
-    async with app.run_test():
+    async with app.run_test() as pilot:
+        await pilot.pause()
 
-        def _boom(*a, **k):
-            raise RuntimeError("no log")
+        def full(*a, **k):
+            raise TurnQueueFull()
 
-        app.query_one = _boom  # type: ignore[assignment]
-        with pytest.raises(RuntimeError):
-            await app.start_turn("hello")
-        assert app._turn_starting is False
+        app.host.submit = full  # type: ignore[method-assign]
+        app.queue.enqueue("later")
+        await app.start_turn("now")
+        await pilot.pause()
+        assert [m.text for m in app.queue.items] == ["now", "later"]
+        assert app.queue.paused is True
+        assert app.turn_busy is False
+        assert any("queue is full" in str(n.render()) for n in app.query(NoticeMessage))
+
+
+@pytest.mark.anyio
+async def test_closed_host_drops_the_submit_silently(tmp_path: Path):
+    """HostClosed only happens during teardown: the prompt is dropped (logged),
+    nothing is latched, nothing is staged."""
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.server.host import HostClosed
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def closed(*a, **k):
+            raise HostClosed()
+
+        app.host.submit = closed  # type: ignore[method-assign]
+        await app.start_turn("too late")
+        await pilot.pause()
+        assert app.turn_busy is False
+        assert app.queue.items == []
+        assert not any("queue" in str(n.render()) for n in app.query(NoticeMessage))
 
 
 # ---------------------------------------------------------------------------
@@ -221,3 +244,25 @@ def test_prune_completed_empty_is_noop():
     r = StreamRenderer(app=None)
     r.prune_completed()
     assert r.tool_widgets == {}
+
+
+@pytest.mark.anyio
+async def test_escape_before_turn_started_still_releases_the_latch(tmp_path: Path):
+    """Esc can cancel the host's turn task in the one loop iteration between
+    the worker creating it and ``_turn_body`` publishing turn.started. The
+    turn then ends with only ``turn.finished {interrupted}`` + ``session.status
+    idle`` and NO turn.started — the latch must be released by the finish, or
+    the TUI stays busy forever (review-bot finding on PR #118)."""
+    app = _app(tmp_path)
+    async with app.run_test():
+        await app.start_turn("hi")
+        # One iteration: the worker dequeues and creates the task, but the task's
+        # first step is queued behind us, so the cancel lands before turn.started.
+        await asyncio.sleep(0)
+        assert app.host._turn_task is not None
+        app.action_cancel_turn()
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
+        assert app.turn_busy is False
+        assert app.turns.submitted is None
+        assert app.host.status == "idle"
+        assert not app.query("UserMessage")  # the turn never started

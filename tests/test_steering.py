@@ -6,7 +6,7 @@ import pytest
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 from marim_harness.runtime.permissions import Mode
-from tests.conftest import _make_deps
+from tests.conftest import _make_deps, _pretend_busy, _settle, _spy_submit
 
 
 @pytest.fixture
@@ -290,16 +290,27 @@ def _tui_app(tmp_path):
 
 @pytest.mark.anyio
 async def test_steer_while_busy_calls_harness_steer(tmp_path):
+    """A steer mid-turn goes host.steer -> harness.steer; the confirmation
+    notice is rendered off the host's steer.accepted, not by the submitter."""
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         seen = []
         app.harness.steer = lambda text, attachments=None: seen.append((text, attachments))
-        app._turn_worker = object()  # simulate a running turn
+        _pretend_busy(app)  # simulate a running turn
+        submitted = _spy_submit(app)
         await app.on_prompt_input_steer(PromptInput.Steer("redirect", []))
         assert seen == [("redirect", [])]
         assert app.queue.items == []  # not queued
-        assert app._turn_worker is not None  # no new worker
+        assert submitted == []  # no new turn
+        notices = lambda: [str(n.render()) for n in app.query(NoticeMessage)]  # noqa: E731
+        await _settle(
+            pilot,
+            lambda: any("↪ steering: redirect" in n for n in notices()),
+            what="the steer.accepted notice",
+        )
 
 
 @pytest.mark.anyio
@@ -309,7 +320,6 @@ async def test_steer_while_idle_runs_normally(tmp_path):
         await pilot.pause()
         started = []
         app.start_turn = lambda text, attachments=None: started.append(text) or _noop()
-        app._turn_worker = None
         await app.on_prompt_input_steer(PromptInput.Steer("just run", []))
         assert started == ["just run"]
 
@@ -321,7 +331,7 @@ async def test_empty_steer_is_noop(tmp_path):
         await pilot.pause()
         seen = []
         app.harness.steer = lambda *a, **k: seen.append(a)
-        app._turn_worker = object()
+        _pretend_busy(app)
         await app.on_prompt_input_steer(PromptInput.Steer("   ", []))
         assert seen == []  # empty text, no attachments -> no-op
 

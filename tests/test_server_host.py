@@ -18,7 +18,7 @@ from marim_harness.runtime.deps import Deps, PlanDecision, UIHooks, WorkspaceCon
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.bus import EventBus
-from marim_harness.server.host import SessionHost, TurnQueueFull
+from marim_harness.server.host import HostClosed, SessionHost, TurnQueueFull
 from marim_harness.tools.provider import BuiltinToolProvider
 
 pytestmark = pytest.mark.anyio
@@ -622,84 +622,91 @@ async def test_present_plan_cancel_maps_to_keep_planning(tmp_path):
     await host.aclose()
 
 
-async def test_run_turn_publishes_lifecycle_and_returns_outcome(tmp_path):
+async def test_submit_trigger_is_published_and_only_user_resets_wake(tmp_path):
+    """The TUI submits its own system/wake turns through the host (3b): the
+    trigger rides on turn.started so the transcript can decide whether to
+    render a user bubble, and only a real user turn resets the wake chain."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+    noted: list[str] = []
+    host._wake.note_user_turn = lambda: noted.append("user")  # type: ignore[method-assign]
+
+    host.submit("sys", trigger="system")
+    started = await _drain_until(events, "turn.started")
+    assert started.data["prompt"] == "sys"
+    assert started.data["trigger"] == "system"
+    assert noted == []
+    await _wait_for(lambda: host.status == "idle")
+
+    events.clear()
+    host.submit("", trigger="autonomous")
+    started = await _drain_until(events, "turn.started")
+    assert started.data["trigger"] == "autonomous"
+    assert noted == []
+    await _wait_for(lambda: host.status == "idle")
+
+    host.submit("hi")
+    assert noted == ["user"]
+    with pytest.raises(ValueError, match="unknown turn trigger"):
+        host.submit("x", trigger="cron")
+    await _wait_for(lambda: host.status == "idle")
+    await host.aclose()
+
+
+async def test_steer_carries_attachments_and_publishes_only_the_count(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.auto)
     harness = _make_harness(_text_only_model(), deps)
     host = SessionHost(harness, EventBus())
     events = _spy(host.bus)
-
-    outcome = await host.run_turn("hi")
-
-    assert outcome.result == "done"
-    started = next(e for e in events if e.type == "turn.started")
-    assert started.data["prompt"] == "hi"
-    finished = next(e for e in events if e.type == "turn.finished")
-    assert finished.data["output"] == "done"
-    assert "usage" in finished.data
-    assert harness.session.history  # persisted
+    atts = [(b"\x89PNG", "image/png")]
+    host.steer("look at this", atts)
+    assert harness.take_buffered_steers() == [("look at this", atts)]
+    accepted = next(e for e in events if e.type == "steer.accepted")
+    assert accepted.data == {"text": "look at this", "attachments": 1}
     await host.aclose()
 
 
-async def test_run_turn_error_publishes_and_raises(tmp_path):
-    deps = _make_deps(tmp_path, mode=Mode.auto)
-
-    def fn(messages, info):
-        raise RuntimeError("boom")
-
-    async def stream_fn(messages, info):
-        yield "partial "
-        raise RuntimeError("boom")
-
-    harness = _make_harness(FunctionModel(fn, stream_function=stream_fn), deps)
-    host = SessionHost(harness, EventBus())
-    events = _spy(host.bus)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await host.run_turn("hi")
-
-    error = next(e for e in events if e.type == "turn.error")
-    assert "boom" in error.data["error"]
-    assert not any(e.type == "turn.finished" for e in events)
-    await host.aclose()
-
-
-async def test_run_turn_rejects_concurrent_second_call(tmp_path):
+async def test_stop_cancels_the_running_turn_without_publishing_a_cancel(tmp_path):
+    """stop() is the front-end's teardown: the worker's cancel arm must see
+    _closing and re-raise rather than publish an interrupted turn.finished
+    (nothing is left to render it), and the turn-end wake check must not
+    enqueue into the dead worker."""
     (tmp_path / "a.txt").write_text("foo\n")
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    harness = _make_harness(_edit_model(), deps)
-    host = SessionHost(harness, EventBus())
-
-    task = asyncio.create_task(host.run_turn("edit it"))
-    await _wait_for(lambda: host.pending_asks() != [])
-    with pytest.raises(RuntimeError, match="already in flight"):
-        await host.run_turn("second")
-
-    [ask] = host.pending_asks()
-    assert host.answer_ask(ask["id"], {"approve": True, "reason": None})
-    outcome = await task
-    assert outcome.result == "done"
-    await host.aclose()
-
-
-async def test_run_turn_interrupt_publishes_finished_interrupted(tmp_path):
-    (tmp_path / "a.txt").write_text("foo\n")
-    deps = _make_deps(tmp_path, mode=Mode.ask)
-    harness = _make_harness(_edit_model(), deps)
-    host = SessionHost(harness, EventBus())
+    host = SessionHost(_make_harness(_edit_model(), deps), EventBus())
     events = _spy(host.bus)
-
-    task = asyncio.create_task(host.run_turn("edit it"))
-    await _wait_for(lambda: host.pending_asks() != [])
+    host.submit("edit it")
+    await _wait_for(lambda: host.status == "waiting_ask")
     parked = host.pending_asks()[0]["id"]
-    assert host.interrupt()
-    with pytest.raises(asyncio.CancelledError):
-        await task
 
-    finished = next(e for e in events if e.type == "turn.finished")
-    assert finished.data.get("interrupted") is True
-    resolved = [e.data for e in events if e.type == "ask.resolved"]
-    assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
+    await host.stop()
+
+    assert host._worker.cancelled() or host._worker.done()
+    assert not any(e.type == "turn.finished" for e in events)
+    # Parked asks are still announced as cancelled: a remote client's panel
+    # must not outlive the session.
+    assert [e.data for e in events if e.type == "ask.resolved"] == [
+        {"id": parked, "cancelled": True, "reason": "interrupted"}
+    ]
+    assert not host.interrupt()
+    with pytest.raises(HostClosed):
+        host.submit("late")
+    await host.aclose()  # idempotent after stop()
+
+
+async def test_interrupt_reports_false_once_the_turn_task_is_done(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+    host.submit("hi")
+    await _drain_until(events, "turn.finished")
+    # Between the task finishing and the worker's finally clearing _turn_task
+    # there is no gap a test can hit deterministically, so poke the seam: a done
+    # task's cancel() is False, and interrupt() must not report success over it.
     await _wait_for(lambda: host.status == "idle")
+    assert host._turn_task is None
+    assert not host.interrupt()
     await host.aclose()
 
 

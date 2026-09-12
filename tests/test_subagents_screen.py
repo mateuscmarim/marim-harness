@@ -855,10 +855,11 @@ async def test_failed_prerequisite_attributes_blocker(tmp_path):
 async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path, monkeypatch):
     """The lazy transcript loader must not run in the default worker group.
 
-    The turn worker runs exclusive=True in the default group, and Textual
-    cancels every worker sharing a group when an exclusive worker joins it —
-    so a turn starting while a resumed transcript replays would truncate the
-    replay with ``transcript_loaded`` already set, leaving no retry. Same
+    Textual cancels every worker sharing a group when an exclusive worker
+    joins it — so an exclusive worker starting while a resumed transcript
+    replays would truncate the replay with ``transcript_loaded`` already set,
+    leaving no retry. (The turn itself no longer runs as a worker since
+    phase 3b; the guard stays for any exclusive worker that does.) Same
     hazard the shell-passthrough worker documents in app.py."""
     import asyncio
 
@@ -894,8 +895,8 @@ async def test_transcript_loader_worker_survives_exclusive_turn_worker(tmp_path,
         await pilot.press("ctrl+x")  # opens the screen -> launches the loader
         await asyncio.wait_for(started.wait(), timeout=5)
 
-        # A turn starts: an exclusive worker joins the DEFAULT group (exactly
-        # what _start_turn does). The loader must survive the sweep.
+        # An exclusive worker joins the DEFAULT group (what the turn worker
+        # did before 3b). The loader must survive the sweep.
         async def noop():
             pass
 

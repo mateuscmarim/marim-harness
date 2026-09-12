@@ -1,16 +1,7 @@
 import json
 import logging
 import time
-from asyncio import (
-    CancelledError,
-    Event,
-    Task,
-    TimeoutError,
-    create_task,
-    current_task,
-    get_running_loop,
-    wait_for,
-)
+from asyncio import CancelledError, Event, Task, create_task
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from typing import Any
@@ -24,10 +15,9 @@ from textual.widgets import Footer, Header
 
 from ...ask_user import Choice, Question
 from ...jobs import JobRegistry
-from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...server.bus import EventBus, Subscription
-from ...server.host import SessionHost
+from ...server.host import HostClosed, SessionHost, TurnQueueFull
 from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
     AskPending,
@@ -38,7 +28,9 @@ from ...server.wire_events import (
     SessionModeChanged,
     SessionNotice,
     SessionRenamed,
+    SessionStatus,
     SessionTtft,
+    SteerAccepted,
     SubagentCliActivity,
     SubagentEvent,
     SubagentModel,
@@ -50,6 +42,7 @@ from ...server.wire_events import (
     ThinkingDelta,
     ToolCall,
     ToolResult,
+    TurnError,
     TurnFinished,
     TurnStarted,
     TurnUsage,
@@ -90,6 +83,7 @@ from .stream_render import StreamRenderer
 from .subagents import SubAgentsScreen, SubAgentsView
 from .themes import MARIM_THEMES
 from .trust_flow import prompt_project_trust
+from .turn_state import Transition, TurnTracker
 from .widgets import (
     AssistantMessage,
     CommandAutocomplete,
@@ -239,23 +233,8 @@ async def _handle_compaction_finished(app: "HarnessApp", wire: CompactionFinishe
         app.session.on_compact(wire.before, wire.after)
 
 
-async def _handle_turn_started(app: "HarnessApp", _wire: TurnStarted) -> None:
-    # The pure-wire pump never calls StreamRenderer.on_events, so turn.started
-    # is the only run boundary it sees — this is where the per-run reset lives
-    # (stale text_open reopening into the new turn was the leak fixed for
-    # on_events in commit 23462072; stale tool_group/solo_tool would splice the
-    # new turn's first tool call into the previous turn's group).
-    #
-    # Deliberately NOT a per-agent-run reset: an approval round inside a turn
-    # starts a fresh agent.run on the harness side but publishes nothing on the
-    # wire, so tool cards either side of an approval share one group when the
-    # continuation opens with more tool calls. The old on_events path reset per
-    # run and split them — but the persisted history carries no approval marker,
-    # so session replay (session_view.replay_history) groups that same burst as
-    # ONE run. Keeping the group across the approval is what makes the live
-    # transcript and a resumed one agree; text, thinking, a user prompt, an
-    # ask_user call, and a workflow spawn still break the run as before.
-    app.stream.begin_run()
+async def _handle_turn_started(app: "HarnessApp", wire: TurnStarted) -> None:
+    await app._on_turn_started(wire)
 
 
 async def _handle_turn_usage(app: "HarnessApp", wire: TurnUsage) -> None:
@@ -264,14 +243,23 @@ async def _handle_turn_usage(app: "HarnessApp", wire: TurnUsage) -> None:
     app.stream.live_run_tokens = wire.total_tokens
 
 
-async def _handle_turn_finished(app: "HarnessApp", _wire: TurnFinished) -> None:
-    # The run-end counterpart of turn.started: on_events finalized the trailing
-    # thought/text block when the stream generator ran dry; on the wire that
-    # moment is turn.finished (published after the outcome persists, before
-    # run_turn returns — so it lands ahead of TurnMeta once _run_turn has
-    # drained the pump). Interrupted turns publish it too, so a cancelled
-    # thought still collapses to its preview.
-    app.stream.end_run()
+async def _handle_turn_finished(app: "HarnessApp", wire: TurnFinished) -> None:
+    await app._on_turn_finished(wire)
+
+
+async def _handle_turn_error(app: "HarnessApp", wire: TurnError) -> None:
+    app._on_turn_error(wire)
+
+
+async def _handle_session_status(app: "HarnessApp", wire: SessionStatus) -> None:
+    await app._on_session_status(wire)
+
+
+async def _handle_steer_accepted(app: "HarnessApp", wire: SteerAccepted) -> None:
+    # Rendered from the wire, not at the keystroke, so a steer sent from
+    # another client (phase 4) shows in this transcript the same way.
+    tag = f"  📎 {wire.attachments}" if wire.attachments else ""
+    app.append_log(NoticeMessage(f"↪ steering: {wire.text}{tag}"))
 
 
 def _approval_args(raw: Any) -> dict:
@@ -321,14 +309,26 @@ async def _handle_ask_pending(app: "HarnessApp", wire: AskPending) -> None:
 
 
 async def _handle_ask_resolved(app: "HarnessApp", wire: AskResolved) -> None:
-    app._dismiss_ask(wire.id)
+    app._dismiss_ask(wire)
 
 
-# Every wire type not listed here (turn.error, session.status, stream.gap,
-# steer.accepted) is a deliberate no-op in 3a: error/status/gap belong to
-# 3b/remote clients. turn.finished is consumed only for its run-boundary
-# meaning (finalize the trailing block); its output/usage payload is not
-# rendered from the wire in 3a — _run_turn still reads the outcome in-process.
+def _answered_elsewhere(panel: InteractionPanel, answer: dict | None) -> str:
+    """The notice for an ask this client was showing that another client
+    answered first (phase 4 — or a second local subscriber). Approval wording
+    reads the verdict so the user knows which way it went."""
+    if isinstance(panel, ApprovalPanel):
+        verdict = "granted" if (answer or {}).get("approve") else "denied"
+        return f"Approval {verdict} from another client"
+    if isinstance(panel, AskUserPanel):
+        return "Question answered from another client"
+    return "Plan decided from another client"
+
+
+# stream.gap is the one wire type deliberately unhandled: a synthetic resume
+# marker that cannot occur for the in-process subscriber (it never falls
+# behind the ring). turn.finished's output/usage payload is not rendered —
+# the transcript already streamed the text, and the status bar reads usage
+# from the session; the event's job here is the turn-end effects.
 _WIRE_HANDLERS: dict[type, _WireHandler] = {
     TextDelta: _handle_stream_wire,
     ThinkingDelta: _handle_stream_wire,
@@ -356,6 +356,9 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     TurnStarted: _handle_turn_started,
     TurnUsage: _handle_turn_usage,
     TurnFinished: _handle_turn_finished,
+    TurnError: _handle_turn_error,
+    SessionStatus: _handle_session_status,
+    SteerAccepted: _handle_steer_accepted,
     AskPending: _handle_ask_pending,
     AskResolved: _handle_ask_resolved,
 }
@@ -403,15 +406,15 @@ class HarnessApp(App):
         # Recallable prompt history. Defaults to in-memory; the CLI passes a
         # persistent one so Up/Down recall prompts across restarts.
         self._history = history if history is not None else PromptHistory()
-        self._turn_worker = None
-        # Latch closing the window between "decided to start a turn" and the
-        # exclusive worker actually existing. start_turn awaits a mount before it
-        # can set _turn_worker, so without this a second submit landing in that gap
-        # would pass the _turn_worker guard and start a *duplicate* exclusive
-        # worker — which Textual resolves by silently cancelling the first, the
-        # exact hazard turn_busy exists to prevent. Set before the first await,
-        # cleared on every start_turn exit path.
-        self._turn_starting = False
+        # Is a turn running? Folded from the host's session.status events and
+        # the submit latch (see turn_state.py); ``turn_busy`` reads it. The
+        # turn itself lives on the host — the app holds no worker for it.
+        self.turns = TurnTracker()
+        # Set on every idle edge, cleared on submit / turn.started. A wait
+        # helper for tests and for any flow that must outlast the current turn;
+        # production code reads ``turn_busy`` instead.
+        self.turns_idle = Event()
+        self.turns_idle.set()
         # True while the /compact worker (group "compact") is mid-run. A
         # summarize can take seconds, and starting a turn or rebinding the
         # session store under it risks silent turn loss, cross-session history
@@ -439,11 +442,6 @@ class HarnessApp(App):
         # app.workers.wait_for_complete(), which a never-ending pump would
         # block forever.
         self._pump_task: Task[None] | None = None
-        # Drain barrier bookkeeping (see _drain_pump): the seq of the last bus
-        # event the pump has finished dispatching, and a wake-up the pump sets
-        # after every event so a waiter can block instead of polling.
-        self._pump_seq = 0
-        self._pump_advanced = Event()
         # Panels mounted for parked asks, keyed by ask id: ask.pending mounts one,
         # ask.resolved (local OR another client's answer, or an interrupt) removes
         # it. Value is (panel, focus-before-mount) so removal restores focus the
@@ -588,7 +586,12 @@ class HarnessApp(App):
         exclusively wired to ``self.host``) to the widgets. One Subscription for
         the app's whole lifetime — the same shape a phase-4 remote client would
         get. Dies with the app; see on_unmount for the host worker's own
-        teardown, which this pump does NOT own."""
+        teardown (``host.stop()``), which this pump does NOT own.
+
+        Ordering is the bus's: every turn-end effect (duration stamp, error
+        card, queue drain) is a handler on the turn's own events, so it lands
+        after the rendering it follows by construction — there is no barrier
+        to drain and nothing to race."""
         try:
             while True:
                 event = await sub.next_event()
@@ -606,40 +609,8 @@ class HarnessApp(App):
                         await self._dispatch_wire(wire)
                     except Exception:  # noqa: BLE001 - one bad event must not blind the app
                         logger.exception("event pump: dispatch failed for %s", type(wire).__name__)
-                # Advance past unknown/unhandled events too: the barrier counts
-                # bus seqs, not renders, so an ignored event must not stall it.
-                self._pump_seq = event.seq
-                self._pump_advanced.set()
         finally:
             sub.close()
-
-    async def _drain_pump(self, timeout: float = 2.0) -> None:
-        """Block until the pump has dispatched every event published so far.
-
-        ``host.run_turn`` returns the moment the host's turn task completes,
-        but the turn's tail — the last tool.result, text.delta, turn.finished —
-        is still sitting in the subscription queue until the pump gets the
-        loop back. Anything _run_turn does after the await (mount TurnMeta,
-        settle pending rows, drain the next queued prompt) would otherwise run
-        ahead of the rendering it is supposed to follow, so cards land below
-        the duration stamp or the next user message. The target is the bus's
-        seq at call time, so events published *after* this starts (a sub-agent
-        still streaming) don't extend the wait. Bounded: a wedged pump costs
-        one late stamp, never a stuck turn worker."""
-        target = self.host.bus.last_seq
-        deadline = get_running_loop().time() + timeout
-        while self._pump_seq < target:
-            if self._pump_task is None or self._pump_task.done():
-                return
-            remaining = deadline - get_running_loop().time()
-            if remaining <= 0:
-                logger.warning("event pump: drain barrier timed out at seq %s", self._pump_seq)
-                return
-            # clear-then-wait with no await in between: the pump can only set
-            # the event while we are suspended in wait(), so no wake-up is lost.
-            self._pump_advanced.clear()
-            with suppress(TimeoutError):
-                await wait_for(self._pump_advanced.wait(), remaining)
 
     async def _dispatch_wire(self, wire: WireEvent) -> None:
         handler = _WIRE_HANDLERS.get(type(wire))
@@ -693,25 +664,20 @@ class HarnessApp(App):
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
-        # SessionHost's queue-worker task (loop.create_task in __init__) is plain
-        # asyncio, not a Textual worker, so app exit doesn't cancel it for us —
-        # left running, it warns at interpreter shutdown. interrupt() covers a
-        # turn parked via host.submit() (unused by the TUI, which calls
-        # host.run_turn directly, but cheap to cover); the worker cancel below is
-        # what actually silences the log. Deliberately NOT host.aclose() — see
-        # the module's teardown-order note: that waits for in-flight autoname,
-        # the opposite of this snappy-exit path.
-        self.host.interrupt()
-        # The pump is a plain asyncio task (see _pump_task) — cancel it here,
-        # before the host worker goes away, so it can't pull another event
-        # mid-teardown.
+        # The pump is a plain asyncio task (see _pump_task) — cancel it first,
+        # before the host stops, so the teardown's own events (the cancelled
+        # turn's ask.resolved, the final session.status) never reach a widget
+        # tree that is going away.
         if self._pump_task is not None:
             self._pump_task.cancel()
             with suppress(CancelledError):
                 await self._pump_task
-        self.host._worker.cancel()
-        with suppress(CancelledError):
-            await self.host._worker
+        # host.stop(), not host.aclose(): stop() interrupts the running turn
+        # and ends the queue worker (plain asyncio, not a Textual worker — left
+        # running it warns at interpreter shutdown) and publishes nothing more;
+        # aclose() would then wait for an in-flight autoname, the opposite of
+        # this snappy-exit path, which keeps its own teardown below.
+        await self.host.stop()
         # Persist session duration before tearing down. Fold this run's active
         # time into the total and force the save: the final segment must land
         # even when history is unchanged (an idle exit would otherwise skip the
@@ -751,13 +717,12 @@ class HarnessApp(App):
 
     @property
     def turn_busy(self) -> bool:
-        """True while a turn worker (user submit, drained queue, system command,
-        or autonomous wake) is live, OR is mid-spawn (``_turn_starting``). The
-        single guard against starting another exclusive turn — which Textual would
-        satisfy by silently cancelling the running one — or tearing down the
-        conversation/session under it. The ``_turn_starting`` term closes the gap
-        before ``start_turn`` has set ``_turn_worker``."""
-        return self._turn_worker is not None or self._turn_starting
+        """True from the moment a turn is submitted (user submit, drained
+        queue, system command, or autonomous wake) until the host reports
+        idle after it. The single guard against submitting a second turn
+        behind a running one or tearing down the conversation/session under
+        it. Read from the wire plus the submit latch — see TurnTracker."""
+        return self.turns.busy
 
     def _refresh_mode_display(self) -> None:
         """Push the current mode into the status bar's ``mode`` reactive.
@@ -815,147 +780,162 @@ class HarnessApp(App):
     async def start_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None = None
     ) -> None:
-        """Mount the user message and spawn the exclusive turn worker. Shared by
-        a fresh submit and a drained queue item. Resets the autonomous-wake
-        chain and spawns the worker.
+        """Submit a user turn to the host. Shared by a fresh submit and a
+        drained queue item. Resets the autonomous-wake chain; everything the
+        transcript shows for the turn (the user bubble included) arrives back
+        through the pump on ``turn.started``.
 
-        ``_turn_starting`` is latched *before* the first await so a concurrent
-        submit can't slip through ``turn_busy`` while we're between the mount and
-        the worker being created. Cleared in ``finally`` on every path — the
-        worker (once created) carries the busy flag from there on, and on an early
-        error there is no worker, so the latch must drop or the UI wedges."""
-        self._turn_starting = True
-        try:
-            self.activity.note_user_turn()
-            log = self.query_one("#log", VerticalScroll)
-            await log.mount(UserMessage(text))
-            self.stream.current_assistant = None
-            self.stream.text_open = False
-            self._turn_worker = self.run_worker(self._run_turn(text, attachments), exclusive=True)
-        finally:
-            self._turn_starting = False
+        ``async`` for its callers' sake only — the submit is synchronous and
+        the busy latch is set before this returns, so no concurrent submit
+        can slip past ``turn_busy`` in between."""
+        self.activity.note_user_turn()
+        self._submit_turn(text, attachments, "user")
 
     def start_system_turn(self, prompt: str) -> bool:
-        """Spawn a turn for a system-initiated prompt — a slash command like
+        """Submit a turn for a system-initiated prompt — a slash command like
         /remember or /skill that injects its own prompt. Unlike start_turn it
-        mounts no user message and leaves the autonomous-wake chain untouched;
-        it just resets the stream and runs the exclusive worker.
+        leaves the autonomous-wake chain untouched, and the transcript mounts
+        no user message for it (``turn.started.trigger == "system"``).
 
-        Refused (returns False, no turn started) while a turn is already running:
-        the exclusive worker would otherwise silently cancel the in-flight turn
-        and race its finally-block bookkeeping. Returns True when the turn was
-        started."""
+        Refused (returns False, no turn started) while a turn is already
+        running: a system prompt behind the user's turn would run against a
+        conversation they haven't seen finish. Returns True when submitted."""
         if self.turn_busy:
             self.query_one("#log", VerticalScroll).mount(
                 NoticeMessage("A turn is already running — wait for it to finish or press Esc.")
             )
             return False
-        # Mirror start_turn's discipline: keep the spawn exception-safe. This path
-        # has no awaits (so no concurrent submit can interleave, hence no
-        # _turn_starting latch is needed), but resetting the stream or creating the
-        # worker could still raise if Textual is mid-teardown. If it does, leave no
-        # half-set busy state behind (_turn_worker stays/returns to None so
-        # turn_busy doesn't wedge) and report failure rather than letting the
-        # exception escape into the slash-command dispatcher.
-        try:
-            self.stream.current_assistant = None
-            self.stream.text_open = False
-            self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
-        except Exception as exc:  # noqa: BLE001 — a failed spawn must not wedge the UI
-            self._turn_worker = None
-            self.log.error("failed to start system turn")
-            logger.warning("failed to start system turn: %s", exc, exc_info=True)
-            self.append_log(NoticeMessage("Couldn't start the command — please try again."))
-            return False
-        return True
+        return self._submit_turn(prompt, None, "system")
 
     def mount_wake_turn(self) -> None:
-        """The wake effect the ActivityMonitor's driver invokes: post the resume
-        notice and spawn the digest-only turn worker. Mounted synchronously (we
-        may be in a sync on_change callback), mirroring on_compact / on_rename."""
-        self.append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
-        self._turn_worker = self.run_worker(self._run_turn(""), exclusive=True)
+        """The wake effect the ActivityMonitor's driver invokes: submit the
+        digest-only turn. Synchronous (we may be in a sync on_change callback);
+        the "resumed" notice is posted when its ``turn.started`` arrives."""
+        self._submit_turn("", None, "autonomous")
+
+    def _submit_turn(
+        self, text: str, attachments: list[tuple[bytes, str]] | None, trigger: str
+    ) -> bool:
+        """``host.submit`` plus the busy latch. A full host queue re-stages a
+        user prompt at the front of the TUI's own queue and pauses it, so the
+        text is kept and the user decides when to retry; a system/autonomous
+        prompt is dropped with a notice (there is nothing to keep). A closed
+        host (exit in progress) drops silently."""
+        try:
+            turn_id = self.host.submit(text, attachments, trigger=trigger)
+        except TurnQueueFull:
+            if trigger == "user":
+                self.queue.prepend(text, attachments)
+                self.queue.paused = True
+            self.append_log(
+                NoticeMessage("The session's turn queue is full — press ctrl+r to retry.")
+            )
+            return False
+        except HostClosed:
+            logger.warning("turn submitted during teardown was dropped: %r", text[:60])
+            return False
+        self.turns.note_submitted(turn_id)
+        self.turns_idle.clear()
+        return True
 
     def action_cancel_turn(self) -> None:
-        if self.status.busy and self._turn_worker is not None:
-            self._turn_worker.cancel()
+        # Esc between submit and turn.started finds no task to cancel; the
+        # turn starts anyway and a second Esc lands. Not worth a "pending
+        # cancel" latch — the window is one worker hop.
+        if self.turns.busy:
+            self.host.interrupt()
 
-    async def _run_turn(
-        self, text: str, attachments: list[tuple[bytes, str]] | None = None
-    ) -> None:
-        self.status.turn_start = time.monotonic()
+    async def _on_turn_started(self, wire: TurnStarted) -> None:
+        self.turns.on_started(wire.turn_id)
+        self.turns_idle.clear()
         self.status.set_busy(True)
         # Drop finished tool-widget entries from the prior turn(s) so the per-turn
         # tracking dict doesn't grow unbounded across a long session. Done at the
         # turn boundary (not per approval round) so the within-turn duplicate guard
         # for gated tools keeps its entries while the turn is live.
         self.stream.prune_completed()
-        log = self.query_one("#log", VerticalScroll)
-        try:
-            await self.host.run_turn(text, attachments=attachments)
-            # The turn is complete and persisted; only its rendering is still
-            # in flight. status.busy stays set until the finally below, so an
-            # Esc landing in this window would cancel the worker and relabel a
-            # finished turn "cancelled" — error card, paused queue, a settle
-            # sweep over rows a queued tool.result was about to finish. Absorb
-            # it: the pump is its own task and keeps rendering regardless; at
-            # worst the stamp lands above the last card.
-            try:
-                await self._drain_pump()
-            except CancelledError:
-                # 3.11+ counts the swallowed request on the task; clear it so a
-                # later wait_for/timeout in this worker doesn't read it as its own.
-                uncancel = getattr(current_task(), "uncancel", None)
-                if uncancel is not None:
-                    uncancel()
-            # Stamp the just-finished turn's duration under its reply (success
-            # only; cancelled/errored turns surface an ErrorMessage instead).
-            elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
-            await log.mount(TurnMeta(elapsed))
-            self.activity.desktop_notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
-        except CancelledError:
-            # User pressed escape; mount synchronously (we are unwinding) and
-            # let the worker finish as cancelled.
+        # The pure-wire pump never calls StreamRenderer.on_events, so turn.started
+        # is the only run boundary it sees — this is where the per-run reset lives
+        # (stale text_open reopening into the new turn was the leak fixed for
+        # on_events in commit 23462072; stale tool_group/solo_tool would splice the
+        # new turn's first tool call into the previous turn's group).
+        #
+        # Deliberately NOT a per-agent-run reset: an approval round inside a turn
+        # starts a fresh agent.run on the harness side but publishes nothing on the
+        # wire, so tool cards either side of an approval share one group when the
+        # continuation opens with more tool calls. The old on_events path reset per
+        # run and split them — but the persisted history carries no approval marker,
+        # so session replay (session_view.replay_history) groups that same burst as
+        # ONE run. Keeping the group across the approval is what makes the live
+        # transcript and a resumed one agree; text, thinking, a user prompt, an
+        # ask_user call, and a workflow spawn still break the run as before.
+        self.stream.begin_run()
+        # The user bubble is rendered from the wire, after the reset above, so
+        # it sits at the run boundary whichever client submitted the turn. A
+        # system prompt shows nothing (it is the command's own business); an
+        # autonomous wake shows why the agent woke.
+        if wire.trigger == "user":
+            await self.query_one("#log", VerticalScroll).mount(UserMessage(wire.prompt))
+        elif wire.trigger == "autonomous":
+            self.append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
+
+    async def _on_turn_finished(self, wire: TurnFinished) -> None:
+        # A turn cancelled before its first step ends without a turn.started:
+        # this is the only event that can free its submit latch.
+        self.turns.on_finished(wire.turn_id)
+        # The run-end counterpart of turn.started: on_events finalized the
+        # trailing thought/text block when the stream generator ran dry; on the
+        # wire that moment is turn.finished. Interrupted turns publish it too,
+        # so a cancelled thought still collapses to its preview.
+        self.stream.end_run()
+        if wire.interrupted:
+            # Esc (or a remote interrupt). Pause the queue so the next staged
+            # prompt doesn't run behind a turn the user just killed, and settle
+            # anything still pending: a cancelled turn otherwise leaves its
+            # tool rows and sub-agent cards "pending" forever, each holding a
+            # 10Hz repaint timer and rendering a spinner for work that is dead.
             self.queue.paused = True
             self.append_log(ErrorMessage("turn cancelled"))
-            # Settle anything still pending: a cancelled turn otherwise leaves its
-            # tool rows and sub-agent cards "pending" forever, each holding a 10Hz
-            # repaint timer and rendering a spinner for work that is already dead.
             self.stream.settle_pending("cancelled")
-            raise
-        except Exception as exc:  # keep the session alive on any turn failure
-            # Let the failed turn's last events render before the error card
-            # and the settle sweep below, or the sweep marks a row failed that
-            # a queued tool.result was about to finish. (The cancel arm above
-            # deliberately stays synchronous — it is unwinding a cancel.)
-            await self._drain_pump()
-            # The host publishes turn.error here, never turn.finished, so the
-            # wire never reaches the run-end finalize: the thought/text the turn
-            # died on would stay open (expanded thought, unfinalized reply)
-            # above the error card until the next turn's first event swept it
-            # as stale. Close it the way the finished path does.
-            self.stream.end_run()
-            self.queue.paused = True
-            detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
-            self.append_log(ErrorMessage(detail))
-            self.activity.desktop_notify("Turn error", detail, "error")
-            logger.warning("turn failed", exc_info=True)
-            # Same leak as the cancel arm above: a turn that dies mid tool-call
-            # (a provider 500, a malformed response) leaves that row/card
-            # "pending" with a live 10Hz timer just as surely as an Esc does.
-            self.stream.settle_pending(detail)
-        finally:
-            self._turn_worker = None
-            self.status.set_busy(False)
-            # Guard against an orphaned compaction notice if maybe_compact raised
-            # between on_compact_start() and on_compact(). query_one is guarded
-            # because this runs during teardown too, where the widget may already
-            # be gone: a NoMatches here would skip after_turn() below (stranding
-            # the queue and the wake chain) and, with no exit_on_error=False on
-            # the turn worker, take the app down.
-            with suppress(NoMatches):
-                self.query_one(CompactNotice).compacting = False
-            await self.queue.after_turn()  # drain next queued item, or wake on jobs
+            return
+        # Stamp the just-finished turn's duration under its reply (success
+        # only; cancelled/errored turns surface an ErrorMessage instead).
+        elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
+        await self.query_one("#log", VerticalScroll).mount(TurnMeta(elapsed))
+        self.activity.desktop_notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
+
+    def _on_turn_error(self, wire: TurnError) -> None:
+        self.turns.on_finished(wire.turn_id)  # same latch release as finished
+        # The host publishes turn.error INSTEAD of turn.finished, so the wire
+        # never reaches the run-end finalize on its own: the thought/text the
+        # turn died on would stay open above the error card until the next
+        # turn's first event swept it as stale. Close it the way the finished
+        # path does, then the same pause/settle as a cancel — a turn that dies
+        # mid tool-call leaves that row "pending" just as surely as an Esc.
+        self.stream.end_run()
+        self.queue.paused = True
+        self.append_log(ErrorMessage(wire.error))
+        self.activity.desktop_notify("Turn error", wire.error, "error")
+        self.stream.settle_pending(wire.error)
+
+    async def _on_session_status(self, wire: SessionStatus) -> None:
+        """Status events drive state, turn events drive the transcript: the
+        idle edge is where busy drops and the after-turn hand-off runs
+        (queue drain or wake), whichever way the turn ended."""
+        if self.turns.on_status(wire.status) is not Transition.BECAME_IDLE:
+            return
+        self.status.set_busy(False)
+        # Guard against an orphaned compaction notice if maybe_compact raised
+        # between on_compact_start() and on_compact(). query_one is guarded
+        # because this can run during teardown, where the widget may already
+        # be gone: a NoMatches here would skip after_turn() below and strand
+        # the queue and the wake chain.
+        with suppress(NoMatches):
+            self.query_one(CompactNotice).compacting = False
+        # Set before the hand-off: a drained queue item re-clears it on submit,
+        # and a waiter woken by this edge is woken by a real one either way.
+        self.turns_idle.set()
+        await self.queue.after_turn()  # drain next queued item, or wake on jobs
 
     # --- Queue actions (the Textual surface; QueueController does the work) ---
 
@@ -1266,15 +1246,19 @@ class HarnessApp(App):
             return
         self.host.answer_ask(ask_id, _ask_payload(panel, result))
 
-    def _dismiss_ask(self, ask_id: str) -> None:
-        entry = self._ask_panels.pop(ask_id, None)
+    def _dismiss_ask(self, wire: AskResolved) -> None:
+        entry = self._ask_panels.pop(wire.id, None)
         if entry is None:
             return
         panel, previous = entry
         if not panel.result.done():
-            # An interrupt/remote answer resolved the ask with the panel still
-            # awaiting a local verdict — release the _answer_ask worker.
+            # Resolved with the panel still awaiting a local verdict — release
+            # the _answer_ask worker. An interrupt's cancel is silent (the
+            # "turn cancelled" card says it all); an answer from elsewhere is
+            # not, or the panel would just vanish under the user's cursor.
             panel.result.cancel()
+            if not wire.cancelled:
+                self.append_log(NoticeMessage(_answered_elsewhere(panel, wire.answer)))
         unmount_panel(self, panel, previous)
 
     async def _on_workflow_spawn(
@@ -1360,9 +1344,8 @@ class HarnessApp(App):
         if reason is not None:
             self.append_log(NoticeMessage(reason))
             return
-        self.harness.steer(text, event.attachments)
-        tag = f"  📎 {len(event.attachments)}" if event.attachments else ""
-        self.append_log(NoticeMessage(f"↪ steering: {text}{tag}"))
+        # The "↪ steering" notice renders off steer.accepted (see the handler).
+        self.host.steer(text, event.attachments)
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()
@@ -1395,8 +1378,8 @@ class HarnessApp(App):
             self.append_log(NoticeMessage("Compaction in progress — wait for it to finish."))
             return
         if self.turn_busy:
-            # turn_busy (not _turn_worker) so a submit landing in the start-up gap
-            # is queued rather than racing a second exclusive worker.
+            # turn_busy covers the submit→turn.started gap too, so a second
+            # Enter there is staged rather than submitted behind the first.
             self.queue.enqueue(text, attachments)
             return
         self.queue.paused = False

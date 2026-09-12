@@ -1,4 +1,4 @@
-from asyncio import CancelledError
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -8,7 +8,7 @@ from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.queue import QueuedMessage, render_queue
 from marim_harness.interfaces.tui.widgets.prompt import PromptInput
 from marim_harness.interfaces.tui.widgets.queue_display import QueueDisplay
-from tests.conftest import _make_deps
+from tests.conftest import _make_deps, _pretend_busy, _settle, _spy_submit, _turn_to_idle
 
 
 class _QueueOnlyApp(App[None]):
@@ -103,11 +103,11 @@ async def test_submit_while_busy_enqueues(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        sentinel = object()
-        app._turn_worker = sentinel  # simulate a running turn
+        _pretend_busy(app)  # simulate a running turn
+        submitted = _spy_submit(app)
         await app.on_prompt_input_submitted(PromptInput.Submitted("queued one", []))
         assert [m.text for m in app.queue.items] == ["queued one"]
-        assert app._turn_worker is sentinel  # no new worker started
+        assert submitted == []  # nothing reached the host
 
 
 @pytest.mark.anyio
@@ -115,15 +115,14 @@ async def test_idle_submit_runs_immediately(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._turn_worker = None
+        submitted = _spy_submit(app)
         await app.on_prompt_input_submitted(PromptInput.Submitted("hello", []))
         assert app.queue.items == []
-        worker = app._turn_worker
-        assert worker is not None  # a worker was spawned
-        # Drain the turn while #log is still mounted: the turn yields early now (its
-        # rewind snapshot is offloaded to a thread), so an un-awaited worker would
-        # resume mid-stream after run_test teardown removed #log and fail querying it.
-        await worker.wait()
+        assert submitted == [("hello", "user")]  # went straight to the host
+        assert app.turn_busy is True
+        # Drain the turn while #log is still mounted, so its rendering never
+        # lands after run_test's teardown removed the log.
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
 
 
 @pytest.mark.anyio
@@ -170,7 +169,7 @@ async def test_error_pauses_queue(tmp_path):
 
         app.harness.run_turn = boom
         app.queue.enqueue("a")
-        await app._run_turn("x")  # caught by the except Exception branch
+        await _turn_to_idle(app, "x")  # turn.error pauses; the idle edge then skips the drain
         assert app.queue.paused is True
         assert [m.text for m in app.queue.items] == ["a"]
 
@@ -181,14 +180,20 @@ async def test_cancel_pauses_queue(tmp_path):
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        async def boom(*a, **k):
-            raise CancelledError()
+        started = asyncio.Event()
 
-        app.harness.run_turn = boom
+        async def hang(*a, **k):
+            started.set()
+            await asyncio.sleep(3600)
+
+        app.harness.run_turn = hang
         app.queue.enqueue("a")
-        with pytest.raises(CancelledError):
-            await app._run_turn("x")
+        await app.start_turn("x")
+        await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
+        app.action_cancel_turn()  # Esc -> interrupted turn.finished pauses the queue
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
         assert app.queue.paused is True
+        assert [m.text for m in app.queue.items] == ["a"]
 
 
 @pytest.mark.anyio
@@ -202,7 +207,6 @@ async def test_run_queued_action_resumes(tmp_path):
             started.append(text)
 
         app.start_turn = fake_start
-        app._turn_worker = None
         app.queue.paused = True
         app.queue.enqueue("a")
         await app.action_run_queued()

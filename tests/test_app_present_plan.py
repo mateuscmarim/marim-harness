@@ -69,7 +69,7 @@ async def test_present_plan_mounts_card_and_flips_mode(tmp_path):
     harness = _make_harness(_plan_then_done_model(), deps)
     app = HarnessApp(harness)
     async with app.run_test() as pilot:
-        app.run_worker(app._run_turn("plan the refactor"))
+        await app.start_turn("plan the refactor")
         await _settle(pilot, lambda: bool(app.query(PlanCard)), what="the PlanCard to mount")
         # Being in the DOM is not the same as being ready for a keypress: the
         # card highlights its first choice and takes focus from its own

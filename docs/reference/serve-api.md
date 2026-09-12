@@ -540,7 +540,8 @@ Injects steering text into the running turn (`SteerIn`):
 ```
 
 `200`: `{"ok": true}`. `409 not_running` when no turn is active. The stream
-echoes a `steer.accepted` event.
+echoes a `steer.accepted` event (its `attachments` count is always `0` for a
+steer sent over HTTP; the TUI can attach pasted images to a steer).
 
 ## Asks (approvals and questions)
 
@@ -724,11 +725,11 @@ Turn lifecycle:
 
 | Type            | `data`                                                       |
 | --------------- | ------------------------------------------------------------ |
-| `turn.started`  | `{"turn_id": "...", "prompt": "..."}`                        |
+| `turn.started`  | `{"turn_id": "...", "prompt": "...", "trigger": "user"\|"system"\|"autonomous"}` — `user` is a typed prompt (clients render it as the user's message), `system` a slash command's own prompt (`/remember`, `/skill`; nothing to show), `autonomous` a wake-on-job-completion turn with an empty prompt |
 | `turn.usage`    | `{"turn_id": "...", "total_tokens": <n>}` — the running total of the turn's current model run, republished whenever it changes (≈ once per model response); the live in-flight counter, not the per-turn summary |
 | `turn.finished` | `{"turn_id": "...", "output": "...", "usage": {...}}` — or `{"turn_id": "...", "interrupted": true}` for an interrupted turn |
 | `turn.error`    | `{"turn_id": "...", "error": "<detail>"}`                    |
-| `steer.accepted`| `{"text": "..."}`                                            |
+| `steer.accepted`| `{"text": "...", "attachments": <n>}` — `n` image attachments rode along with the text |
 
 The `usage` object on `turn.finished` (`usage_summary`):
 

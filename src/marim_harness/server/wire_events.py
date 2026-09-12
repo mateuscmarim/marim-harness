@@ -5,8 +5,9 @@ RENDERER contract — the TUI pump parses each wire dict once and every
 front-end handler consumes only these models. Unknown types parse to None
 (forward-compatible: a newer server can add events an older client skips).
 
-In phase 3a, daemon queue mechanics (steer.accepted, etc.) are intentionally
-NOT modeled here — they are transport-layer details not consumed by renderers.
+Daemon queue mechanics beyond ``steer.accepted`` (queue depth etc.) are
+intentionally NOT modeled here — they are transport-layer details not
+consumed by renderers.
 """
 
 from __future__ import annotations
@@ -204,6 +205,15 @@ class SessionNotice(BaseModel):
     message: str
 
 
+class SteerAccepted(BaseModel):
+    """A mid-turn steer the host buffered. ``attachments`` is a count: the
+    bytes stay on the submitting client and never cross the wire."""
+
+    type: Literal["steer.accepted"]
+    text: str
+    attachments: int = 0
+
+
 class StreamGap(BaseModel):
     type: Literal["stream.gap"]
     resync: str = "history"
@@ -241,6 +251,7 @@ WireEvent = Annotated[
         | SessionTtft
         | SessionModeChanged
         | SessionNotice
+        | SteerAccepted
         | StreamGap
     ),
     Field(discriminator="type"),
