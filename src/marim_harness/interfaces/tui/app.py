@@ -7,6 +7,7 @@ from asyncio import (
     Task,
     TimeoutError,
     create_task,
+    current_task,
     get_running_loop,
     wait_for,
 )
@@ -885,7 +886,21 @@ class HarnessApp(App):
         log = self.query_one("#log", VerticalScroll)
         try:
             await self.host.run_turn(text, attachments=attachments)
-            await self._drain_pump()
+            # The turn is complete and persisted; only its rendering is still
+            # in flight. status.busy stays set until the finally below, so an
+            # Esc landing in this window would cancel the worker and relabel a
+            # finished turn "cancelled" — error card, paused queue, a settle
+            # sweep over rows a queued tool.result was about to finish. Absorb
+            # it: the pump is its own task and keeps rendering regardless; at
+            # worst the stamp lands above the last card.
+            try:
+                await self._drain_pump()
+            except CancelledError:
+                # 3.11+ counts the swallowed request on the task; clear it so a
+                # later wait_for/timeout in this worker doesn't read it as its own.
+                uncancel = getattr(current_task(), "uncancel", None)
+                if uncancel is not None:
+                    uncancel()
             # Stamp the just-finished turn's duration under its reply (success
             # only; cancelled/errored turns surface an ErrorMessage instead).
             elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)

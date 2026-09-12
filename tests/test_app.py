@@ -4115,6 +4115,44 @@ async def test_turn_meta_lands_after_the_turns_last_wire_event(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_escape_during_the_render_drain_does_not_cancel_a_finished_turn(tmp_path: Path):
+    """host.run_turn has returned — the turn is done and persisted — but
+    status.busy is still set while _drain_pump waits for the pump to catch
+    up. An Esc there used to cancel the worker and stamp the finished turn
+    as cancelled (error card, paused queue, a settle sweep). Review-bot
+    finding on #116 (comment 6329)."""
+    from asyncio import Event
+
+    from marim_harness.interfaces.tui.widgets import ErrorMessage, TurnMeta
+
+    app = _app(tmp_path)
+    draining = Event()
+    release = Event()
+
+    async def fake_run_turn(*a, **k):
+        return "ok"
+
+    async def blocking_drain(timeout: float = 2.0):
+        draining.set()
+        await release.wait()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
+        app._drain_pump = blocking_drain  # type: ignore[method-assign]
+        app._turn_worker = app.run_worker(app._run_turn("hi"), exclusive=True)
+        assert await _pump_until(pilot, draining.is_set)
+        assert app.status.busy
+        app.action_cancel_turn()  # Esc, inside the drain window
+        await pilot.pause()
+        release.set()
+        assert await _pump_until(pilot, lambda: not app.status.busy)
+        assert list(app.query(TurnMeta)), "the finished turn keeps its duration stamp"
+        assert not [w for w in app.query(ErrorMessage) if "cancelled" in str(w.render())]
+        assert app.queue.paused is False
+
+
+@pytest.mark.anyio
 async def test_turn_usage_on_the_wire_feeds_the_live_counter(tmp_path: Path):
     """The status bar's in-flight "+N" counter read ctx.usage off on_events;
     the pump has no ctx, so turn.usage carries it."""
