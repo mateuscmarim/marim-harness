@@ -4131,6 +4131,144 @@ async def test_turn_usage_on_the_wire_feeds_the_live_counter(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path):
+    """subagent.model / .thinking / .notice / .usage and subagent.cli_activity
+    used to reach the renderer as direct bind_ui callbacks; on this branch the
+    host publishes them and the pump routes each to its renderer method. One
+    spawn card, every side channel, plus the unknown-stream no-op for each."""
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    async def gen():
+        yield _spawn_call("s1", "look around")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        card = app.stream.tool_widgets["s1"]
+        assert isinstance(card, SubAgentWidget)
+        app.stream.ensure_pane(card)  # so subagent.model also relabels the pane
+
+        bus = app.host.bus
+        bus.publish("subagent.model", {"stream_id": "s1", "model": "claude-cli:opus"})
+        bus.publish("subagent.thinking", {"stream_id": "s1", "level": "high"})
+        bus.publish("subagent.notice", {"stream_id": "s1", "message": "retrying after 504"})
+        bus.publish(
+            "subagent.usage",
+            {"stream_id": "s1", "usage": {"input_tokens": 10, "output_tokens": 5}},
+        )
+        assert await _pump_until(pilot, lambda: card.activity == "⟳ retrying after 504")
+        assert card.model_label == "claude-cli:opus"
+        assert card.thinking_label == "high"
+        assert card.pane is not None  # relabeled too; its subtitle is a Content
+        assert card._pending_usage is not None and card._pending_usage.total_tokens == 15
+
+        # A claude-cli main-loop model's own tool activity renders as native
+        # cards in the MAIN transcript through the same pump.
+        bus.publish(
+            "subagent.cli_activity",
+            {
+                "events": [
+                    {"type": "tool.call", "id": "cli-1", "name": "Bash", "args": {"c": "ls"}},
+                    {"type": "tool.result", "id": "cli-1", "content": "ok"},
+                    {"type": "bogus.type"},  # dropped by the handler's parse, not fatal
+                ]
+            },
+        )
+        assert await _pump_until(pilot, lambda: "cli-1" in app.stream.tool_widgets)
+        assert isinstance(app.stream.tool_widgets["cli-1"], ToolCallWidget)
+
+        # Every side channel is a no-op for a stream id with no card.
+        before = app.host.bus.last_seq
+        for type_, data in (
+            ("subagent.model", {"model": "x"}),
+            ("subagent.thinking", {"level": "low"}),
+            ("subagent.notice", {"message": "m"}),
+            ("subagent.usage", {"usage": {"input_tokens": 1}}),
+            ("subagent.event", {"event": {"type": "text", "text": "hi"}}),
+        ):
+            bus.publish(type_, {"stream_id": "nope", **data})
+        assert await _pump_until(pilot, lambda: app._pump_seq >= before + 5)
+        assert card.model_label == "claude-cli:opus"  # untouched
+
+
+@pytest.mark.anyio
+async def test_pump_survives_unknown_events_and_a_raising_handler(tmp_path: Path, monkeypatch):
+    """Three things must not stall the pump or the drain barrier: an unknown
+    event type, a known type with a malformed payload, and a handler that
+    raises. Each is logged and the seq still advances past it."""
+    import marim_harness.interfaces.tui.app as app_module
+    from marim_harness.server.wire_events import TurnStarted
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+
+        async def boom(_app, _wire):
+            raise RuntimeError("render bug")
+
+        monkeypatch.setitem(app_module._WIRE_HANDLERS, TurnStarted, boom)
+        bus.publish("no.such.type", {"x": 1})
+        bus.publish("text.delta", {"text": 123})  # wrong field type → parse fails
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "hi"})  # handler raises
+        target = bus.last_seq
+        await app._drain_pump()
+        assert app._pump_seq == target
+        assert app._pump_task is not None and not app._pump_task.done()
+
+
+@pytest.mark.anyio
+async def test_drain_pump_is_bounded_and_returns_when_the_pump_is_gone(tmp_path: Path):
+    import asyncio
+    from asyncio import create_task
+    from contextlib import suppress
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Nothing published since the pump caught up: returns at once.
+        await app._drain_pump()
+        # A wedged pump (simulated: cancel it, then publish) must not hang the
+        # turn worker — the barrier gives up when the task is gone…
+        assert app._pump_task is not None
+        app._pump_task.cancel()
+        await _pump_until(pilot, lambda: app._pump_task.done())  # type: ignore[union-attr]
+        app.host.bus.publish("text.delta", {"text": "orphaned"})
+        await app._drain_pump()
+        # …and when the task is alive but not draining, after the timeout.
+        app._pump_task = create_task(asyncio.sleep(30))
+        try:
+            await app._drain_pump(timeout=0.05)
+        finally:
+            app._pump_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await app._pump_task
+            app._pump_task = None
+        assert app._pump_seq < app.host.bus.last_seq  # never caught up, still returned
+
+
+def test_ask_payload_maps_each_panel_kind(tmp_path: Path):
+    """The local verdict → host answer contract, one branch per panel kind."""
+    from marim_harness.interfaces.tui.app import _ask_payload
+    from marim_harness.interfaces.tui.interactions import ApprovalPanel, AskUserPanel, PlanCard
+    from marim_harness.runtime.deps import PlanDecision
+
+    approval = ApprovalPanel.__new__(ApprovalPanel)
+    ask = AskUserPanel.__new__(AskUserPanel)
+    plan = PlanCard.__new__(PlanCard)
+    assert _ask_payload(approval, True) == {"approve": True}
+    assert _ask_payload(approval, None) == {"approve": False}
+    assert _ask_payload(ask, None) == {"cancel": True}
+    assert _ask_payload(ask, {"q": "a"}) == {"answers": {"q": "a"}}
+    decision = PlanDecision(choice="Keep planning", feedback="tighter")
+    assert _ask_payload(plan, decision) == {"choice": "Keep planning", "feedback": "tighter"}
+    assert _ask_payload(object(), "x") == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
 async def test_turn_finished_on_the_wire_finalizes_a_trailing_thought(tmp_path: Path):
     """on_events collapsed a run-ending thought when its generator drained; on
     the wire, turn.finished is that boundary. Without it the thought stays

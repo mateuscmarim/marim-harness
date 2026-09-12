@@ -692,3 +692,187 @@ async def test_run_turn_interrupt_publishes_finished_interrupted(tmp_path):
     assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
     await _wait_for(lambda: host.status == "idle")
     await host.aclose()
+
+
+# --------------------------------------------------------------------------
+# Edges of the side-channel relays and teardown that only the daemon/TUI pump
+# would otherwise exercise live.
+# --------------------------------------------------------------------------
+
+
+def test_dump_usage_prefers_model_dump_then_dataclass_then_nothing():
+    from dataclasses import dataclass
+
+    from pydantic import BaseModel
+
+    from marim_harness.server.host import _dump_usage
+
+    class Pyd(BaseModel):
+        input_tokens: int = 3
+
+    class OddDump:
+        def model_dump(self):
+            return "not a dict"  # ignored: fall through to the dataclass check
+
+    @dataclass
+    class DumpableDC:
+        n: int = 1
+
+    assert _dump_usage(Pyd()) == {"input_tokens": 3}
+    assert _dump_usage(RunUsage(input_tokens=10, output_tokens=5))["input_tokens"] == 10
+    assert _dump_usage(OddDump()) == {}
+    assert _dump_usage(DumpableDC()) == {"n": 1}
+    assert _dump_usage(DumpableDC) == {}  # the class, not an instance
+    assert _dump_usage(object()) == {}
+
+
+async def test_subagent_event_relay_carries_usage_and_skips_unconvertible(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    ui = harness.deps.ui
+    assert ui.on_subagent_event is not None
+
+    text = PartStartEvent(index=0, part=TextPart(content="hi"))
+    await ui.on_subagent_event("s1", text, None)
+    await ui.on_subagent_event("s1", text, RunUsage(input_tokens=4, output_tokens=2))
+    await ui.on_subagent_event("s1", object(), RunUsage(input_tokens=1))  # not a stream event
+
+    relayed = [e.data for e in events if e.type == "subagent.event"]
+    assert len(relayed) == 2
+    assert relayed[0] == {"stream_id": "s1", "event": {"type": "text", "text": "hi"}}
+    assert relayed[1]["usage"]["input_tokens"] == 4
+    await host.aclose()
+
+
+async def test_cli_activity_skips_unconvertible_events_but_keeps_the_rest(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_cli_activity is not None
+    text = PartStartEvent(index=0, part=TextPart(content="hi"))
+    await harness.deps.ui.on_cli_activity([object(), text])
+
+    activity = next(e for e in events if e.type == "subagent.cli_activity")
+    assert [w["type"] for w in activity.data["events"]] == ["text.delta"]
+    await host.aclose()
+
+
+async def test_cancel_pending_announces_each_parked_ask_once(tmp_path):
+    """The interrupt path publishes from `_await_ask`; `_cancel_pending` is the
+    sweep for asks nobody is awaiting any more (aclose, or a future that already
+    settled but was not yet popped). Both futures are handled: a live one is
+    cancelled, a settled one is left alone — and each gets exactly one
+    `ask.resolved`."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+
+    live = host._park("approval", {"tool": "bash"})
+    settled = host._park("question", {"questions": []})
+    settled.future.set_result({"answers": {}})
+    assert len(host.pending_asks()) == 2
+
+    host._cancel_pending("closing")
+
+    assert host.pending_asks() == []
+    assert live.future.cancelled()
+    assert settled.future.result() == {"answers": {}}
+    resolved = sorted(e.data["id"] for e in events if e.type == "ask.resolved")
+    assert resolved == sorted([live.id, settled.id])
+    assert all(e.data["reason"] == "closing" for e in events if e.type == "ask.resolved")
+    await host.aclose()
+
+
+async def test_submitted_turn_error_is_published_and_the_worker_survives(tmp_path):
+    """The queue path (submit) must report a failing turn as `turn.error` and
+    keep the worker alive for the next prompt — unlike run_turn, there is no
+    caller to raise into."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    state = {"n": 0}
+
+    def fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("boom")
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("boom")
+        yield "done"
+
+    host = SessionHost(
+        _make_harness(FunctionModel(fn, stream_function=stream_fn), deps), EventBus()
+    )
+    events = _spy(host.bus)
+
+    first = host.submit("hi")
+    error = await _drain_until(events, "turn.error")
+    assert error.data["turn_id"] == first
+    assert "boom" in error.data["error"]
+    await _wait_for(lambda: host.status == "idle")
+
+    second = host.submit("again")
+    finished = await _drain_until(events, "turn.finished")
+    assert finished.data["turn_id"] == second
+    await host.aclose()
+
+
+async def test_idle_seconds_is_zero_while_a_turn_is_parked(tmp_path):
+    (tmp_path / "a.txt").write_text("foo\n")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    host = SessionHost(_make_harness(_edit_model(), deps), EventBus())
+
+    host.submit("edit it")
+    await _wait_for(lambda: host.pending_asks() != [])
+    assert host.busy
+    assert host.idle_seconds == 0.0
+
+    [ask] = host.pending_asks()
+    assert host.answer_ask(ask["id"], {"approve": True, "reason": None})
+    await _wait_for(lambda: host.status == "idle")
+    await asyncio.sleep(0.02)
+    assert host.idle_seconds > 0.0
+    await host.aclose()
+
+
+async def test_aclose_logs_and_continues_past_failing_teardown_steps(tmp_path, caplog):
+    """Every teardown step is best-effort: a step raising must be logged and
+    must not skip the later ones (the persist still runs, session_end still
+    fires)."""
+    import logging
+
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    calls: list[str] = []
+
+    async def bad_wait_autoname():
+        raise RuntimeError("autoname exploded")
+
+    async def bad_session_end(reason):
+        calls.append(f"session_end:{reason}")
+        raise RuntimeError("hooks exploded")
+
+    original_persist = harness.session.persist
+
+    def persist(*a, **kw):
+        calls.append("persist")
+        return original_persist(*a, **kw)
+
+    harness.session.wait_autoname = bad_wait_autoname  # type: ignore[method-assign]
+    harness.session.persist = persist  # type: ignore[method-assign]
+    harness.session_end = bad_session_end  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="marim_harness.server.host"):
+        await host.aclose()
+
+    assert calls == ["persist", "session_end:exit"]
+    failed = [r.getMessage() for r in caplog.records if "teardown step" in r.getMessage()]
+    assert any("wait_autoname" in m for m in failed)
+    assert any("session_end" in m for m in failed)
