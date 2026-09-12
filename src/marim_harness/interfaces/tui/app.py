@@ -244,10 +244,17 @@ async def _handle_turn_started(app: "HarnessApp", _wire: TurnStarted) -> None:
     # is the only run boundary it sees — this is where the per-run reset lives
     # (stale text_open reopening into the new turn was the leak fixed for
     # on_events in commit 23462072; stale tool_group/solo_tool would splice the
-    # new turn's first tool call into the previous turn's group). One caveat the
-    # stream path did not have: an approval round inside a turn is a run
-    # boundary on the harness side but publishes nothing on the wire, so tool
-    # cards either side of an approval share one group.
+    # new turn's first tool call into the previous turn's group).
+    #
+    # Deliberately NOT a per-agent-run reset: an approval round inside a turn
+    # starts a fresh agent.run on the harness side but publishes nothing on the
+    # wire, so tool cards either side of an approval share one group when the
+    # continuation opens with more tool calls. The old on_events path reset per
+    # run and split them — but the persisted history carries no approval marker,
+    # so session replay (session_view.replay_history) groups that same burst as
+    # ONE run. Keeping the group across the approval is what makes the live
+    # transcript and a resumed one agree; text, thinking, a user prompt, an
+    # ask_user call, and a workflow spawn still break the run as before.
     app.stream.begin_run()
 
 
