@@ -351,11 +351,13 @@ async def test_user_turn_carries_user_trigger(tmp_path):
 async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.auto)
     release = asyncio.Event()
+    model_reached = asyncio.Event()
 
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="done")])
 
     async def stream_fn(messages, info):
+        model_reached.set()
         await release.wait()
         yield "done"
 
@@ -365,6 +367,13 @@ async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     events = _spy(host.bus)
     host.submit("do work")  # user turn starts, blocks
     await _drain_until(events, "turn.started")  # (the user turn)
+    # `turn.started` goes out BEFORE the harness assembles the prompt, and
+    # assembly is what drains the finished-job digest. A job that settles in
+    # that window is folded into the user turn instead — correct, but then no
+    # autonomous wake is owed and this test would wait for one forever (seen
+    # on a loaded 3.14 runner). Only settle once the model has been called,
+    # i.e. after assembly.
+    await asyncio.wait_for(model_reached.wait(), _WAIT_TIMEOUT)
     await _settling_job(host)  # settles WHILE the turn is busy
     await asyncio.sleep(0.05)
     assert [
