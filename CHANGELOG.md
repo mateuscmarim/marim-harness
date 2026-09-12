@@ -31,6 +31,20 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Changed
 
+- **The TUI renders from the event bus.** `HarnessApp` now hosts an in-process
+  `SessionHost` — the same one `marim serve` runs — and paints the transcript
+  from the typed wire events it publishes (`text.delta`, `tool.call`,
+  `ask.pending`, …) through a single pump task, instead of consuming
+  `Harness.bind_ui` callbacks directly. `SessionHost` is the sole `bind_ui`
+  consumer; approvals, `ask_user` and plan cards park as asks and resolve
+  through `ask.resolved`, so a remote answer dismisses the local panel. No
+  behavior change intended for the user; it is the seam the cross-process
+  session-event design builds on. New `turn.usage` wire event carries the
+  run's running token total (published on change) for the live `+N` counter.
+- **OpenCode (`zen`/`zen-go`) requests identify themselves.** The gateway now
+  requires a stable `x-opencode-session` header and a self-identifying
+  `User-Agent`; marim sends one session id per process plus
+  `marim-harness/<version>`.
 - **claude-cli is bidirectional.** The `claude-cli` provider and `backend: claude-cli`
   sub-agents now keep one long-lived `claude` process per conversation over its
   stream-json control protocol instead of launching `claude -p` per turn. marim's
