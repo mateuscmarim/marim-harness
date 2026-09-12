@@ -3271,8 +3271,13 @@ async def test_fresh_log_top_aligned_then_anchors_on_overflow(tmp_path: Path):
         # Overflow the viewport; the flush tick anchors on overflow.
         for i in range(40):
             await log.mount(UserMessage(f"line {i}"))
-        app.stream.flush_streams()
+        # mount() returns before layout, so max_scroll_y is still 0 here and a
+        # flush now would not anchor. Let layout settle, then drive the tick
+        # ourselves: pilot.pause() drains messages but does not wait for the
+        # 80ms interval timer, so relying on it lands or not by scheduling luck.
         await pilot.pause()
+        assert log.max_scroll_y > 0  # overflowed and laid out
+        app.stream.flush_streams()
         assert log.is_anchored is True  # now tail-follows the newest content
 
 
