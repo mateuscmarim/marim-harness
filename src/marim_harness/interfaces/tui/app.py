@@ -880,6 +880,9 @@ class HarnessApp(App):
             self.append_log(NoticeMessage("⏰ Resumed — background job(s) finished"))
 
     async def _on_turn_finished(self, wire: TurnFinished) -> None:
+        # A turn cancelled before its first step ends without a turn.started:
+        # this is the only event that can free its submit latch.
+        self.turns.on_finished(wire.turn_id)
         # The run-end counterpart of turn.started: on_events finalized the
         # trailing thought/text block when the stream generator ran dry; on the
         # wire that moment is turn.finished. Interrupted turns publish it too,
@@ -902,6 +905,7 @@ class HarnessApp(App):
         self.activity.desktop_notify("Turn complete", f"Finished in {elapsed}", "turn_complete")
 
     def _on_turn_error(self, wire: TurnError) -> None:
+        self.turns.on_finished(wire.turn_id)  # same latch release as finished
         # The host publishes turn.error INSTEAD of turn.finished, so the wire
         # never reaches the run-end finalize on its own: the thought/text the
         # turn died on would stay open above the error card until the next

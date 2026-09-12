@@ -68,3 +68,27 @@ def test_idle_while_a_submit_is_latched_is_not_an_idle_edge():
     t.on_started("t2")
     assert t.on_status("idle") is Transition.BECAME_IDLE
     assert t.busy is False
+
+
+def test_finished_without_a_start_releases_the_latch():
+    """An interrupt that lands before the turn's first step: the wire carries
+    turn.finished + idle and no turn.started. The finish is folded as an
+    implied start, so the answer stays busy until the idle that follows —
+    which is then a real edge, reported from the one place edges come from."""
+    t = TurnTracker()
+    t.note_submitted("t1")
+    t.on_finished("t0")  # some other turn's end does not touch it
+    assert t.submitted == "t1" and t.busy is True
+    t.on_finished("t1")
+    assert t.submitted is None and t.current == "t1" and t.busy is True
+    assert t.on_status("idle") is Transition.BECAME_IDLE
+    assert t.busy is False
+
+
+def test_finished_after_a_start_is_a_no_op():
+    t = TurnTracker()
+    t.note_submitted("t1")
+    t.on_started("t1")
+    t.on_finished("t1")
+    assert t.current == "t1" and t.busy is True  # still the status's call
+    assert t.on_status("idle") is Transition.BECAME_IDLE

@@ -244,3 +244,25 @@ def test_prune_completed_empty_is_noop():
     r = StreamRenderer(app=None)
     r.prune_completed()
     assert r.tool_widgets == {}
+
+
+@pytest.mark.anyio
+async def test_escape_before_turn_started_still_releases_the_latch(tmp_path: Path):
+    """Esc can cancel the host's turn task in the one loop iteration between
+    the worker creating it and ``_turn_body`` publishing turn.started. The
+    turn then ends with only ``turn.finished {interrupted}`` + ``session.status
+    idle`` and NO turn.started — the latch must be released by the finish, or
+    the TUI stays busy forever (review-bot finding on PR #118)."""
+    app = _app(tmp_path)
+    async with app.run_test():
+        await app.start_turn("hi")
+        # One iteration: the worker dequeues and creates the task, but the task's
+        # first step is queued behind us, so the cancel lands before turn.started.
+        await asyncio.sleep(0)
+        assert app.host._turn_task is not None
+        app.action_cancel_turn()
+        await asyncio.wait_for(app.turns_idle.wait(), 10)
+        assert app.turn_busy is False
+        assert app.turns.submitted is None
+        assert app.host.status == "idle"
+        assert not app.query("UserMessage")  # the turn never started

@@ -12,6 +12,12 @@ folded into one answer:
 - the *submitted latch* — the turn id ``submit()`` handed back, held until its
   ``turn.started`` arrives. This closes the lag: a second Enter landing in that
   window must queue, not submit a duplicate, and a system command must refuse.
+  A turn can also END without ever starting: an interrupt that lands in the
+  one loop iteration between the host's worker creating the turn task and
+  ``_turn_body`` publishing ``turn.started`` cancels it before its first
+  step, so the wire carries only ``turn.finished {interrupted}`` + ``idle``.
+  ``on_finished`` folds that as an implied start — otherwise the latch would
+  hold forever and the TUI would stay busy with nothing running.
 
 The two are never compared for consistency; the tracker is busy if *either*
 says so, and idle only when both agree. A turn started by another client
@@ -56,6 +62,17 @@ class TurnTracker:
         self.current = turn_id
         if self.submitted == turn_id:
             self.submitted = None
+
+    def on_finished(self, turn_id: str) -> None:
+        """turn.finished / turn.error arrived. Normally a no-op (the latch went
+        on turn.started), but a turn interrupted before its first step never
+        published a start — its finish is the only event that can free the
+        latch. It is folded as an implied start rather than a release: the
+        answer stays busy until the ``session.status idle`` that always
+        follows, so the idle edge is still reported from that one place."""
+        if self.submitted == turn_id:
+            self.submitted = None
+            self.current = turn_id
 
     def on_status(self, status: str) -> Transition:
         """session.status arrived. ``current`` is cleared only on ``idle`` —
