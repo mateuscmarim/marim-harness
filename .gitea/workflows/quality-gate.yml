@@ -230,9 +230,16 @@ jobs:
           # Safe to run here: this step is after the test run, so it cannot move
           # the coverage numbers, and the two extra packages add no advisories
           # today (measured: 9 either way).
+          # --no-deps --disable-pip: the freeze is already a fully-resolved,
+          # fully-pinned set, so re-resolving it through pip adds nothing —
+          # and it breaks the moment the lock carries a `[tool.uv]`
+          # override-dependencies entry (pip sees the overridden pin as a
+          # conflict and aborts with ResolutionImpossible, leaving no report).
+          # Measured on 2026-09-12: identical package count either way (115).
           uv sync --python 3.12 --all-extras
           uv pip freeze > /tmp/freeze.txt
-          uvx pip-audit -f json -r /tmp/freeze.txt -o .quality/pip-audit.json || true
+          uvx pip-audit --no-deps --disable-pip -f json -r /tmp/freeze.txt \
+            -o .quality/pip-audit.json || true
           if [ ! -s .quality/pip-audit.json ]; then
             echo "::error::pip-audit wrote no report — refusing to score pip_audit_findings as 0"
             exit 1
