@@ -559,6 +559,34 @@ def test_repaint_before_children_mount_is_noop():
 
 
 @pytest.mark.anyio
+async def test_drain_repaint_with_view_gone_is_noop(tmp_path: Path):
+    """A flush tick can land after the SubAgentsView has left the DOM while the
+    controller is still ``open`` and ``dirty``: ``App.run_test`` shuts down via
+    ``_shutdown`` (no ``App.exit``, so timers keep firing) and Textual prunes a
+    screen's children before the screen leaves the stack. On a loaded 3.14 CI
+    runner that tick raised ``NoMatches: No nodes match 'SubAgentsView' on
+    Screen(id='_default')`` out of ``drain_repaint``. Model the window exactly —
+    view removed, screen still current, ``open``/``dirty`` set — and require the
+    drain to skip rather than raise."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        r = app.stream
+        w = r.mount_spawn_widget({"type": "research", "description": "map it"})
+        w.stream_id = "call_1"
+        r.tool_widgets["call_1"] = w
+        r.ensure_pane(w)
+        await app.query_one("#log").mount(w)
+        await pilot.pause()
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert app.subagents.open
+        await app.query_one(SubAgentsView).remove()
+        app.subagents.mark_dirty()
+        app.subagents.drain_repaint()  # must not raise NoMatches
+        assert app.subagents.dirty is False
+
+
+@pytest.mark.anyio
 async def test_nested_spawn_registers_child_card_in_parent_pane(tmp_path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:

@@ -39,7 +39,7 @@
     }
   },
   "global": {
-    "pip_audit_findings": 9,
+    "pip_audit_findings": 0,
     "secret_findings": 0
   },
   "why_coverage_is_seeded_from_ci_2026_08_29": "Coverage was first seeded from a laptop run (on 3.13, and wrongly recorded here as 3.12.13 — no runner has ever used that patch) at 92.51/87.24 and the gate's first real run measured 92.40/87.17, failing the lines row by 0.11. The difference is structural, not noise: Gitea's runner executes as root, and five tests skip on geteuid() == 0 because chmod cannot provoke a permission failure for root (two in test_history.py, three in test_memory.py). Their lines are therefore never covered in CI. The numbers here are the ones the gate job measures, because that job is what scores every future run — a baseline only a developer's machine can reach is a bar CI can never clear. Re-seed from a CI run, not locally. Deselecting those five tests locally reproduces 92.49/87.20, so they explain most but not all of the gap; the residual ~0.09 is some further container difference that was not chased, and the 0.1 tolerance absorbs it.",

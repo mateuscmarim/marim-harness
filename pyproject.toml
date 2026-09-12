@@ -126,6 +126,14 @@ replacement = '![\1](https://raw.githubusercontent.com/mateuscmarim/marim-harnes
 pattern = '(?<!!)\[([^\]]*)\]\((?!https?://|#)([^)]+)\)'
 replacement = '[\1](https://github.com/mateuscmarim/marim-harness/blob/master/\2)'
 
+[tool.uv]
+# multilspy pins `requests==2.32.3` exactly (a packaging artifact, not an API
+# need — it uses requests for plain server-binary downloads), which would leave
+# the PYSEC-2026-1872 / PYSEC-2026-2275 advisories unfixable through a normal
+# lock refresh. Relax that one pin only; drop the override once multilspy
+# publishes a release without it.
+override-dependencies = ["requests>=2.33.0"]
+
 [tool.pytest.ini_options]
 # -n auto/worksteal (pytest-xdist): the suite is dominated by thousands of
 # 0.1-4s tests (many Textual Pilot apps), so work-stealing parallelism cuts a
