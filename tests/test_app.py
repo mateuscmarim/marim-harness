@@ -19,6 +19,16 @@ def _app(tmp_path: Path) -> HarnessApp:
     return HarnessApp(harness)
 
 
+def test_app_constructs_without_a_running_loop(tmp_path: Path):
+    """The real launch path (`marim <ws>`) builds HarnessApp synchronously and
+    only then calls .run(), which starts the event loop. Anything loop-bound —
+    the SessionHost's worker task, its idle clock — must therefore be created
+    in on_mount, not __init__. Every other test here constructs the app inside
+    an already-running anyio loop, which is exactly why this one is sync."""
+    app = _app(tmp_path)
+    assert app.harness is not None
+
+
 @pytest.mark.anyio
 async def test_status_bar_shows_mode(tmp_path: Path):
     app = _app(tmp_path)
@@ -208,25 +218,27 @@ async def test_bind_ui_wires_ttft_reports_to_the_renderer(tmp_path: Path):
     """TTFT is reported by the controller's TtftTrackingModel wrapper through
     bind_ui's on_ttft callback (measuring in on_events would always read ~0:
     pydantic-ai waits for the first chunk while opening the stream, before the
-    handler is invoked). The app wires that callback to the renderer slot the
-    status bar reads."""
+    handler is invoked). SessionHost binds that callback and publishes
+    ``session.ttft``; the app's pump parses it and feeds the renderer slot the
+    status bar reads — so the effect lands a loop tick later, not inline."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         on_ttft = app.harness.deps.ui.on_ttft
-        assert on_ttft is not None  # bind_ui wired it; the controller wraps only then
+        assert on_ttft is not None  # the host wired it; the controller wraps only then
         assert app.stream.last_ttft is None  # no request streamed yet
         on_ttft(1.23)  # what the wrapper does after each streamed request
-        assert app.stream.last_ttft == 1.23
+        assert await _pump_until(pilot, lambda: app.stream.last_ttft == 1.23)
 
 
 @pytest.mark.anyio
 async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, monkeypatch):
     """bind_ui threads UIHooks.on_workflow_spawn / on_workflow_log (Task 6) onto
-    deps.ui so the workflow engine's defensive getattr finds them: a card claim
-    delegates to the renderer (same seam a literal spawn_agent call uses) and a log
-    line surfaces as a toast, matching the neighboring on_subagent_event callback's
-    threading discipline (called directly, no call_from_thread marshalling)."""
+    deps.ui so the workflow engine's defensive getattr finds them. SessionHost
+    binds them now and publishes ``workflow.spawned`` / ``workflow.logged``; the
+    app's pump routes those back to the same targets — a card claim delegates to
+    the renderer (same seam a literal spawn_agent call uses) and a log line
+    surfaces as a toast."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -235,13 +247,14 @@ async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, mo
         assert ui.on_workflow_log is not None
 
         await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
-        await pilot.pause()
+        assert await _pump_until(pilot, lambda: "tc1::wf1" in app.stream.tool_widgets)
         widget = app.stream.tool_widgets["tc1::wf1"]
         assert widget in app.stream.subagents
 
         notified = []
         monkeypatch.setattr(app, "notify", lambda msg, **kw: notified.append((msg, kw)))
         ui.on_workflow_log("tc1", "step 1 done")
+        assert await _pump_until(pilot, lambda: bool(notified))
         assert notified == [("step 1 done", {"title": "workflow", "timeout": 4})]
 
         # Script-controlled text can contain Rich markup fragments (e.g. a
@@ -249,6 +262,7 @@ async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, mo
         # them literally instead of interpreting them as markup tags.
         notified.clear()
         ui.on_workflow_log("tc1", "processing [bold red]injected[/bold red] file")
+        assert await _pump_until(pilot, lambda: bool(notified))
         assert notified == [
             (
                 "processing \\[bold red]injected\\[/bold red] file",
@@ -261,9 +275,10 @@ async def test_bind_ui_wires_workflow_spawn_and_log_callbacks(tmp_path: Path, mo
 async def test_bind_ui_wires_workflow_spawn_done_to_finish_the_card(tmp_path: Path):
     """A workflow child's card has no literal tool-call/tool-return pair for
     on_tool_result to intercept (claim_workflow_spawn mounts it standalone),
-    so bind_ui must wire on_workflow_spawn_done to actually settle it —
-    otherwise the card is stuck "pending" forever even after the workflow
-    completes successfully."""
+    so on_workflow_spawn_done must actually settle it — otherwise the card is
+    stuck "pending" forever even after the workflow completes successfully. The
+    host binds the callback and publishes ``workflow.spawn_finished``; the pump
+    delivers it to the renderer a tick later."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -271,12 +286,12 @@ async def test_bind_ui_wires_workflow_spawn_done_to_finish_the_card(tmp_path: Pa
         assert ui.on_workflow_spawn_done is not None
 
         await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
-        await pilot.pause()
+        assert await _pump_until(pilot, lambda: "tc1::wf1" in app.stream.tool_widgets)
         widget = app.stream.tool_widgets["tc1::wf1"]
         assert widget.status == "pending"
 
         ui.on_workflow_spawn_done("tc1::wf1", '{"summary": "done"}')
-        assert widget.status == "done"
+        assert await _pump_until(pilot, lambda: widget.status == "done")
         assert widget.report == '{"summary": "done"}'
 
 
@@ -331,6 +346,39 @@ async def test_live_run_tokens_reset_when_turn_ends(tmp_path: Path):
         app.stream.live_run_tokens = 500
         app.status.set_busy(False)
         assert app.stream.live_run_tokens == 0
+
+
+@pytest.mark.anyio
+async def test_on_events_closes_text_open_across_a_run_boundary(tmp_path: Path):
+    """A run that ends on assistant text must not leak its open block into the
+    NEXT run — e.g. HarnessApp.mount_wake_turn spawns a fresh ``_run_turn("")``
+    without clearing ``current_assistant`` (unlike start_turn/start_system_turn),
+    so on_events itself must close the block at the top of every run. Otherwise
+    the wake turn's first text.delta finds text_open=True and the still-live
+    pointer, and appends into the previous (already finalized) turn's message."""
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        async def turn_one():
+            yield PartStartEvent(index=0, part=TextPart(content="turn one reply"))
+
+        await app.stream.on_events(None, turn_one())
+        await pilot.pause()
+        assert app.stream.text_open is True  # left open as the resting reply
+
+        async def turn_two():
+            yield PartStartEvent(index=0, part=TextPart(content="WAKE TURN REPLY"))
+
+        await app.stream.on_events(None, turn_two())
+        await pilot.pause()
+
+        messages = [w for w in app.query_one("#log").children if isinstance(w, AssistantMessage)]
+        assert [m.text for m in messages] == ["turn one reply", "WAKE TURN REPLY"]
 
 
 @pytest.mark.anyio
@@ -683,6 +731,21 @@ def _submit(app, text):
     return app.on_prompt_input_submitted(PromptInput.Submitted(text))
 
 
+def _non_pump(started):
+    """Workers recorded by a stubbed ``run_worker``, minus the event pump.
+
+    Phase 3a starts ``HarnessApp._event_pump`` unconditionally in ``on_mount``,
+    so tests that stub ``run_worker`` to assert "no turn worker started" must
+    filter it out. Recorded items may be bare coroutines or args tuples."""
+
+    def _name(item):
+        coro = item[0] if isinstance(item, tuple) else item
+        code = getattr(coro, "cr_code", None)
+        return code.co_name if code is not None else None
+
+    return [item for item in started if _name(item) != "_event_pump"]
+
+
 @pytest.mark.anyio
 async def test_submitting_records_prompt_history(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
@@ -723,7 +786,8 @@ async def test_exit_command_quits_app(tmp_path: Path, cmd: str):
         await _submit(app, cmd)  # /exit quits immediately
         await pilot.pause()
     assert exited == [True]
-    assert started == []  # never sent to the model as a prompt
+    # on_mount always starts the bus pump; /exit must start no turn worker.
+    assert _non_pump(started) == []
 
 
 def _log_text(app) -> str:
@@ -749,7 +813,7 @@ async def test_slash_help_lists_commands(tmp_path: Path):
         text = _log_text(app)
         assert "/mode" in text and "/clear" in text
         assert "AGENTS.md" in text  # project-instructions discoverability
-        assert started == []  # never sent to the model
+        assert _non_pump(started) == []  # never sent to the model
 
 
 @pytest.mark.anyio
@@ -762,7 +826,7 @@ async def test_slash_unknown_command_reports_error(tmp_path: Path):
         await _submit(app, "/wat")
         await pilot.pause()
         assert "unknown command" in _log_text(app).lower()
-        assert started == []
+        assert _non_pump(started) == []
 
 
 @pytest.mark.anyio
@@ -862,9 +926,9 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
     async def boom(*a, **k):
         raise RuntimeError("upstream exploded")
 
-    app.harness.run_turn = boom  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = boom  # type: ignore[method-assign]
         await app._run_turn("hello")
         await pilot.pause()
         # the app survives the failure
@@ -890,9 +954,9 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
         started.set()
         await asyncio.sleep(3600)
 
-    app.harness.run_turn = hang  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = hang  # type: ignore[method-assign]
         await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
         for _ in range(50):
             await pilot.pause()
@@ -987,7 +1051,7 @@ async def test_turn_finally_survives_a_missing_compact_notice(tmp_path: Path):
             await real_after_turn()
 
         app.queue.after_turn = spy_after_turn  # type: ignore[method-assign]
-        app.harness.run_turn = fake_run_turn  # type: ignore[method-assign]
+        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
 
         # Must not raise NoMatches.
         await app._run_turn("hi")
@@ -1016,9 +1080,9 @@ async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path
         started.set()
         await asyncio.sleep(3600)
 
-    app.harness.run_turn = hang  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = hang  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})
@@ -1076,9 +1140,9 @@ async def test_errored_turn_also_settles_pending_widgets(tmp_path: Path):
         raise RuntimeError("upstream exploded")
 
     app = _app(tmp_path)
-    app.harness.run_turn = boom  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = boom  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})
@@ -2127,6 +2191,54 @@ async def test_subagent_event_routes_stream_into_widget(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_subagent_event_on_the_bus_reaches_the_widget(tmp_path: Path):
+    """The pump path: the host publishes ``subagent.event`` with the inner
+    event in raw stream shape (``"type": "tool_call"``, the documented daemon
+    contract), not wire shape (``tool.call``). The TUI handler must remap
+    before parsing, or every sub-agent stream is silently dropped."""
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    spawn = FunctionToolCallEvent(
+        part=ToolCallPart(
+            tool_name="spawn_agent",
+            args={"type": "explore", "task": "look around"},
+            tool_call_id="s1",
+        )
+    )
+
+    async def spawn_gen():
+        yield spawn
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, spawn_gen())
+        await pilot.pause()
+        parent = app.stream.tool_widgets["s1"]
+        assert isinstance(parent, SubAgentWidget)
+
+        app.host.bus.publish(
+            "subagent.event",
+            {
+                "stream_id": "s1",
+                "event": {
+                    "type": "tool_call",
+                    "name": "read_file",
+                    "args": {"path": "x.py"},
+                    "id": "nested-1",
+                },
+            },
+        )
+        assert await _pump_until(
+            pilot,
+            lambda: any(isinstance(c, ToolCallWidget) for c in parent.pane.walk_children()),
+        )
+
+
+@pytest.mark.anyio
 async def test_subagent_event_without_widget_is_noop(tmp_path: Path):
     """A sub-agent event for an unknown stream id must not raise."""
     from pydantic_ai.messages import PartStartEvent, TextPart
@@ -2672,7 +2784,7 @@ async def test_enter_keypress_submits_and_clears(tmp_path: Path):
         users = [str(w.render()) for w in app.query(UserMessage)]
         assert any("hi" in u for u in users)
         assert pi.text == ""  # box cleared after submit
-        assert started  # a turn worker was started
+        assert _non_pump(started)  # a turn worker was started
 
 
 @pytest.mark.anyio
@@ -2693,7 +2805,7 @@ async def test_shift_enter_keypress_does_not_submit(tmp_path: Path):
         await pilot.press("b")
         await pilot.pause()
         assert pi.text == "a\nb"
-        assert not started
+        assert not _non_pump(started)
         assert not list(app.query(UserMessage))
 
 
@@ -3217,8 +3329,13 @@ async def test_fresh_log_top_aligned_then_anchors_on_overflow(tmp_path: Path):
         # Overflow the viewport; the flush tick anchors on overflow.
         for i in range(40):
             await log.mount(UserMessage(f"line {i}"))
-        app.stream.flush_streams()
+        # mount() returns before layout, so max_scroll_y is still 0 here and a
+        # flush now would not anchor. Let layout settle, then drive the tick
+        # ourselves: pilot.pause() drains messages but does not wait for the
+        # 80ms interval timer, so relying on it lands or not by scheduling luck.
         await pilot.pause()
+        assert log.max_scroll_y > 0  # overflowed and laid out
+        app.stream.flush_streams()
         assert log.is_anchored is True  # now tail-follows the newest content
 
 
@@ -3609,7 +3726,7 @@ async def test_wake_fires_autonomous_turn_when_job_finishes_idle(tmp_path: Path)
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)  # completion fires on_change
         await pilot.pause()
-        assert len(started) == 1  # one autonomous turn started
+        assert len(_non_pump(started)) == 1  # one autonomous turn started
         assert app.activity.wake.controller.depth == 1
         assert any("Resumed" in str(n.render()) for n in app.query(NoticeMessage))
 
@@ -3625,7 +3742,7 @@ async def test_wake_disabled_does_not_fire(tmp_path: Path):
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert started == []
+        assert _non_pump(started) == []
         # The digest is left for the next user turn, but wake-consumed.
         assert app.harness.deps.jobs.has_finished_pending() is False
         assert "job-1 (agent) done" in app.harness.deps.jobs.take_finished_digest()
@@ -3643,7 +3760,7 @@ async def test_wake_stops_at_depth_cap(tmp_path: Path):
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert started == []  # capped, no further autonomous turn
+        assert _non_pump(started) == []  # capped, no further autonomous turn
 
 
 @pytest.mark.anyio
@@ -3657,10 +3774,10 @@ async def test_wake_does_not_fire_while_a_turn_is_running(tmp_path: Path):
         job_id = app.harness.deps.jobs.register("agent", "explore: x", _done("R"))
         await app.harness.deps.jobs.wait(job_id)
         await pilot.pause()
-        assert started == []  # queued; but wake-consumed by wait()
+        assert _non_pump(started) == []  # queued; but wake-consumed by wait()
         app._turn_worker = None  # turn ends -> finally calls _maybe_wake
         app.activity.maybe_wake()
-        assert len(started) == 0  # no redundant wake — result already consumed
+        assert len(_non_pump(started)) == 0  # no redundant wake — result already consumed
 
 
 @pytest.mark.anyio
@@ -3677,24 +3794,41 @@ async def test_user_turn_resets_auto_depth(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_ask_user_callback_is_wired(tmp_path: Path):
+    """The app no longer binds its own panels onto the harness — SessionHost is
+    the sole bind_ui consumer, and it parks asks as PendingAsk futures (Task 5
+    wires the TUI panels back onto that seam). What must still hold: the slot is
+    bound at all (an unbound ask_user makes the ask_user tool a silent no-op),
+    and it belongs to the host rather than to the app."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert app.harness.deps.ui.ask_user == app._ask_user
+        ask_user = app.harness.deps.ui.ask_user
+        assert ask_user is not None
+        assert ask_user == app.host._ask_user
 
 
 @pytest.mark.anyio
 async def test_ask_user_callback_shows_panel_and_returns_answer(tmp_path: Path):
     from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
 
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
         qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
-        worker = app.run_worker(app._ask_user(qs))
-        await pilot.pause()
+        # The ask_user tool's seam: the host parks the ask, the pump mounts the
+        # panel off ask.pending, and the local verdict resolves the parked future.
+        worker = app.run_worker(app.harness.deps.ui.ask_user(qs))
+        await _settle(
+            pilot,
+            lambda: (
+                app.focused is not None
+                and any(isinstance(w, AskUserPanel) for w in app.focused.ancestors_with_self)
+            ),
+            what="focus to move inside AskUserPanel",
+        )
         await pilot.press("enter")  # selects highlighted "Alpha"
-        await pilot.pause()
+        await _settle(pilot, lambda: worker.is_finished, what="the ask to resolve")
         assert worker.result == {"Pick": "Alpha"}
 
 
@@ -3712,11 +3846,11 @@ async def test_ask_user_escape_cancels_only_the_question(tmp_path: Path):
     async with app.run_test() as pilot:
         await pilot.pause()
         qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
-        # _ask_user runs as its own worker here (not the turn worker), so
+        # The ask runs as its own worker here (not the turn worker), so
         # asserting its result and the panel's teardown is enough to prove
         # the escape landed on the panel rather than falling through to
         # cancel_turn.
-        worker = app.run_worker(app._ask_user(qs))
+        worker = app.run_worker(app.harness.deps.ui.ask_user(qs))
         # Being in the DOM is not being ready for a key. AskUserPanel.on_mount
         # spawns a worker, and _show_question awaits remove_children() *and*
         # mount() before it ever calls focus() — so the panel is queryable
@@ -3755,8 +3889,9 @@ async def test_ask_user_panel_closes_open_subagents_viewer(tmp_path: Path):
     """A panel mounted while the ctrl+x sub-agents screen is open would render
     underneath it (invisible, its own layer) yet still take focus, and the
     viewer's Esc ("back") would land on it instead of the panel — silently
-    cancelling the question. run_panel closes the viewer first."""
+    cancelling the question. The mount_panel path closes the viewer first."""
     from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
     from marim_harness.interfaces.tui.subagents import SubAgentsView
 
     async def gen():
@@ -3772,17 +3907,123 @@ async def test_ask_user_panel_closes_open_subagents_viewer(tmp_path: Path):
         assert app.subagents.open is True
 
         qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
-        worker = app.run_worker(app._ask_user(qs))
-        await pilot.pause()
-
-        assert app.subagents.open is False
+        worker = app.run_worker(app.harness.deps.ui.ask_user(qs))
+        await _settle(pilot, lambda: app.subagents.open is False, what="the viewer to close")
         view = app.query_one(SubAgentsView)
         assert view.display is False
         assert app.query_one("#log").display is True
 
+        await _settle(
+            pilot,
+            lambda: (
+                app.focused is not None
+                and any(isinstance(w, AskUserPanel) for w in app.focused.ancestors_with_self)
+            ),
+            what="focus to move inside AskUserPanel",
+        )
         await pilot.press("enter")  # selects highlighted "Alpha"
-        await pilot.pause()
+        await _settle(pilot, lambda: worker.is_finished, what="the ask to resolve")
         assert worker.result == {"Pick": "Alpha"}
+
+
+@pytest.mark.anyio
+async def test_app_builds_host_and_pump(tmp_path: Path):
+    """HarnessApp wraps the harness in an in-process SessionHost: the host is
+    the sole bind_ui consumer, and its claim must be None — the harness already
+    holds the session flock, and a second acquire on another open-file-
+    description in this process would be denied by the kernel (claim hygiene)."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.host.harness is app.harness
+        assert app.host._claim is None
+        assert app._pump_task is not None and not app._pump_task.done()
+        # The host owns the UI slots, not the app.
+        assert app.harness.deps.ui.ask_user == app.host._ask_user
+        assert app.harness.deps.ui.on_subagent_event == app.host._on_subagent_event
+
+
+@pytest.mark.anyio
+async def test_pump_renders_scripted_turn_via_wire(tmp_path: Path):
+    """A turn renders because the host publishes wire events and the pump
+    renders them — _run_turn passes no event_stream_handler, so the bus is the
+    only path from the model stream to the transcript."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        TestModel(call_tools=[], custom_output_text="wire-rendered reply"),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+    )
+    app = HarnessApp(harness)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app._run_turn("hello")
+        assert await _pump_until(pilot, lambda: "wire-rendered reply" in _log_text(app))
+
+
+@pytest.mark.anyio
+async def test_turn_started_on_the_wire_breaks_the_tool_group(tmp_path: Path):
+    """turn.started is the pump's only run boundary. It must reset the
+    consecutive-tool run the way on_events did, or the next turn's first tool
+    call joins the previous turn's ToolGroupWidget — above the new user
+    message — instead of starting its own."""
+    from marim_harness.interfaces.tui.widgets import ToolGroupWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "one"})
+        for cid, path in (("r1", "a.py"), ("r2", "b.py")):
+            bus.publish("tool.call", {"id": cid, "name": "read_file", "args": {"path": path}})
+            bus.publish("tool.result", {"id": cid, "content": "x"})
+        assert await _pump_until(pilot, lambda: "r2" in app.stream.tool_widgets)
+        first_group = app.stream.tool_group
+        assert isinstance(first_group, ToolGroupWidget)
+
+        bus.publish("turn.started", {"turn_id": "t2", "prompt": "two"})
+        bus.publish("tool.call", {"id": "r3", "name": "read_file", "args": {"path": "c.py"}})
+        assert await _pump_until(pilot, lambda: "r3" in app.stream.tool_widgets)
+        assert app.stream.tool_widgets["r3"] not in first_group.walk_children()
+        assert app.stream.tool_group is not first_group
+
+
+@pytest.mark.anyio
+async def test_publish_tasks_changed_reaches_activity_ui(tmp_path: Path, monkeypatch):
+    """tasks.changed published on the bus reaches the ActivityMonitor through
+    the pump — the callback no longer runs inline from bind_ui."""
+    calls = []
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app.activity, "on_tasks_changed", lambda: calls.append(1))
+        app.host.bus.publish("tasks.changed", {})
+        assert await _pump_until(pilot, lambda: bool(calls))
+
+
+@pytest.mark.anyio
+async def test_remote_answer_dismisses_local_panel(tmp_path: Path):
+    """ask.resolved is the single dismissal path: when another client answers
+    first (simulated here by calling host.answer_ask directly), the locally
+    mounted panel disappears even though no local verdict was ever pressed."""
+    from marim_harness.ask_user import Choice, Question
+    from marim_harness.interfaces.tui.interactions.ask_user import AskUserPanel
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        qs = [Question("Pick one", "Pick", [Choice("Alpha"), Choice("Beta")])]
+        app.run_worker(app.harness.deps.ui.ask_user(qs))
+        await _settle(pilot, lambda: bool(app.query(AskUserPanel)), what="the panel to mount")
+        (ask_id,) = list(app.host._pending)
+        assert app.host.answer_ask(ask_id, {"answers": {"Pick": "Alpha"}})
+        await _settle(pilot, lambda: not app.query(AskUserPanel), what="the panel to dismiss")
 
 
 def test_format_duration_units():
@@ -3836,12 +4077,276 @@ async def test_successful_turn_stamps_duration(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.harness.run_turn = fake_run_turn
+        app.host.run_turn = fake_run_turn
         await app._run_turn("hi")
         await pilot.pause()
         metas = list(app.query(TurnMeta))
         assert len(metas) == 1
         assert "s" in str(metas[0].render())
+
+
+@pytest.mark.anyio
+async def test_turn_meta_lands_after_the_turns_last_wire_event(tmp_path: Path):
+    """host.run_turn returns before the pump has rendered the turn's tail, so
+    _run_turn must drain the pump before stamping TurnMeta — otherwise the
+    stamp (and the queue drain after it) runs ahead of the last tool card."""
+    from textual.containers import VerticalScroll
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget, TurnMeta
+
+    app = _app(tmp_path)
+
+    async def fake_run_turn(*a, **k):
+        # Publish the tail synchronously and return without yielding: the
+        # pump has provably not run when _run_turn regains control.
+        bus = app.host.bus
+        bus.publish("tool.call", {"id": "t1", "name": "read_file", "args": {"path": "a.py"}})
+        bus.publish("tool.result", {"id": "t1", "content": "x"})
+        return "ok"
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
+        await app._run_turn("hi")
+        assert await _pump_until(pilot, lambda: bool(list(app.query(TurnMeta))))
+        log = app.query_one("#log", VerticalScroll)
+        kinds = [type(w) for w in log.walk_children() if isinstance(w, (ToolCallWidget, TurnMeta))]
+        assert kinds == [ToolCallWidget, TurnMeta]
+
+
+@pytest.mark.anyio
+async def test_escape_during_the_render_drain_does_not_cancel_a_finished_turn(tmp_path: Path):
+    """host.run_turn has returned — the turn is done and persisted — but
+    status.busy is still set while _drain_pump waits for the pump to catch
+    up. An Esc there used to cancel the worker and stamp the finished turn
+    as cancelled (error card, paused queue, a settle sweep). Review-bot
+    finding on #116 (comment 6329)."""
+    from asyncio import Event
+
+    from marim_harness.interfaces.tui.widgets import ErrorMessage, TurnMeta
+
+    app = _app(tmp_path)
+    draining = Event()
+    release = Event()
+
+    async def fake_run_turn(*a, **k):
+        return "ok"
+
+    async def blocking_drain(timeout: float = 2.0):
+        draining.set()
+        await release.wait()
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.host.run_turn = fake_run_turn  # type: ignore[method-assign]
+        app._drain_pump = blocking_drain  # type: ignore[method-assign]
+        app._turn_worker = app.run_worker(app._run_turn("hi"), exclusive=True)
+        assert await _pump_until(pilot, draining.is_set)
+        assert app.status.busy
+        app.action_cancel_turn()  # Esc, inside the drain window
+        await pilot.pause()
+        release.set()
+        assert await _pump_until(pilot, lambda: not app.status.busy)
+        assert list(app.query(TurnMeta)), "the finished turn keeps its duration stamp"
+        assert not [w for w in app.query(ErrorMessage) if "cancelled" in str(w.render())]
+        assert app.queue.paused is False
+
+
+@pytest.mark.anyio
+async def test_turn_usage_on_the_wire_feeds_the_live_counter(tmp_path: Path):
+    """The status bar's in-flight "+N" counter read ctx.usage off on_events;
+    the pump has no ctx, so turn.usage carries it."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "go"})
+        bus.publish("turn.usage", {"turn_id": "t1", "total_tokens": 1234})
+        assert await _pump_until(pilot, lambda: app.stream.live_run_tokens == 1234)
+        # The next run boundary zeroes it, as on_events did per round.
+        bus.publish("turn.started", {"turn_id": "t2", "prompt": "again"})
+        assert await _pump_until(pilot, lambda: app.stream.live_run_tokens == 0)
+
+
+@pytest.mark.anyio
+async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path):
+    """subagent.model / .thinking / .notice / .usage and subagent.cli_activity
+    used to reach the renderer as direct bind_ui callbacks; on this branch the
+    host publishes them and the pump routes each to its renderer method. One
+    spawn card, every side channel, plus the unknown-stream no-op for each."""
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+
+    async def gen():
+        yield _spawn_call("s1", "look around")
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        card = app.stream.tool_widgets["s1"]
+        assert isinstance(card, SubAgentWidget)
+        app.stream.ensure_pane(card)  # so subagent.model also relabels the pane
+
+        bus = app.host.bus
+        bus.publish("subagent.model", {"stream_id": "s1", "model": "claude-cli:opus"})
+        bus.publish("subagent.thinking", {"stream_id": "s1", "level": "high"})
+        bus.publish("subagent.notice", {"stream_id": "s1", "message": "retrying after 504"})
+        bus.publish(
+            "subagent.usage",
+            {"stream_id": "s1", "usage": {"input_tokens": 10, "output_tokens": 5}},
+        )
+        assert await _pump_until(pilot, lambda: card.activity == "⟳ retrying after 504")
+        assert card.model_label == "claude-cli:opus"
+        assert card.thinking_label == "high"
+        assert card.pane is not None  # relabeled too; its subtitle is a Content
+        assert card._pending_usage is not None and card._pending_usage.total_tokens == 15
+
+        # A claude-cli main-loop model's own tool activity renders as native
+        # cards in the MAIN transcript through the same pump.
+        bus.publish(
+            "subagent.cli_activity",
+            {
+                "events": [
+                    {"type": "tool.call", "id": "cli-1", "name": "Bash", "args": {"c": "ls"}},
+                    {"type": "tool.result", "id": "cli-1", "content": "ok"},
+                    {"type": "bogus.type"},  # dropped by the handler's parse, not fatal
+                ]
+            },
+        )
+        assert await _pump_until(pilot, lambda: "cli-1" in app.stream.tool_widgets)
+        assert isinstance(app.stream.tool_widgets["cli-1"], ToolCallWidget)
+
+        # Every side channel is a no-op for a stream id with no card.
+        before = app.host.bus.last_seq
+        for type_, data in (
+            ("subagent.model", {"model": "x"}),
+            ("subagent.thinking", {"level": "low"}),
+            ("subagent.notice", {"message": "m"}),
+            ("subagent.usage", {"usage": {"input_tokens": 1}}),
+            ("subagent.event", {"event": {"type": "text", "text": "hi"}}),
+        ):
+            bus.publish(type_, {"stream_id": "nope", **data})
+        assert await _pump_until(pilot, lambda: app._pump_seq >= before + 5)
+        assert card.model_label == "claude-cli:opus"  # untouched
+
+
+@pytest.mark.anyio
+async def test_pump_survives_unknown_events_and_a_raising_handler(tmp_path: Path, monkeypatch):
+    """Three things must not stall the pump or the drain barrier: an unknown
+    event type, a known type with a malformed payload, and a handler that
+    raises. Each is logged and the seq still advances past it."""
+    import marim_harness.interfaces.tui.app as app_module
+    from marim_harness.server.wire_events import TurnStarted
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+
+        async def boom(_app, _wire):
+            raise RuntimeError("render bug")
+
+        monkeypatch.setitem(app_module._WIRE_HANDLERS, TurnStarted, boom)
+        bus.publish("no.such.type", {"x": 1})
+        bus.publish("text.delta", {"text": 123})  # wrong field type → parse fails
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "hi"})  # handler raises
+        target = bus.last_seq
+        await app._drain_pump()
+        assert app._pump_seq == target
+        assert app._pump_task is not None and not app._pump_task.done()
+
+
+@pytest.mark.anyio
+async def test_drain_pump_is_bounded_and_returns_when_the_pump_is_gone(tmp_path: Path):
+    import asyncio
+    from asyncio import create_task
+    from contextlib import suppress
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Nothing published since the pump caught up: returns at once.
+        await app._drain_pump()
+        # A wedged pump (simulated: cancel it, then publish) must not hang the
+        # turn worker — the barrier gives up when the task is gone…
+        assert app._pump_task is not None
+        app._pump_task.cancel()
+        await _pump_until(pilot, lambda: app._pump_task.done())  # type: ignore[union-attr]
+        app.host.bus.publish("text.delta", {"text": "orphaned"})
+        await app._drain_pump()
+        # …and when the task is alive but not draining, after the timeout.
+        app._pump_task = create_task(asyncio.sleep(30))
+        try:
+            await app._drain_pump(timeout=0.05)
+        finally:
+            app._pump_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await app._pump_task
+            app._pump_task = None
+        assert app._pump_seq < app.host.bus.last_seq  # never caught up, still returned
+
+
+def test_ask_payload_maps_each_panel_kind(tmp_path: Path):
+    """The local verdict → host answer contract, one branch per panel kind."""
+    from marim_harness.interfaces.tui.app import _ask_payload
+    from marim_harness.interfaces.tui.interactions import ApprovalPanel, AskUserPanel, PlanCard
+    from marim_harness.runtime.deps import PlanDecision
+
+    approval = ApprovalPanel.__new__(ApprovalPanel)
+    ask = AskUserPanel.__new__(AskUserPanel)
+    plan = PlanCard.__new__(PlanCard)
+    assert _ask_payload(approval, True) == {"approve": True}
+    assert _ask_payload(approval, None) == {"approve": False}
+    assert _ask_payload(ask, None) == {"cancel": True}
+    assert _ask_payload(ask, {"q": "a"}) == {"answers": {"q": "a"}}
+    decision = PlanDecision(choice="Keep planning", feedback="tighter")
+    assert _ask_payload(plan, decision) == {"choice": "Keep planning", "feedback": "tighter"}
+    assert _ask_payload(object(), "x") == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.anyio
+async def test_turn_finished_on_the_wire_finalizes_a_trailing_thought(tmp_path: Path):
+    """on_events collapsed a run-ending thought when its generator drained; on
+    the wire, turn.finished is that boundary. Without it the thought stays
+    'open' (current_thinking set) and never caps to its preview."""
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+        bus.publish("turn.started", {"turn_id": "t1", "prompt": "think"})
+        bus.publish("thinking.delta", {"text": "let me think about this"})
+        assert await _pump_until(pilot, lambda: app.stream.current_thinking is not None)
+        bus.publish("turn.finished", {"turn_id": "t1", "output": ""})
+        assert await _pump_until(pilot, lambda: app.stream.current_thinking is None)
+
+
+@pytest.mark.anyio
+async def test_errored_turn_finalizes_the_trailing_block_before_the_error_card(tmp_path: Path):
+    """A provider error mid-stream publishes turn.error, never turn.finished, so
+    the wire alone never calls end_run(): the thought the turn died on would sit
+    fully expanded above the error card (and the assistant text unfinalized)
+    until the NEXT turn's first event finalized it as a stale block. The error
+    arm must run the same finalize as the finished path, after the drain."""
+    from marim_harness.interfaces.tui.widgets import ErrorMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bus = app.host.bus
+
+        async def stream_then_boom(*a, **k):
+            bus.publish("turn.started", {"turn_id": "t1", "prompt": "think"})
+            bus.publish("thinking.delta", {"text": "let me think about this"})
+            bus.publish("turn.error", {"turn_id": "t1", "error": "upstream exploded"})
+            raise RuntimeError("upstream exploded")
+
+        app.host.run_turn = stream_then_boom
+        await app._run_turn("hi")
+        await pilot.pause()
+        assert list(app.query(ErrorMessage))
+        assert app.stream.current_thinking is None  # end_run() ran: thought capped
 
 
 @pytest.mark.anyio
@@ -3854,7 +4359,7 @@ async def test_errored_turn_does_not_stamp_duration(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.harness.run_turn = boom
+        app.host.run_turn = boom
         await app._run_turn("hi")
         await pilot.pause()
         assert list(app.query(TurnMeta)) == []
@@ -4608,6 +5113,7 @@ async def test_workflow_card_lifecycle_and_child_nesting(tmp_path: Path):
         assert ui.on_workflow_done is not None
 
         ui.on_workflow_start("tc1", "review sweep")
+        assert await _pump_until(pilot, lambda: "tc1" in app.stream.workflow_cards)
         card = app.stream.workflow_cards["tc1"]
         assert card in app.stream.subagents
         assert card.stream_id == "tc1" and card.status == "pending"
@@ -4617,18 +5123,18 @@ async def test_workflow_card_lifecycle_and_child_nesting(tmp_path: Path):
         assert card.parent is None
 
         await ui.on_workflow_spawn("tc1::wf1", "explore", "review bugs", "tc1")
-        await pilot.pause()
+        assert await _pump_until(pilot, lambda: "tc1::wf1" in app.stream.tool_widgets)
         child = app.stream.tool_widgets["tc1::wf1"]
         assert child.parent_id == "tc1"
         assert [row.agent for row in tree_order(app.stream.subagents)] == [card, child]
 
         ui.on_workflow_log("tc1", "step 1 done")
-        await pilot.pause()
-        assert card.pane is not None
-        assert len(card.pane.query(".workflow-log")) == 1
+        assert await _pump_until(
+            pilot, lambda: card.pane is not None and len(card.pane.query(".workflow-log")) == 1
+        )
 
         ui.on_workflow_done("tc1", '{"findings": []}', False)
-        assert card.status == "done"
+        assert await _pump_until(pilot, lambda: card.status == "done")
         assert card.report == '{"findings": []}'
 
         # reset() rebuilds per-session stream state (new/switch/clear); the

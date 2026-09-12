@@ -77,13 +77,15 @@ class ActivityMonitor:
         panel.show_jobs(jobs.history + jobs.list())
 
     def on_jobs_changed(self) -> None:
-        """Live callback from the job registry — repaint as jobs launch and
-        finish. Each job runs as a task on the app's event loop, so the callback
-        fires there and direct widget mutation is safe."""
+        """Pump-delivered ``jobs.changed`` — repaint as jobs launch and finish.
+
+        Repaint only: the wake's job-settle trigger can't ride the bus (one hop
+        later, ``jobs.wait()`` has already marked the completion wake-consumed
+        and ``has_finished_pending()`` is False), so HarnessApp wraps the
+        registry's ``on_change`` and fires the wake synchronously there."""
         self._app.stream.fill_finished_detached_cards(self._app.jobs)
         self.render_jobs()
         self.notify_finished_jobs()
-        self.maybe_wake()
 
     def desktop_notify(self, title: str, body: str, event_type: str) -> None:
         """Fire a desktop notification if one is wired on deps. Best-effort —

@@ -12,17 +12,6 @@ from marim_harness.interfaces.tui.subagents.view import SubAgentSummary, SubAgen
 from tests.conftest import _make_deps
 
 
-class _FakePart:
-    def __init__(self, tool_name: str, tool_call_id: str) -> None:
-        self.tool_name = tool_name
-        self.tool_call_id = tool_call_id
-
-
-class _FakeToolEvent:
-    def __init__(self, tool_name: str, tool_call_id: str) -> None:
-        self.part = _FakePart(tool_name, tool_call_id)
-
-
 def _app(tmp_path: Path):
     from pydantic_ai.models.test import TestModel
 
@@ -611,9 +600,8 @@ async def test_nested_spawn_registers_child_card_in_parent_pane(tmp_path):
 
         # The parent's stream claims a nested spawn_agent.
         sink = _SubAgentSink(r, parent, "call-parent")
-        ev = _FakeToolEvent("spawn_agent", "call-child")
         claimed = await sink.intercept_tool(
-            ev, {"type": "explore", "description": "child"}, parent_pane
+            "call-child", "spawn_agent", {"type": "explore", "description": "child"}, parent_pane
         )
         await pilot.pause()
 
@@ -636,9 +624,7 @@ async def test_nested_non_spawn_tool_not_claimed(tmp_path):
         parent_pane = r.ensure_pane(parent)
         await pilot.pause()
         sink = _SubAgentSink(r, parent, "call-parent")
-        claimed = await sink.intercept_tool(
-            _FakeToolEvent("read_file", "call-read"), {"path": "x"}, parent_pane
-        )
+        claimed = await sink.intercept_tool("call-read", "read_file", {"path": "x"}, parent_pane)
         assert claimed is False  # only spawn_agent is claimed
 
 

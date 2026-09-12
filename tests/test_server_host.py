@@ -2,16 +2,19 @@
 turn queue, parked asks, interrupt, steer — observed through the event bus."""
 
 import asyncio
+import inspect
 import json as _json
 import os
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.messages import ModelResponse, PartStartEvent, TextPart, ToolCallPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RunUsage
 
-from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.ask_user import Choice
+from marim_harness.runtime.deps import Deps, PlanDecision, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.permissions import Mode
 from marim_harness.server.bus import EventBus
@@ -197,6 +200,12 @@ async def test_simple_turn_publishes_lifecycle_events(tmp_path):
     assert "usage" in finished.data
     assert any(e.type == "turn.started" for e in events)
     assert any(e.type == "text.delta" for e in events)
+    # The live running total rides the wire as turn.usage — published on change
+    # only, so a one-response turn yields a single one, ahead of its stream.
+    usages = [e for e in events if e.type == "turn.usage"]
+    assert len(usages) == 1
+    assert usages[0].data == {"turn_id": turn_id, "total_tokens": usages[0].data["total_tokens"]}
+    assert events.index(usages[0]) < events.index(next(e for e in events if e.type == "text.delta"))
     await _wait_for(lambda: host.status == "idle")
     await host.aclose()
 
@@ -248,11 +257,16 @@ async def test_interrupt_cancels_parked_turn(tmp_path):
     events = _spy(host.bus)
     host.submit("edit it")
     await _wait_for(lambda: host.status == "waiting_ask")
+    parked = next(e for e in events if e.type == "ask.pending").data["id"]
     assert host.interrupt()
     finished = await _drain_until(events, "turn.finished")
     assert finished.data.get("interrupted") is True
     await _wait_for(lambda: host.status == "idle")
     assert host.pending_asks() == []
+    # The parked ask must be announced as cancelled — exactly once — or a
+    # client's approval panel outlives the turn it belonged to.
+    resolved = [e.data for e in events if e.type == "ask.resolved"]
+    assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
     assert not host.interrupt()  # nothing running now
     await host.aclose()
 
@@ -337,11 +351,13 @@ async def test_user_turn_carries_user_trigger(tmp_path):
 async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.auto)
     release = asyncio.Event()
+    model_reached = asyncio.Event()
 
     def fn(messages, info):
         return ModelResponse(parts=[TextPart(content="done")])
 
     async def stream_fn(messages, info):
+        model_reached.set()
         await release.wait()
         yield "done"
 
@@ -351,6 +367,13 @@ async def test_job_settled_mid_turn_wakes_after_turn_ends(tmp_path):
     events = _spy(host.bus)
     host.submit("do work")  # user turn starts, blocks
     await _drain_until(events, "turn.started")  # (the user turn)
+    # `turn.started` goes out BEFORE the harness assembles the prompt, and
+    # assembly is what drains the finished-job digest. A job that settles in
+    # that window is folded into the user turn instead — correct, but then no
+    # autonomous wake is owed and this test would wait for one forever (seen
+    # on a loaded 3.14 runner). Only settle once the model has been called,
+    # i.e. after assembly.
+    await asyncio.wait_for(model_reached.wait(), _WAIT_TIMEOUT)
     await _settling_job(host)  # settles WHILE the turn is busy
     await asyncio.sleep(0.05)
     assert [
@@ -407,3 +430,458 @@ async def test_aclose_releases_the_claim_even_when_teardown_raises(tmp_path):
     freed = try_acquire(session_path, kind="tui")
     assert freed is not None
     freed.release()
+
+
+# --------------------------------------------------------------------------
+# The full bind_ui vocabulary: every named param the harness exposes must be
+# wired by the host, or a hook silently goes dead (only the daemon exercises
+# these, so nothing else would notice a missed one).
+# --------------------------------------------------------------------------
+
+
+def _bound_ui_hook(harness: Harness, name: str):
+    """Where each bind_ui param actually lands: most go straight onto
+    deps.ui, but on_tasks_changed/on_jobs_changed and the session-lifecycle
+    hooks (on_compact*, on_notice, on_rename) are stored on deps.tasks/
+    deps.jobs/session instead (see Harness.bind_ui)."""
+    if name in ("on_tasks_changed",):
+        return harness.deps.tasks.on_change
+    if name in ("on_jobs_changed",):
+        return harness.deps.jobs.on_change
+    if name in ("on_compact", "on_compact_start", "on_notice", "on_rename"):
+        return getattr(harness.session, name)
+    return getattr(harness.deps.ui, name)
+
+
+async def test_every_bind_ui_param_is_wired_by_the_host(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+
+    params = [p for p in inspect.signature(Harness.bind_ui).parameters if p != "self"]
+    assert params  # sanity: bind_ui still takes named params
+    for name in params:
+        assert _bound_ui_hook(harness, name) is not None, name
+    await host.aclose()
+
+
+async def test_workflow_events_published(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    ui = harness.deps.ui
+    assert ui.on_workflow_spawn is not None
+    assert ui.on_workflow_start is not None
+    assert ui.on_workflow_log is not None
+    assert ui.on_workflow_spawn_done is not None
+    assert ui.on_workflow_done is not None
+
+    await ui.on_workflow_spawn("s1", "agent", "do the thing", "tc-parent")
+    ui.on_workflow_start("tc-1", "My Workflow")
+    ui.on_workflow_log("tc-1", "step one")
+    ui.on_workflow_spawn_done("s1", "report text")
+    ui.on_workflow_done("tc-1", "success", False)
+
+    spawned = next(e for e in events if e.type == "workflow.spawned")
+    assert spawned.data == {
+        "stream_id": "s1",
+        "spawn_type": "agent",
+        "task": "do the thing",
+        "parent_tool_call_id": "tc-parent",
+    }
+    started = next(e for e in events if e.type == "workflow.started")
+    assert started.data == {"tool_call_id": "tc-1", "title": "My Workflow"}
+    logged = next(e for e in events if e.type == "workflow.logged")
+    assert logged.data == {"tool_call_id": "tc-1", "message": "step one"}
+    spawn_done = next(e for e in events if e.type == "workflow.spawn_finished")
+    assert spawn_done.data == {"stream_id": "s1", "report": "report text"}
+    finished = next(e for e in events if e.type == "workflow.finished")
+    assert finished.data == {"tool_call_id": "tc-1", "outcome": "success", "failed": False}
+    await host.aclose()
+
+
+async def test_subagent_side_channels_published(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    ui = harness.deps.ui
+    assert ui.on_subagent_notice is not None
+    assert ui.on_subagent_model is not None
+    assert ui.on_subagent_thinking is not None
+    assert ui.on_subagent_usage is not None
+
+    await ui.on_subagent_notice("s1", "retrying")
+    await ui.on_subagent_model("s1", "opus")
+    await ui.on_subagent_thinking("s1", "high")
+    await ui.on_subagent_usage("s1", RunUsage(input_tokens=10, output_tokens=5))
+
+    notice = next(e for e in events if e.type == "subagent.notice")
+    assert notice.data == {"stream_id": "s1", "message": "retrying"}
+    model = next(e for e in events if e.type == "subagent.model")
+    assert model.data == {"stream_id": "s1", "model": "opus"}
+    thinking = next(e for e in events if e.type == "subagent.thinking")
+    assert thinking.data == {"stream_id": "s1", "level": "high"}
+    usage_evt = next(e for e in events if e.type == "subagent.usage")
+    assert usage_evt.data["stream_id"] == "s1"
+    assert usage_evt.data["usage"]["input_tokens"] == 10
+    assert usage_evt.data["usage"]["output_tokens"] == 5
+    await host.aclose()
+
+
+async def test_cli_activity_converts_events_to_wire(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_cli_activity is not None
+    stream_event = PartStartEvent(index=0, part=TextPart(content="hi"))
+    await harness.deps.ui.on_cli_activity([stream_event])
+
+    activity = next(e for e in events if e.type == "subagent.cli_activity")
+    assert activity.data["events"], "expected at least one wire event"
+    assert activity.data["events"][0]["type"] == "text.delta"
+    await host.aclose()
+
+
+async def test_cli_activity_drops_unconvertible_events_without_publishing_empty(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_cli_activity is not None
+    await harness.deps.ui.on_cli_activity([])  # no events converted -> nothing published
+    assert not any(e.type == "subagent.cli_activity" for e in events)
+    await host.aclose()
+
+
+async def test_ttft_mode_and_notice_published(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_ttft is not None
+    assert harness.deps.ui.on_mode_change is not None
+    assert harness.session.on_notice is not None
+    harness.deps.ui.on_ttft(0.5)
+    harness.deps.ui.on_mode_change()
+    harness.session.on_notice("heads up")
+
+    ttft = next(e for e in events if e.type == "session.ttft")
+    assert ttft.data == {"seconds": 0.5}
+    mode_evt = next(e for e in events if e.type == "session.mode_changed")
+    assert mode_evt.data == {"mode": harness.deps.workspace.mode.value}
+    notice = next(e for e in events if e.type == "session.notice")
+    assert notice.data == {"message": "heads up"}
+    await host.aclose()
+
+
+async def test_present_plan_parks_and_resolves(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_present_plan is not None
+    task = asyncio.ensure_future(
+        harness.deps.ui.on_present_plan("Sum", ["a"], [Choice(label="Now"), Choice(label="Later")])
+    )
+    pending = await _drain_until(events, "ask.pending")
+    assert pending.data["kind"] == "plan"
+    assert pending.data["payload"]["summary"] == "Sum"
+    assert pending.data["payload"]["steps"] == ["a"]
+    assert pending.data["payload"]["choices"] == [
+        {"label": "Now", "description": None},
+        {"label": "Later", "description": None},
+    ]
+    [ask] = host.pending_asks()
+    assert host.answer_ask(ask["id"], {"choice": "Now", "feedback": None})
+    decision = await task
+    assert decision == PlanDecision(choice="Now", feedback=None)
+    await host.aclose()
+
+
+async def test_present_plan_cancel_maps_to_keep_planning(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+
+    assert harness.deps.ui.on_present_plan is not None
+    task = asyncio.ensure_future(
+        harness.deps.ui.on_present_plan("Sum", ["a"], [Choice(label="Now")])
+    )
+    await _wait_for(lambda: host.pending_asks() != [])
+    [ask] = host.pending_asks()
+    assert host.answer_ask(ask["id"], {"cancel": True})
+    decision = await task
+    assert decision == PlanDecision(choice="Keep planning")
+    await host.aclose()
+
+
+async def test_run_turn_publishes_lifecycle_and_returns_outcome(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    outcome = await host.run_turn("hi")
+
+    assert outcome.result == "done"
+    started = next(e for e in events if e.type == "turn.started")
+    assert started.data["prompt"] == "hi"
+    finished = next(e for e in events if e.type == "turn.finished")
+    assert finished.data["output"] == "done"
+    assert "usage" in finished.data
+    assert harness.session.history  # persisted
+    await host.aclose()
+
+
+async def test_run_turn_error_publishes_and_raises(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+
+    def fn(messages, info):
+        raise RuntimeError("boom")
+
+    async def stream_fn(messages, info):
+        yield "partial "
+        raise RuntimeError("boom")
+
+    harness = _make_harness(FunctionModel(fn, stream_function=stream_fn), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await host.run_turn("hi")
+
+    error = next(e for e in events if e.type == "turn.error")
+    assert "boom" in error.data["error"]
+    assert not any(e.type == "turn.finished" for e in events)
+    await host.aclose()
+
+
+async def test_run_turn_rejects_concurrent_second_call(tmp_path):
+    (tmp_path / "a.txt").write_text("foo\n")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    harness = _make_harness(_edit_model(), deps)
+    host = SessionHost(harness, EventBus())
+
+    task = asyncio.create_task(host.run_turn("edit it"))
+    await _wait_for(lambda: host.pending_asks() != [])
+    with pytest.raises(RuntimeError, match="already in flight"):
+        await host.run_turn("second")
+
+    [ask] = host.pending_asks()
+    assert host.answer_ask(ask["id"], {"approve": True, "reason": None})
+    outcome = await task
+    assert outcome.result == "done"
+    await host.aclose()
+
+
+async def test_run_turn_interrupt_publishes_finished_interrupted(tmp_path):
+    (tmp_path / "a.txt").write_text("foo\n")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    harness = _make_harness(_edit_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    task = asyncio.create_task(host.run_turn("edit it"))
+    await _wait_for(lambda: host.pending_asks() != [])
+    parked = host.pending_asks()[0]["id"]
+    assert host.interrupt()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    finished = next(e for e in events if e.type == "turn.finished")
+    assert finished.data.get("interrupted") is True
+    resolved = [e.data for e in events if e.type == "ask.resolved"]
+    assert resolved == [{"id": parked, "cancelled": True, "reason": "interrupted"}]
+    await _wait_for(lambda: host.status == "idle")
+    await host.aclose()
+
+
+# --------------------------------------------------------------------------
+# Edges of the side-channel relays and teardown that only the daemon/TUI pump
+# would otherwise exercise live.
+# --------------------------------------------------------------------------
+
+
+def test_dump_usage_prefers_model_dump_then_dataclass_then_nothing():
+    from dataclasses import dataclass
+
+    from pydantic import BaseModel
+
+    from marim_harness.server.host import _dump_usage
+
+    class Pyd(BaseModel):
+        input_tokens: int = 3
+
+    class OddDump:
+        def model_dump(self):
+            return "not a dict"  # ignored: fall through to the dataclass check
+
+    @dataclass
+    class DumpableDC:
+        n: int = 1
+
+    assert _dump_usage(Pyd()) == {"input_tokens": 3}
+    assert _dump_usage(RunUsage(input_tokens=10, output_tokens=5))["input_tokens"] == 10
+    assert _dump_usage(OddDump()) == {}
+    assert _dump_usage(DumpableDC()) == {"n": 1}
+    assert _dump_usage(DumpableDC) == {}  # the class, not an instance
+    assert _dump_usage(object()) == {}
+
+
+async def test_subagent_event_relay_carries_usage_and_skips_unconvertible(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    ui = harness.deps.ui
+    assert ui.on_subagent_event is not None
+
+    text = PartStartEvent(index=0, part=TextPart(content="hi"))
+    await ui.on_subagent_event("s1", text, None)
+    await ui.on_subagent_event("s1", text, RunUsage(input_tokens=4, output_tokens=2))
+    await ui.on_subagent_event("s1", object(), RunUsage(input_tokens=1))  # not a stream event
+
+    relayed = [e.data for e in events if e.type == "subagent.event"]
+    assert len(relayed) == 2
+    assert relayed[0] == {"stream_id": "s1", "event": {"type": "text", "text": "hi"}}
+    assert relayed[1]["usage"]["input_tokens"] == 4
+    await host.aclose()
+
+
+async def test_cli_activity_skips_unconvertible_events_but_keeps_the_rest(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+
+    assert harness.deps.ui.on_cli_activity is not None
+    text = PartStartEvent(index=0, part=TextPart(content="hi"))
+    await harness.deps.ui.on_cli_activity([object(), text])
+
+    activity = next(e for e in events if e.type == "subagent.cli_activity")
+    assert [w["type"] for w in activity.data["events"]] == ["text.delta"]
+    await host.aclose()
+
+
+async def test_cancel_pending_announces_each_parked_ask_once(tmp_path):
+    """The interrupt path publishes from `_await_ask`; `_cancel_pending` is the
+    sweep for asks nobody is awaiting any more (aclose, or a future that already
+    settled but was not yet popped). Both futures are handled: a live one is
+    cancelled, a settled one is left alone — and each gets exactly one
+    `ask.resolved`."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(_make_harness(_text_only_model(), deps), EventBus())
+    events = _spy(host.bus)
+
+    live = host._park("approval", {"tool": "bash"})
+    settled = host._park("question", {"questions": []})
+    settled.future.set_result({"answers": {}})
+    assert len(host.pending_asks()) == 2
+
+    host._cancel_pending("closing")
+
+    assert host.pending_asks() == []
+    assert live.future.cancelled()
+    assert settled.future.result() == {"answers": {}}
+    resolved = sorted(e.data["id"] for e in events if e.type == "ask.resolved")
+    assert resolved == sorted([live.id, settled.id])
+    assert all(e.data["reason"] == "closing" for e in events if e.type == "ask.resolved")
+    await host.aclose()
+
+
+async def test_submitted_turn_error_is_published_and_the_worker_survives(tmp_path):
+    """The queue path (submit) must report a failing turn as `turn.error` and
+    keep the worker alive for the next prompt — unlike run_turn, there is no
+    caller to raise into."""
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    state = {"n": 0}
+
+    def fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("boom")
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    async def stream_fn(messages, info):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("boom")
+        yield "done"
+
+    host = SessionHost(
+        _make_harness(FunctionModel(fn, stream_function=stream_fn), deps), EventBus()
+    )
+    events = _spy(host.bus)
+
+    first = host.submit("hi")
+    error = await _drain_until(events, "turn.error")
+    assert error.data["turn_id"] == first
+    assert "boom" in error.data["error"]
+    await _wait_for(lambda: host.status == "idle")
+
+    second = host.submit("again")
+    finished = await _drain_until(events, "turn.finished")
+    assert finished.data["turn_id"] == second
+    await host.aclose()
+
+
+async def test_idle_seconds_is_zero_while_a_turn_is_parked(tmp_path):
+    (tmp_path / "a.txt").write_text("foo\n")
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+    host = SessionHost(_make_harness(_edit_model(), deps), EventBus())
+
+    host.submit("edit it")
+    await _wait_for(lambda: host.pending_asks() != [])
+    assert host.busy
+    assert host.idle_seconds == 0.0
+
+    [ask] = host.pending_asks()
+    assert host.answer_ask(ask["id"], {"approve": True, "reason": None})
+    await _wait_for(lambda: host.status == "idle")
+    await asyncio.sleep(0.02)
+    assert host.idle_seconds > 0.0
+    await host.aclose()
+
+
+async def test_aclose_logs_and_continues_past_failing_teardown_steps(tmp_path, caplog):
+    """Every teardown step is best-effort: a step raising must be logged and
+    must not skip the later ones (the persist still runs, session_end still
+    fires)."""
+    import logging
+
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    calls: list[str] = []
+
+    async def bad_wait_autoname():
+        raise RuntimeError("autoname exploded")
+
+    async def bad_session_end(reason):
+        calls.append(f"session_end:{reason}")
+        raise RuntimeError("hooks exploded")
+
+    original_persist = harness.session.persist
+
+    def persist(*a, **kw):
+        calls.append("persist")
+        return original_persist(*a, **kw)
+
+    harness.session.wait_autoname = bad_wait_autoname  # type: ignore[method-assign]
+    harness.session.persist = persist  # type: ignore[method-assign]
+    harness.session_end = bad_session_end  # type: ignore[method-assign]
+
+    with caplog.at_level(logging.WARNING, logger="marim_harness.server.host"):
+        await host.aclose()
+
+    assert calls == ["persist", "session_end:exit"]
+    failed = [r.getMessage() for r in caplog.records if "teardown step" in r.getMessage()]
+    assert any("wait_autoname" in m for m in failed)
+    assert any("session_end" in m for m in failed)

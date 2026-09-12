@@ -1,21 +1,67 @@
+import json
 import logging
 import time
-from asyncio import CancelledError
+from asyncio import (
+    CancelledError,
+    Event,
+    Task,
+    TimeoutError,
+    create_task,
+    current_task,
+    get_running_loop,
+    wait_for,
+)
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import Any
 
 import rich.markup
-from pydantic_ai import ToolDenied
-from pydantic_ai.tools import DeferredToolApprovalResult
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Header
 
+from ...ask_user import Choice, Question
 from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
-from ...usage import resolve_cost
+from ...server.bus import EventBus, Subscription
+from ...server.host import SessionHost
+from ...server.schema import STREAM_EVENT_TYPES
+from ...server.wire_events import (
+    AskPending,
+    AskResolved,
+    CompactionFinished,
+    CompactionStarted,
+    JobsChanged,
+    SessionModeChanged,
+    SessionNotice,
+    SessionRenamed,
+    SessionTtft,
+    SubagentCliActivity,
+    SubagentEvent,
+    SubagentModel,
+    SubagentNotice,
+    SubagentThinking,
+    SubagentUsage,
+    TasksChanged,
+    TextDelta,
+    ThinkingDelta,
+    ToolCall,
+    ToolResult,
+    TurnFinished,
+    TurnStarted,
+    TurnUsage,
+    WireEvent,
+    WorkflowFinished,
+    WorkflowLogged,
+    WorkflowSpawned,
+    WorkflowSpawnFinished,
+    WorkflowStarted,
+    parse_wire_event,
+)
+from ...usage import resolve_cost, usage_from_dump
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .activity import ActivityMonitor
@@ -25,7 +71,8 @@ from .interactions import (
     AskUserPanel,
     InteractionPanel,
     PlanCard,
-    run_panel,
+    mount_panel,
+    unmount_panel,
 )
 from .pickers import ModelPickers
 from .queue_control import QueueController
@@ -88,6 +135,230 @@ _WELCOME = (
     "- `ctrl+g` (or `alt+enter`) steers the running turn\n"
     "- `/exit` (or `/quit`, `ctrl+c`) quits — `ctrl+c` requires a double-press to confirm"
 )
+
+# The value type is loosely typed (Any, not WireEvent) because each handler
+# only needs to accept its OWN member of the WireEvent union; the dict's key
+# (the concrete wire class) is what a caller uses to pick the right one, so
+# the narrower per-handler signatures below are never actually mismatched at
+# a call site — see _dispatch_wire.
+_WireHandler = Callable[["HarnessApp", Any], Awaitable[None]]
+
+
+async def _handle_stream_wire(app: "HarnessApp", wire: WireEvent) -> None:
+    await app.stream.on_wire(wire)
+
+
+async def _handle_subagent_event(app: "HarnessApp", wire: SubagentEvent) -> None:
+    # The host publishes the sub-agent's stream event verbatim — the daemon
+    # contract (serve-api.md) keeps the inner "type" as the raw stream-event
+    # kind (text/thinking/tool_call/tool_result) — while parse_wire_event only
+    # speaks wire types (text.delta/...). Remap here, the way the host does for
+    # cli_activity, or every sub-agent stream parses as unknown and vanishes.
+    wire_type = STREAM_EVENT_TYPES.get(str(wire.event.get("type")))
+    if wire_type is None:
+        return
+    nested = parse_wire_event({**wire.event, "type": wire_type})
+    if nested is None:
+        return
+    await app.stream.on_subagent_wire(wire.stream_id, nested, wire.usage)
+
+
+async def _handle_subagent_cli_activity(app: "HarnessApp", wire: SubagentCliActivity) -> None:
+    parsed = [w for e in wire.events if (w := parse_wire_event(e)) is not None]
+    await app.stream.on_cli_activity_wire(parsed)
+
+
+async def _handle_subagent_notice(app: "HarnessApp", wire: SubagentNotice) -> None:
+    await app.stream.on_subagent_notice(wire.stream_id, wire.message)
+
+
+async def _handle_subagent_model(app: "HarnessApp", wire: SubagentModel) -> None:
+    await app.stream.on_subagent_model(wire.stream_id, wire.model)
+
+
+async def _handle_subagent_thinking(app: "HarnessApp", wire: SubagentThinking) -> None:
+    await app.stream.on_subagent_thinking(wire.stream_id, wire.level)
+
+
+async def _handle_subagent_usage(app: "HarnessApp", wire: SubagentUsage) -> None:
+    await app.stream.on_subagent_usage(wire.stream_id, usage_from_dump(wire.usage))
+
+
+async def _handle_workflow_spawned(app: "HarnessApp", wire: WorkflowSpawned) -> None:
+    await app._on_workflow_spawn(
+        wire.stream_id, wire.spawn_type, wire.task, wire.parent_tool_call_id
+    )
+
+
+async def _handle_workflow_started(app: "HarnessApp", wire: WorkflowStarted) -> None:
+    app.stream.claim_workflow_card(wire.tool_call_id, wire.title)
+
+
+async def _handle_workflow_logged(app: "HarnessApp", wire: WorkflowLogged) -> None:
+    app._on_workflow_log(wire.tool_call_id, wire.message)
+
+
+async def _handle_workflow_finished(app: "HarnessApp", wire: WorkflowFinished) -> None:
+    app.stream.finish_workflow_card(wire.tool_call_id, wire.outcome, wire.failed)
+
+
+async def _handle_workflow_spawn_finished(app: "HarnessApp", wire: WorkflowSpawnFinished) -> None:
+    app.stream.finish_workflow_child(wire.stream_id, wire.report)
+
+
+async def _handle_session_ttft(app: "HarnessApp", wire: SessionTtft) -> None:
+    app.stream.on_ttft(wire.seconds)
+
+
+async def _handle_session_mode_changed(app: "HarnessApp", _wire: SessionModeChanged) -> None:
+    app._refresh_mode_display()
+
+
+async def _handle_session_notice(app: "HarnessApp", wire: SessionNotice) -> None:
+    app.session.on_notice(wire.message)
+
+
+async def _handle_session_renamed(app: "HarnessApp", wire: SessionRenamed) -> None:
+    app.session.on_rename(wire.from_, wire.to)
+
+
+async def _handle_tasks_changed(app: "HarnessApp", _wire: TasksChanged) -> None:
+    app.activity.on_tasks_changed()
+
+
+async def _handle_jobs_changed(app: "HarnessApp", _wire: JobsChanged) -> None:
+    app.activity.on_jobs_changed()
+
+
+async def _handle_compaction_started(app: "HarnessApp", _wire: CompactionStarted) -> None:
+    app.session.on_compact_start()
+
+
+async def _handle_compaction_finished(app: "HarnessApp", wire: CompactionFinished) -> None:
+    if wire.before is not None and wire.after is not None:
+        app.session.on_compact(wire.before, wire.after)
+
+
+async def _handle_turn_started(app: "HarnessApp", _wire: TurnStarted) -> None:
+    # The pure-wire pump never calls StreamRenderer.on_events, so turn.started
+    # is the only run boundary it sees — this is where the per-run reset lives
+    # (stale text_open reopening into the new turn was the leak fixed for
+    # on_events in commit 23462072; stale tool_group/solo_tool would splice the
+    # new turn's first tool call into the previous turn's group).
+    #
+    # Deliberately NOT a per-agent-run reset: an approval round inside a turn
+    # starts a fresh agent.run on the harness side but publishes nothing on the
+    # wire, so tool cards either side of an approval share one group when the
+    # continuation opens with more tool calls. The old on_events path reset per
+    # run and split them — but the persisted history carries no approval marker,
+    # so session replay (session_view.replay_history) groups that same burst as
+    # ONE run. Keeping the group across the approval is what makes the live
+    # transcript and a resumed one agree; text, thinking, a user prompt, an
+    # ask_user call, and a workflow spawn still break the run as before.
+    app.stream.begin_run()
+
+
+async def _handle_turn_usage(app: "HarnessApp", wire: TurnUsage) -> None:
+    # Folded into the status bar's live "+N" counter on the next flush tick
+    # (flush_streams syncs it to the StatusBar reactive); begin_run zeroes it.
+    app.stream.live_run_tokens = wire.total_tokens
+
+
+async def _handle_turn_finished(app: "HarnessApp", _wire: TurnFinished) -> None:
+    # The run-end counterpart of turn.started: on_events finalized the trailing
+    # thought/text block when the stream generator ran dry; on the wire that
+    # moment is turn.finished (published after the outcome persists, before
+    # run_turn returns — so it lands ahead of TurnMeta once _run_turn has
+    # drained the pump). Interrupted turns publish it too, so a cancelled
+    # thought still collapses to its preview.
+    app.stream.end_run()
+
+
+def _approval_args(raw: Any) -> dict:
+    """The wire carries the deferred call's ``args`` as-is — a dict for native
+    tool calls, occasionally a JSON string depending on the model's tool-call
+    encoding. ApprovalPanel renders a dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            loaded = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
+def _question_from_dict(d: dict) -> Question:
+    return Question(
+        question=str(d.get("question", "")),
+        header=str(d.get("header", "")),
+        multi=bool(d.get("multi", False)),
+        options=[
+            Choice(label=str(c.get("label", "")), description=c.get("description"))
+            for c in d.get("options", [])
+        ],
+    )
+
+
+def _ask_payload(panel: InteractionPanel, result: Any) -> dict:
+    """Map a panel's local verdict onto the answer contract SessionHost's parked
+    awaits read (see host._request_approval/_ask_user/_present_plan)."""
+    if isinstance(panel, ApprovalPanel):
+        return {"approve": bool(result)}
+    if isinstance(panel, AskUserPanel):
+        return {"cancel": True} if result is None else {"answers": result}
+    if isinstance(panel, PlanCard):
+        # "Keep planning" (bare Esc or typed revise-feedback) travels as a real
+        # choice so the feedback survives the round-trip; the host only falls
+        # back to cancel for answers it cannot read.
+        return {"choice": result.choice, "feedback": result.feedback}
+    return {}
+
+
+async def _handle_ask_pending(app: "HarnessApp", wire: AskPending) -> None:
+    await app._mount_ask(wire)
+
+
+async def _handle_ask_resolved(app: "HarnessApp", wire: AskResolved) -> None:
+    app._dismiss_ask(wire.id)
+
+
+# Every wire type not listed here (turn.error, session.status, stream.gap,
+# steer.accepted) is a deliberate no-op in 3a: error/status/gap belong to
+# 3b/remote clients. turn.finished is consumed only for its run-boundary
+# meaning (finalize the trailing block); its output/usage payload is not
+# rendered from the wire in 3a — _run_turn still reads the outcome in-process.
+_WIRE_HANDLERS: dict[type, _WireHandler] = {
+    TextDelta: _handle_stream_wire,
+    ThinkingDelta: _handle_stream_wire,
+    ToolCall: _handle_stream_wire,
+    ToolResult: _handle_stream_wire,
+    SubagentEvent: _handle_subagent_event,
+    SubagentCliActivity: _handle_subagent_cli_activity,
+    SubagentNotice: _handle_subagent_notice,
+    SubagentModel: _handle_subagent_model,
+    SubagentThinking: _handle_subagent_thinking,
+    SubagentUsage: _handle_subagent_usage,
+    WorkflowSpawned: _handle_workflow_spawned,
+    WorkflowStarted: _handle_workflow_started,
+    WorkflowLogged: _handle_workflow_logged,
+    WorkflowFinished: _handle_workflow_finished,
+    WorkflowSpawnFinished: _handle_workflow_spawn_finished,
+    SessionTtft: _handle_session_ttft,
+    SessionModeChanged: _handle_session_mode_changed,
+    SessionNotice: _handle_session_notice,
+    SessionRenamed: _handle_session_renamed,
+    TasksChanged: _handle_tasks_changed,
+    JobsChanged: _handle_jobs_changed,
+    CompactionStarted: _handle_compaction_started,
+    CompactionFinished: _handle_compaction_finished,
+    TurnStarted: _handle_turn_started,
+    TurnUsage: _handle_turn_usage,
+    TurnFinished: _handle_turn_finished,
+    AskPending: _handle_ask_pending,
+    AskResolved: _handle_ask_resolved,
+}
 
 
 class HarnessApp(App):
@@ -163,30 +434,29 @@ class HarnessApp(App):
         self.activity = ActivityMonitor(self)
         self.queue = QueueController(self)
         self.pickers = ModelPickers(self)
-        self.harness.bind_ui(
-            request_approval=self._request_approval,
-            ask_user=self._ask_user,
-            on_present_plan=self._present_plan,
-            on_workflow_spawn=self._on_workflow_spawn,
-            on_workflow_start=self.stream.claim_workflow_card,
-            on_workflow_log=self._on_workflow_log,
-            on_workflow_done=self.stream.finish_workflow_card,
-            on_workflow_spawn_done=self.stream.finish_workflow_child,
-            on_subagent_event=self.stream.on_subagent_event,
-            on_subagent_notice=self.stream.on_subagent_notice,
-            on_subagent_model=self.stream.on_subagent_model,
-            on_subagent_thinking=self.stream.on_subagent_thinking,
-            on_subagent_usage=self.stream.on_subagent_usage,
-            on_cli_activity=self.stream.on_cli_activity,
-            on_ttft=self.stream.on_ttft,
-            on_mode_change=self._refresh_mode_display,
-            on_tasks_changed=self.activity.on_tasks_changed,
-            on_jobs_changed=self.activity.on_jobs_changed,
-            on_compact=self.session.on_compact,
-            on_compact_start=self.session.on_compact_start,
-            on_notice=self.session.on_notice,
-            on_rename=self.session.on_rename,
-        )
+        # The event pump's task (started in on_mount, cancelled in on_unmount).
+        # A plain asyncio task, NOT a Textual worker: workers count toward
+        # app.workers.wait_for_complete(), which a never-ending pump would
+        # block forever.
+        self._pump_task: Task[None] | None = None
+        # Drain barrier bookkeeping (see _drain_pump): the seq of the last bus
+        # event the pump has finished dispatching, and a wake-up the pump sets
+        # after every event so a waiter can block instead of polling.
+        self._pump_seq = 0
+        self._pump_advanced = Event()
+        # Panels mounted for parked asks, keyed by ask id: ask.pending mounts one,
+        # ask.resolved (local OR another client's answer, or an interrupt) removes
+        # it. Value is (panel, focus-before-mount) so removal restores focus the
+        # way run_panel's finally always did.
+        self._ask_panels: dict[str, tuple[InteractionPanel, Any]] = {}
+        self._bus = EventBus()
+        # The in-process SessionHost (the SOLE bind_ui consumer; the pump is the
+        # only path events reach the renderer). Built in on_mount, NOT here: its
+        # __init__ spawns the worker task and reads the loop clock, and the real
+        # launch path constructs HarnessApp synchronously before .run() starts
+        # the loop (tests build it inside an anyio loop, which is why they never
+        # noticed). Bare annotation — reading it before mount is a bug.
+        self.host: SessionHost
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
@@ -210,6 +480,15 @@ class HarnessApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
+        # Attach the pump before anything else touches the harness: an event
+        # published before a subscriber attaches (no after_seq backlog replay
+        # for a fresh subscription — see EventBus.attach) is gone for good.
+        self._bind_host()
+        # attach() runs here, synchronously, rather than inside the pump task:
+        # create_task only schedules the body, so attaching there would leave a
+        # window (until the loop next yields) where a published event has no
+        # subscriber yet and is gone for good.
+        self._pump_task = create_task(self._event_pump(self.host.bus.attach()))
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
@@ -277,6 +556,96 @@ class HarnessApp(App):
         if getattr(self.harness, "trust_prompt", None) is not None:
             self.run_worker(prompt_project_trust(self), group="trust", exit_on_error=False)
 
+    def _bind_host(self) -> None:
+        """Build the in-process SessionHost (loop-bound, so on_mount not
+        __init__ — see the ``self.host`` annotation there). The harness's session
+        claim stays on the harness (claim hygiene) — the host gets claim=None so
+        it never tries to flock a second open-file-description in this process
+        (self-denial: the harness already holds it). autonomous_wake=False: the
+        ActivityMonitor owns wake in-process (the host's own driver is the
+        daemon's; two live drivers would race for the same job-finished digests
+        — see SessionHost.__init__)."""
+        self.host = SessionHost(self.harness, self._bus, autonomous_wake=False)
+        # The wake's job-settle trigger must run synchronously inside the jobs
+        # registry's on_change callback: jobs.wait() marks a completion
+        # wake-consumed the instant it returns, so a wake delivered one bus hop
+        # later (jobs.changed -> pump -> activity) already sees
+        # has_finished_pending() False and never fires. Wrap the host's callback
+        # (bound in SessionHost.__init__) so the wake check stays in the
+        # callback; the pump still delivers jobs.changed for the panel repaint.
+        jobs = self.harness.deps.jobs
+        host_jobs_changed = jobs.on_change
+
+        def _jobs_changed() -> None:
+            if host_jobs_changed is not None:
+                host_jobs_changed()
+            self.activity.maybe_wake()
+
+        jobs.on_change = _jobs_changed
+
+    async def _event_pump(self, sub: Subscription) -> None:
+        """Render from the bus: the sole path from harness events (bind_ui, now
+        exclusively wired to ``self.host``) to the widgets. One Subscription for
+        the app's whole lifetime — the same shape a phase-4 remote client would
+        get. Dies with the app; see on_unmount for the host worker's own
+        teardown, which this pump does NOT own."""
+        try:
+            while True:
+                event = await sub.next_event()
+                if event is None:
+                    continue
+                wire = parse_wire_event({"type": event.type, **event.data})
+                if wire is None:
+                    # Unknown type or a payload that failed validation. Debug,
+                    # not warning: a newer daemon's vocabulary is expected to
+                    # outrun an older client's, and this is the one place a
+                    # silently dropped event leaves any trace.
+                    logger.debug("event pump: dropped %s (seq %s)", event.type, event.seq)
+                if wire is not None:
+                    try:
+                        await self._dispatch_wire(wire)
+                    except Exception:  # noqa: BLE001 - one bad event must not blind the app
+                        logger.exception("event pump: dispatch failed for %s", type(wire).__name__)
+                # Advance past unknown/unhandled events too: the barrier counts
+                # bus seqs, not renders, so an ignored event must not stall it.
+                self._pump_seq = event.seq
+                self._pump_advanced.set()
+        finally:
+            sub.close()
+
+    async def _drain_pump(self, timeout: float = 2.0) -> None:
+        """Block until the pump has dispatched every event published so far.
+
+        ``host.run_turn`` returns the moment the host's turn task completes,
+        but the turn's tail — the last tool.result, text.delta, turn.finished —
+        is still sitting in the subscription queue until the pump gets the
+        loop back. Anything _run_turn does after the await (mount TurnMeta,
+        settle pending rows, drain the next queued prompt) would otherwise run
+        ahead of the rendering it is supposed to follow, so cards land below
+        the duration stamp or the next user message. The target is the bus's
+        seq at call time, so events published *after* this starts (a sub-agent
+        still streaming) don't extend the wait. Bounded: a wedged pump costs
+        one late stamp, never a stuck turn worker."""
+        target = self.host.bus.last_seq
+        deadline = get_running_loop().time() + timeout
+        while self._pump_seq < target:
+            if self._pump_task is None or self._pump_task.done():
+                return
+            remaining = deadline - get_running_loop().time()
+            if remaining <= 0:
+                logger.warning("event pump: drain barrier timed out at seq %s", self._pump_seq)
+                return
+            # clear-then-wait with no await in between: the pump can only set
+            # the event while we are suspended in wait(), so no wake-up is lost.
+            self._pump_advanced.clear()
+            with suppress(TimeoutError):
+                await wait_for(self._pump_advanced.wait(), remaining)
+
+    async def _dispatch_wire(self, wire: WireEvent) -> None:
+        handler = _WIRE_HANDLERS.get(type(wire))
+        if handler is not None:
+            await handler(self, wire)
+
     def _announce_session_defaults(self) -> None:
         """One-line advisor/thinking status at session start, so a setting
         inherited from .env or restored with the session is visible without
@@ -324,6 +693,25 @@ class HarnessApp(App):
     async def on_unmount(self) -> None:
         """Jobs are process-scoped — kill any still running when the app exits so
         no detached shell or agent run is left behind, and close MCP connections."""
+        # SessionHost's queue-worker task (loop.create_task in __init__) is plain
+        # asyncio, not a Textual worker, so app exit doesn't cancel it for us —
+        # left running, it warns at interpreter shutdown. interrupt() covers a
+        # turn parked via host.submit() (unused by the TUI, which calls
+        # host.run_turn directly, but cheap to cover); the worker cancel below is
+        # what actually silences the log. Deliberately NOT host.aclose() — see
+        # the module's teardown-order note: that waits for in-flight autoname,
+        # the opposite of this snappy-exit path.
+        self.host.interrupt()
+        # The pump is a plain asyncio task (see _pump_task) — cancel it here,
+        # before the host worker goes away, so it can't pull another event
+        # mid-teardown.
+        if self._pump_task is not None:
+            self._pump_task.cancel()
+            with suppress(CancelledError):
+                await self._pump_task
+        self.host._worker.cancel()
+        with suppress(CancelledError):
+            await self.host._worker
         # Persist session duration before tearing down. Fold this run's active
         # time into the total and force the save: the final segment must land
         # even when history is unchanged (an idle exit would otherwise skip the
@@ -442,6 +830,7 @@ class HarnessApp(App):
             log = self.query_one("#log", VerticalScroll)
             await log.mount(UserMessage(text))
             self.stream.current_assistant = None
+            self.stream.text_open = False
             self._turn_worker = self.run_worker(self._run_turn(text, attachments), exclusive=True)
         finally:
             self._turn_starting = False
@@ -470,6 +859,7 @@ class HarnessApp(App):
         # exception escape into the slash-command dispatcher.
         try:
             self.stream.current_assistant = None
+            self.stream.text_open = False
             self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
         except Exception as exc:  # noqa: BLE001 — a failed spawn must not wedge the UI
             self._turn_worker = None
@@ -502,9 +892,22 @@ class HarnessApp(App):
         self.stream.prune_completed()
         log = self.query_one("#log", VerticalScroll)
         try:
-            await self.harness.run_turn(
-                text, event_stream_handler=self.stream.on_events, attachments=attachments
-            )
+            await self.host.run_turn(text, attachments=attachments)
+            # The turn is complete and persisted; only its rendering is still
+            # in flight. status.busy stays set until the finally below, so an
+            # Esc landing in this window would cancel the worker and relabel a
+            # finished turn "cancelled" — error card, paused queue, a settle
+            # sweep over rows a queued tool.result was about to finish. Absorb
+            # it: the pump is its own task and keeps rendering regardless; at
+            # worst the stamp lands above the last card.
+            try:
+                await self._drain_pump()
+            except CancelledError:
+                # 3.11+ counts the swallowed request on the task; clear it so a
+                # later wait_for/timeout in this worker doesn't read it as its own.
+                uncancel = getattr(current_task(), "uncancel", None)
+                if uncancel is not None:
+                    uncancel()
             # Stamp the just-finished turn's duration under its reply (success
             # only; cancelled/errored turns surface an ErrorMessage instead).
             elapsed = format_duration(time.monotonic() - self.status.turn_start, precise=True)
@@ -521,6 +924,17 @@ class HarnessApp(App):
             self.stream.settle_pending("cancelled")
             raise
         except Exception as exc:  # keep the session alive on any turn failure
+            # Let the failed turn's last events render before the error card
+            # and the settle sweep below, or the sweep marks a row failed that
+            # a queued tool.result was about to finish. (The cancel arm above
+            # deliberately stays synchronous — it is unwinding a cancel.)
+            await self._drain_pump()
+            # The host publishes turn.error here, never turn.finished, so the
+            # wire never reaches the run-end finalize: the thought/text the turn
+            # died on would stay open (expanded thought, unfinalized reply)
+            # above the error card until the next turn's first event swept it
+            # as stale. Close it the way the finished path does.
+            self.stream.end_run()
             self.queue.paused = True
             detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
             self.append_log(ErrorMessage(detail))
@@ -802,37 +1216,66 @@ class HarnessApp(App):
             if picker is not None:
                 picker.note_deleted(message.session_id)
 
-    # --- Callbacks the harness reaches the user through (see bind_ui) ---
+    # --- Interaction panels (event-driven, via ask.pending / ask.resolved) ---
+    # SessionHost is the sole bind_ui consumer: approval/ask/plan park an ask
+    # and publish ask.pending; the pump mounts the matching panel here. Answers
+    # ride host.answer_ask; ask.resolved — published for a LOCAL answer, for
+    # ANOTHER client's answer, and for an interrupt's cancel — is the single
+    # dismissal path (_dismiss_ask), so a panel can never outlive its ask.
 
-    async def _request_approval(self, call) -> DeferredToolApprovalResult | bool:
-        self.activity.desktop_notify(
-            "Approval needed",
-            f"Tool: {call.tool_name}",
-            "approval_needed",
-        )
-        approved = await run_panel(self, ApprovalPanel(call.tool_name, call.args_as_dict()))
-        return True if approved else ToolDenied("denied by user")
+    def _panel_for_ask(self, wire: AskPending) -> InteractionPanel | None:
+        payload = wire.payload
+        if wire.kind == "approval":
+            tool_name = str(payload.get("tool_name") or "")
+            self.activity.desktop_notify("Approval needed", f"Tool: {tool_name}", "approval_needed")
+            return ApprovalPanel(tool_name, _approval_args(payload.get("args")))
+        if wire.kind == "question":
+            questions = [_question_from_dict(q) for q in payload.get("questions", [])]
+            prompt = questions[0].question if questions else ""
+            self.activity.desktop_notify("Question from agent", prompt, "ask_user")
+            return AskUserPanel(questions)
+        if wire.kind == "plan":
+            summary = str(payload.get("summary") or "")
+            steps = [str(s) for s in payload.get("steps", [])]
+            choices = [
+                Choice(label=str(c.get("label", "")), description=c.get("description"))
+                for c in payload.get("choices", [])
+            ]
+            self.activity.desktop_notify("Plan ready", summary, "ask_user")
+            # Refresh the TaskPanel title now that deps.plan is set.
+            self.activity.render_tasks()
+            return PlanCard(summary, steps, choices)
+        return None
 
-    async def _ask_user(self, questions):
-        """Put a structured question to the user and return their {header:
-        answer} mapping, or None if they dismissed it. Inline panel, not a
-        modal: the transcript stays scrollable while the agent waits, and a
-        cancelled turn removes the panel via run_panel's finally."""
-        prompt = questions[0].question if questions else ""
-        self.activity.desktop_notify("Question from agent", prompt, "ask_user")
-        return await run_panel(self, AskUserPanel(questions))
+    async def _mount_ask(self, wire: AskPending) -> None:
+        panel = self._panel_for_ask(wire)
+        if panel is None:
+            return
+        previous = await mount_panel(self, panel)
+        self._ask_panels[wire.id] = (panel, previous)
+        self.run_worker(self._answer_ask(wire.id, panel), group="asks")
 
-    async def _present_plan(self, summary, steps, choices):
-        """Put the finished plan to the user as an inline card and return a
-        PlanDecision (the chosen execution label, or "Keep planning" with revise-feedback).
-        Inline panel, not a modal — the transcript stays scrollable; a cancelled turn
-        removes the card via run_panel's finally. The plan's summary/steps already live
-        on deps.plan (set by present_plan), so the pinned title and Ctrl+P overlay stay
-        in sync regardless of the choice made here."""
-        self.activity.desktop_notify("Plan ready", summary, "ask_user")
-        # Refresh the TaskPanel title now that deps.plan is set.
-        self.activity.render_tasks()
-        return await run_panel(self, PlanCard(summary, steps, choices))
+    async def _answer_ask(self, ask_id: str, panel: InteractionPanel) -> None:
+        """Local verdict → host.answer_ask. The panel itself comes down off the
+        ask.resolved this answer triggers (a single dismissal path)."""
+        try:
+            result = await panel.result
+        except CancelledError:
+            # The ask was resolved elsewhere before the user answered (an
+            # interrupt's cancel, or another client). Nothing to send.
+            return
+        self.host.answer_ask(ask_id, _ask_payload(panel, result))
+
+    def _dismiss_ask(self, ask_id: str) -> None:
+        entry = self._ask_panels.pop(ask_id, None)
+        if entry is None:
+            return
+        panel, previous = entry
+        if not panel.result.done():
+            # An interrupt/remote answer resolved the ask with the panel still
+            # awaiting a local verdict — release the _answer_ask worker.
+            panel.result.cancel()
+        unmount_panel(self, panel, previous)
 
     async def _on_workflow_spawn(
         self, stream_id: str, type_: str, task: str, parent_id: str

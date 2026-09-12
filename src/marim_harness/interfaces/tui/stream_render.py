@@ -1,30 +1,36 @@
-"""The event→widget streaming engine — extracted from HarnessApp.
+"""The wire-event→widget streaming engine — extracted from HarnessApp.
 
-Turns a turn's (and each sub-agent's) streamed events into the log's live
+Turns a turn's (and each sub-agent's) session events into the log's live
 AssistantMessage / ToolCallWidget / SubAgentWidget tree. Owns all per-turn stream
-state; reaches the app and the status presenter through ``self.app``."""
+state; reaches the app and the status presenter through ``self.app``.
+
+The renderer consumes the **wire vocabulary** (``server/wire_events.py``), not
+pydantic-ai stream events: it is a client of the session event bus, so it must
+render identically whether the events came from this process or a daemon. The
+one thing that costs is start-vs-delta — the wire flattens ``PartStartEvent`` and
+``PartDeltaEvent`` into a single ``text.delta``/``thinking.delta`` type, so
+"is a block open" is reconstructed from sink state here (see ``_on_text``)."""
 
 import abc
 import re
 import time
 from dataclasses import dataclass, field
-from typing import cast
 
-from pydantic_ai.messages import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-)
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 
 from ...binary_safe import render_binary_safe
-from ...usage import resolve_cost
+from ...server.schema import STREAM_EVENT_TYPES
+from ...server.wire_events import (
+    TextDelta,
+    ThinkingDelta,
+    ToolCall,
+    ToolResult,
+    WireEvent,
+    parse_wire_event,
+)
+from ...stream_events import event_to_dict
+from ...usage import resolve_cost, usage_from_dump
 from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget
 from .widgets import (
     AssistantMessage,
@@ -36,45 +42,24 @@ from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
 
 
-def _is_text_start(event) -> bool:
-    return isinstance(event, PartStartEvent) and isinstance(event.part, TextPart)
+def wire_from_event(event) -> WireEvent | None:
+    """Convert one pydantic-ai stream event into its wire model, or None when the
+    event isn't part of the surfaced vocabulary.
 
-
-def _is_text_delta(event) -> bool:
-    return isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta)
-
-
-def _is_thinking_start(event) -> bool:
-    return isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart)
-
-
-def _is_thinking_delta(event) -> bool:
-    return isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta)
-
-
-def _is_tool_call(event) -> bool:
-    return isinstance(event, FunctionToolCallEvent)
-
-
-def _is_tool_result(event) -> bool:
-    return isinstance(event, FunctionToolResultEvent)
-
-
-def status_from_part(part) -> str:
-    """Map a tool-result part to a ToolCallWidget status. A ``ToolReturnPart``
-    carries an ``outcome`` of 'success'/'failed'/'denied' (pydantic-ai sets
-    'denied' when an approval round rejects the call); a ``RetryPromptPart`` has
-    no outcome and represents a validation/ModelRetry failure. Without this the
-    widget defaulted every result to 'done', so a denied write_file rendered a
-    green ✓ instead of the ✕ the widget was built to show."""
-    outcome = getattr(part, "outcome", None)
-    if outcome == "denied":
-        return "denied"
-    if outcome == "failed":
-        return "failed"
-    if getattr(part, "part_kind", None) == "retry-prompt":
-        return "failed"
-    return "done"
+    TEMPORARY (phase 3a): the app still hands the renderer raw pydantic-ai events
+    on three legacy paths (``on_events`` / ``on_subagent_event`` /
+    ``on_cli_activity``). Routing them through the *same* conversion the
+    ``SessionHost`` publishes with (``event_to_dict`` + ``STREAM_EVENT_TYPES``)
+    is what makes the legacy paths and the bus path render identically — and
+    what keeps this module free of ``pydantic_ai.messages``. Deleted once the app
+    feeds the renderer from the bus alone."""
+    obj = event_to_dict(event)
+    if obj is None:
+        return None
+    wire_type = STREAM_EVENT_TYPES.get(str(obj.pop("type", "")))
+    if wire_type is None:
+        return None
+    return parse_wire_event({"type": wire_type, **obj})
 
 
 def tool_result_text(content: object) -> str:
@@ -212,6 +197,10 @@ class _SubStreamState:
     solo: "ToolCallWidget | None" = field(default=None)
     assistant: "AssistantMessage | None" = field(default=None)
     thinking: "ThinkingWidget | None" = field(default=None)
+    # Whether ``assistant`` is still the OPEN text block (see _StreamSink.
+    # get_text_open). Distinct from ``assistant is not None``, which outlives the
+    # block as the stream's resting reply.
+    text_open: bool = field(default=False)
 
 
 class _StreamSink(abc.ABC):
@@ -255,20 +244,36 @@ class _StreamSink(abc.ABC):
     @abc.abstractmethod
     def set_thinking(self, widget) -> None: ...
 
+    @abc.abstractmethod
+    def get_text_open(self) -> bool:
+        """Whether this stream's assistant message is still the OPEN text block.
+
+        The wire has no part-start marker (``text.delta`` covers both), so the
+        renderer reconstructs it: a delta appends while the block is open and
+        starts a NEW message once anything closed it. This can't be
+        ``get_assistant() is not None`` — that pointer deliberately survives as
+        the turn's resting reply after the block is finalized (and the app reads
+        it), which would silently append the next part to the previous message."""
+
+    @abc.abstractmethod
+    def set_text_open(self, value: bool) -> None: ...
+
     def on_text(self) -> None:  # noqa: B027
         """Called when the stream starts a text part (title status, sub only)."""
 
     def on_tool(self, tool_name: str, args: dict) -> None:  # noqa: B027
         """Called when the stream makes a tool call (card status, sub only)."""
 
-    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
+    async def intercept_tool(
+        self, tool_call_id: str, tool_name: str, args: dict, container: Widget
+    ) -> bool:
         """Give the scope first refusal on a tool call; return True to claim it and
         skip the default ToolCallWidget path. ``container`` is the dispatch-narrowed
         (non-None) mount target. Default: never intercepts."""
         return False
 
     async def _claim_spawn(
-        self, event, args: dict, container: Widget, parent_id: str | None
+        self, tool_call_id: str, args: dict, container: Widget, parent_id: str | None
     ) -> "SubAgentWidget":
         """Shared spawn_agent claim for both scopes: build the live card, register
         it so its own stream (forwarded by the runner under this tool_call_id) can
@@ -278,15 +283,15 @@ class _StreamSink(abc.ABC):
         order (None for a top-level spawn). Returns the card; both call sites
         currently ignore it (exposed for tests and future callers)."""
         widget = self._r.mount_spawn_widget(args)
-        widget.stream_id = event.part.tool_call_id
+        widget.stream_id = tool_call_id
         widget.parent_id = parent_id
-        self._r.tool_widgets[event.part.tool_call_id] = widget
+        self._r.tool_widgets[tool_call_id] = widget
         self._r.ensure_pane(widget)
         self.set_run(None, None)
         await container.mount(widget)
         return widget
 
-    def on_result(self, event) -> None:  # noqa: B027
+    def on_result(self, tool_call_id: str) -> None:  # noqa: B027
         """Called after a tool result is rendered (cleanup hook)."""
 
 
@@ -323,15 +328,23 @@ class _TopLevelSink(_StreamSink):
     def set_thinking(self, widget) -> None:
         self._r.current_thinking = widget
 
-    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
+    def get_text_open(self) -> bool:
+        return self._r.text_open
+
+    def set_text_open(self, value: bool) -> None:
+        self._r.text_open = value
+
+    async def intercept_tool(
+        self, tool_call_id: str, tool_name: str, args: dict, container: Widget
+    ) -> bool:
         # Every spawn_agent gets a live SubAgentWidget, mounted standalone so it
         # isn't buried in a tool group. A foreground spawn streams its steps into
         # the card; a background/detached spawn (auto or explicit background=True)
         # returns a job-id handoff that holds the card pending until the job
         # settles and fills it (note_detached_spawn / fill_finished_detached_cards)
         # — so a backgrounded spawn no longer renders a misleading ✓ tool row.
-        if event.part.tool_name == "spawn_agent":
-            await self._claim_spawn(event, args, container, parent_id=None)
+        if tool_name == "spawn_agent":
+            await self._claim_spawn(tool_call_id, args, container, parent_id=None)
             return True
         # ask_user (a user-facing Q&A) and advisor (the reviewer's guidance)
         # are conversation content, not mechanical work — keep them out of the
@@ -339,26 +352,26 @@ class _TopLevelSink(_StreamSink):
         # Render a normal tool widget but mount it standalone and break the
         # run on both sides (same rationale as the foreground spawn_agent
         # case above).
-        if event.part.tool_name in _STANDALONE_TOOLS:
+        if tool_name in _STANDALONE_TOOLS:
             widget = ToolCallWidget(
-                event.part.tool_name,
+                tool_name,
                 args,
                 workspace_root=self._r.app.harness.deps.workspace.root,
             )
-            self._r.tool_widgets[event.part.tool_call_id] = widget
+            self._r.tool_widgets[tool_call_id] = widget
             self.set_run(None, None)
             await container.mount(widget)
             return True
         return False
 
-    def on_result(self, event) -> None:
+    def on_result(self, tool_call_id: str) -> None:
         # A foreground spawn's stream_id is its tool_call_id; drop its sub-stream
         # state once the spawn returns. The sub-agent's final text block is the last
         # thing it streamed, so no later event ever finalized it (the per-event
         # finalize in dispatch fires on the *next* event) — finalize it here so a
         # busy-fan-out streaming-duplication is healed to a clean reparse before the
         # card settles. See AssistantMessage.finalize.
-        state = self._r._sub_streams.pop(event.tool_call_id, None)
+        state = self._r._sub_streams.pop(tool_call_id, None)
         if state is not None and state.assistant is not None:
             state.assistant.finalize()
 
@@ -403,14 +416,23 @@ class _SubAgentSink(_StreamSink):
     def set_thinking(self, widget) -> None:
         self._r._sub_streams.setdefault(self._sid, _SubStreamState()).thinking = widget
 
-    async def intercept_tool(self, event, args: dict, container: Widget) -> bool:
+    def get_text_open(self) -> bool:
+        state = self._r._sub_streams.get(self._sid)
+        return state.text_open if state is not None else False
+
+    def set_text_open(self, value: bool) -> None:
+        self._r._sub_streams.setdefault(self._sid, _SubStreamState()).text_open = value
+
+    async def intercept_tool(
+        self, tool_call_id: str, tool_name: str, args: dict, container: Widget
+    ) -> bool:
         # A nested spawn_agent gets the same live card as a top-level one, mounted
         # into this sub-agent's pane and tagged with this agent as its parent. The
         # child's own stream is already forwarded by the runner under the nested
         # spawn's tool_call_id (subagents/runner.py); registering the card here is
         # what lets on_subagent_event find it instead of dropping the stream.
-        if event.part.tool_name == "spawn_agent":
-            await self._claim_spawn(event, args, container, parent_id=self._parent.stream_id)
+        if tool_name == "spawn_agent":
+            await self._claim_spawn(tool_call_id, args, container, parent_id=self._parent.stream_id)
             return True
         return False
 
@@ -430,6 +452,13 @@ class StreamRenderer:
         self.app = app
         self.current_assistant: AssistantMessage | None = None
         self.current_thinking: ThinkingWidget | None = None
+        # Whether current_assistant is still the OPEN text block for the
+        # top-level stream (see _StreamSink.get_text_open). A stale True left
+        # over from a prior run would make the next run's first text.delta
+        # append into that run's (already finalized) reply — see on_events'
+        # trailing comment and start_turn/start_system_turn, all of which clear
+        # this alongside current_assistant at every run boundary.
+        self.text_open = False
         self.tool_widgets: dict[str, ToolCallWidget | SubAgentWidget] = {}
         # Workflow RUN cards, keyed by the run_workflow tool_call_id. A
         # separate map from tool_widgets: that key is already taken by the
@@ -484,6 +513,7 @@ class StreamRenderer:
         self._anchored_on_overflow = False
         self.current_assistant = None
         self.current_thinking = None
+        self.text_open = False
         self.tool_widgets.clear()
         self.tool_group = None
         self.solo_tool = None
@@ -943,20 +973,43 @@ class StreamRenderer:
         widget.pane = pane
         return pane
 
-    async def on_events(self, ctx, events) -> None:
+    def begin_run(self) -> None:
+        """Per-run reset, shared by ``on_events`` (the in-process stream path)
+        and the pump's ``turn.started`` handler. Both must agree on what a run
+        boundary clears: a wire-driven turn that resets less than the stream
+        path leaks the prior turn's state into this one."""
         # Fresh run: clear any in-flight tally from a prior approval round so the
         # next round's usage replaces it rather than stacking (each agent.run gets
         # its own ctx.usage, cumulative for that run).
         self.live_run_tokens = 0
-        # A new run starts a fresh run of consecutive tool calls.
+        # A new run starts a fresh run of consecutive tool calls. Left stale, the
+        # next turn's first tool call would join the previous turn's group
+        # widget — mounted above the new user message.
         self.tool_group = None
         self.solo_tool = None
+        # A run boundary is always a part boundary: close any block left open by
+        # the prior run (e.g. one that ended on assistant text) so this run's
+        # first text.delta always opens a fresh message rather than appending
+        # into the previous turn's finalized reply — the old part-start path got
+        # this for free (a new run's text always arrived as a PartStartEvent).
+        self.text_open = False
+
+    async def on_events(self, ctx, events) -> None:
+        self.begin_run()
         sink = _TopLevelSink(self, self._log_container())
         async for event in events:
             # ctx.usage carries the run's live running total (ctx is None in some
             # unit tests); fold it into the status counter via the flush tick.
             self.live_run_tokens = getattr(getattr(ctx, "usage", None), "total_tokens", 0) or 0
             await self.dispatch_stream_event(event, sink)
+        self.end_run()
+
+    def end_run(self) -> None:
+        """Run-end finalize for the top-level stream, shared by ``on_events``
+        and the pump's ``turn.finished`` handler. Per-event finalization only
+        fires when a *following* event arrives (``_finalize_stale_blocks``), so
+        whatever block the run ended on is still open here."""
+        sink = _TopLevelSink(self, self._log_container())
         # A round that ends on a thought (no following text/tool to trigger the
         # per-event cap) still collapses to its preview.
         trailing_thought = sink.get_thinking()
@@ -971,35 +1024,67 @@ class StreamRenderer:
         if trailing_assistant is not None:
             trailing_assistant.finalize()
 
-    async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
+    async def on_wire(self, wire: WireEvent) -> None:
+        """Render one TOP-LEVEL wire stream event (``text.delta`` /
+        ``thinking.delta`` / ``tool.call`` / ``tool.result``), already parsed by
+        the app's pump. Anything else is ignored here — the pump routes the rest
+        of the vocabulary (asks, workflow cards, session status) to its own
+        handlers."""
+        await self.dispatch_wire(wire, _TopLevelSink(self, self._log_container()))
+
+    async def on_subagent_wire(self, stream_id: str, wire: WireEvent, usage=None) -> None:
         """Route a spawned sub-agent's own stream into the SubAgentWidget that owns
-        it. Shares dispatch_stream_event with the top-level handler, but through a
+        it. Shares ``dispatch_wire`` with the top-level handler, but through a
         sub-agent sink that mounts into the widget's pane (in the detail host) and
-        tracks per-stream state. ``usage`` is the run's live RunUsage (or None): its
-        total + cost ride on the breadcrumb card and the full cache split lands on
-        the pane's usage line. Fired on the app's event loop, so direct widget
-        mutation is safe and parallel streams stay race-free by stream_id."""
+        tracks per-stream state. ``usage`` is the run's live usage as a wire dump
+        (or None): its total + cost ride on the breadcrumb card and the full cache
+        split lands on the pane's usage line. Fired on the app's event loop, so
+        direct widget mutation is safe and parallel streams stay race-free by
+        stream_id."""
+        await self._route_subagent(stream_id, wire, usage_from_dump(usage) if usage else None)
+
+    async def on_cli_activity_wire(self, events: list) -> None:
+        """Render a claude-cli model's own tool_use/tool_result as native tool cards
+        in the MAIN transcript. That provider delegates the turn to ``claude -p`` and
+        returns text only (Claude runs its own tools), so these display-only events
+        arrive via this side-channel instead of the turn's own stream — keeping them
+        out of the agent graph (no double-execution). A ``_TopLevelSink`` shares the
+        renderer's current-assistant/run state with the turn stream, so a card
+        mounted here finalizes the in-flight assistant text and the model's next
+        text part opens a fresh message below it — preserving interleaving. Fired on
+        the app's event loop during the live turn, so direct widget mutation is
+        safe."""
+        sink = _TopLevelSink(self, self._log_container())
+        for wire in events:
+            await self.dispatch_wire(wire, sink)
+
+    async def _route_subagent(self, stream_id: str, wire, usage) -> None:
+        """Shared body of the sub-agent stream entry points: fold ``usage`` (a
+        RunUsage or None) onto the owning card and dispatch ``wire`` (or None,
+        for an event outside the surfaced vocabulary) into that agent's pane."""
         parent = self.tool_widgets.get(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
         if usage is not None and usage.total_tokens:
             self.note_subagent_usage(parent, usage)
-        await self.dispatch_stream_event(event, _SubAgentSink(self, parent, stream_id))
+        # The sink is built even for an unroutable event: constructing it is what
+        # (idempotently) ensures the agent's transcript pane exists.
+        sink = _SubAgentSink(self, parent, stream_id)
+        if wire is not None:
+            await self.dispatch_wire(wire, sink)
         self.app.subagents.mark_dirty()  # list/summary tick live while open
 
+    async def on_subagent_event(self, stream_id: str, event, usage=None) -> None:
+        """TEMPORARY (phase 3a) pydantic-ai adapter for :meth:`on_subagent_wire` —
+        see :func:`wire_from_event`. ``usage`` here is the live ``RunUsage``
+        object the runner passes, not a wire dump."""
+        await self._route_subagent(stream_id, wire_from_event(event), usage)
+
     async def on_cli_activity(self, events: list) -> None:
-        """Render a claude-cli model's own tool_use/tool_result as native tool cards
-        in the MAIN transcript. That provider delegates the turn to ``claude -p`` and
-        returns text only (Claude runs its own tools), so these display-only events
-        arrive via this side-channel instead of pydantic_ai's stream — keeping them
-        out of the agent graph (no double-execution). A ``_TopLevelSink`` shares the
-        renderer's current-assistant/run state with ``on_events``, so a card mounted
-        here finalizes the in-flight assistant text and the model's next text part
-        opens a fresh message below it — preserving interleaving. Fired on the app's
-        event loop during the live turn, so direct widget mutation is safe."""
-        sink = _TopLevelSink(self, self._log_container())
-        for event in events:
-            await self.dispatch_stream_event(event, sink)
+        """TEMPORARY (phase 3a) pydantic-ai adapter for
+        :meth:`on_cli_activity_wire` — see :func:`wire_from_event`."""
+        wires = [wire for e in events if (wire := wire_from_event(e)) is not None]
+        await self.on_cli_activity_wire(wires)
 
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the
@@ -1037,116 +1122,103 @@ class StreamRenderer:
         if isinstance(parent, SubAgentWidget):
             parent.set_thinking_level(level)
 
-    async def _on_text_start(
-        self, event: PartStartEvent, sink: "_StreamSink", container: Widget
-    ) -> None:
-        part = cast(TextPart, event.part)
-        sink.set_run(None, None)  # assistant text ends the run of tools
-        sink.on_text()  # live title status, useful while collapsed
-        # Defer mounting until the part has *visible* content, mirroring
-        # _on_thinking_start. Some providers open the reply with a whitespace-only
+    async def _on_text(self, text: str, sink: "_StreamSink", container: Widget) -> None:
+        """Render one ``text.delta``: open the assistant message if this delta
+        starts a block, then append.
+
+        The wire has no part-start event, so the START is reconstructed here —
+        the block is open only while ``get_text_open()`` holds AND the sink still
+        has the message (the app clears the pointer between turns). Consecutive
+        deltas therefore build one message, while a delta after a tool call or a
+        thought opens a fresh one below it, exactly as the part-start path did."""
+        msg = sink.get_assistant() if sink.get_text_open() else None
+        if msg is None:
+            sink.set_run(None, None)  # assistant text ends the run of tools
+            sink.on_text()  # live title status, useful while collapsed
+            msg = AssistantMessage()
+            sink.set_assistant(msg)
+            sink.set_text_open(True)
+        # Defer mounting until the block has *visible* content, mirroring
+        # _on_thinking. Some providers open the reply with a whitespace-only
         # content delta before the first reasoning delta (deepseek-v4 via
         # OpenRouter: pydantic-ai only skips leading whitespace for R1, so a lone
-        # " " is truthy and starts the TextPart). That blank part would otherwise
-        # mount an empty message *above* the thinking block that follows it, and
-        # every real token would then stream in above the reasoning that produced
-        # it. Waiting for content lets the thought mount first and keeps the
-        # transcript in causal order. The widget still sits on the sink so deltas
-        # can mount+append it.
-        msg = AssistantMessage()
-        sink.set_assistant(msg)
-        if part.content and part.content.strip():
-            await container.mount(msg)
-            self.append_stream(msg, part.content)
-        elif part.content:
-            # Whitespace-only: buffer it (unmounted, so flush holds off) rather than
-            # drop it, so it still prefixes the reply once real content arrives.
-            msg.append(part.content)
-
-    async def _on_text_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
-        delta = cast(TextPartDelta, event.delta)
-        msg = sink.get_assistant()
-        if msg is None:
-            return
-        chunk = delta.content_delta or ""
-        # First visible content mounts the deferred widget (see start).
+        # " " is truthy and starts the TextPart). That blank message would
+        # otherwise mount *above* the thinking block that follows it, and every
+        # real token would then stream in above the reasoning that produced it.
+        # Waiting for content lets the thought mount first and keeps the
+        # transcript in causal order. The widget still sits on the sink so later
+        # deltas can mount+append it; whitespace is buffered rather than dropped
+        # so it still prefixes the reply once real content arrives.
         if not msg.is_mounted:
-            if not (msg.text + chunk).strip():
-                if chunk:
-                    msg.append(chunk)
+            if not (msg.text + text).strip():
+                if text:
+                    msg.append(text)
                 return
-            if sink.container is not None:
-                await sink.container.mount(msg)
-        self.append_stream(msg, chunk)
+            await container.mount(msg)
+        self.append_stream(msg, text)
 
-    async def _on_thinking_start(
-        self, event: PartStartEvent, sink: "_StreamSink", container: Widget
-    ) -> None:
-        # Reasoning streams as its own collapsed block, standalone like
-        # assistant text (so it breaks any open tool run rather than nesting).
-        # Defer mounting until there is content — empty ThinkingParts (common
-        # between tool calls) must not flash a bare "Thinking:" label. The
-        # widget still sits on the sink so deltas can mount+append it, and
-        # finalize() drops it if the thought stays empty (matches replay).
-        part = cast(ThinkingPart, event.part)
-        sink.set_run(None, None)
-        widget = ThinkingWidget()
-        sink.set_thinking(widget)
-        if part.content and part.content.strip():
-            await container.mount(widget)
-            self.append_stream(widget.body, part.content)
+    async def _on_thinking(self, text: str, sink: "_StreamSink", container: Widget) -> None:
+        """Render one ``thinking.delta``, opening the block if none is in flight.
 
-    async def _on_thinking_delta(self, event: PartDeltaEvent, sink: "_StreamSink") -> None:
-        delta = cast(ThinkingPartDelta, event.delta)
+        Reasoning streams as its own collapsed block, standalone like assistant
+        text (so it breaks any open tool run rather than nesting). Unlike text,
+        the open-state needs no flag: ``_finalize_stale_blocks`` *clears* the
+        thinking pointer when the block closes, so ``get_thinking() is None`` is
+        already the answer. The mount is deferred until there is content — empty
+        thoughts (common between tool calls) must not flash a bare "Thinking:"
+        label, and finalize() drops one that stayed empty (matches replay)."""
         widget = sink.get_thinking()
         if widget is None:
-            return
-        chunk = delta.content_delta or ""
-        # First non-empty content mounts the deferred widget (see start).
+            sink.set_run(None, None)
+            widget = ThinkingWidget()
+            sink.set_thinking(widget)
         if not widget.is_mounted:
-            if not (widget.text + chunk).strip():
-                if chunk:
-                    widget.append(chunk)
+            if not (widget.text + text).strip():
+                if text:
+                    widget.append(text)
                 return
-            if sink.container is not None:
-                await sink.container.mount(widget)
-        self.append_stream(widget.body, chunk)
+            await container.mount(widget)
+        self.append_stream(widget.body, text)
 
     async def _on_tool_call(
-        self, event: FunctionToolCallEvent, sink: "_StreamSink", container: Widget
+        self, tool_call_id: str, tool_name: str, call_args: dict, sink: "_StreamSink", container
     ) -> None:
         # A gated tool re-emits its call event on the post-approval execution
         # pass; reuse the widget already mounted for this id rather than
         # mounting an orphaned duplicate.
-        if event.part.tool_call_id in self.tool_widgets:
+        if tool_call_id in self.tool_widgets:
             return
-        args = event.part.args_as_dict()
-        if await sink.intercept_tool(event, args, container):
+        if await sink.intercept_tool(tool_call_id, tool_name, call_args, container):
             return
-        args = self._with_wait_label(event.part.tool_name, args)
-        sink.on_tool(event.part.tool_name, args)  # live card status
+        args = self._with_wait_label(tool_name, call_args)
+        sink.on_tool(tool_name, args)  # live card status
         widget = ToolCallWidget(
-            event.part.tool_name,
+            tool_name,
             args,
             workspace_root=self.app.harness.deps.workspace.root,
         )
-        self.tool_widgets[event.part.tool_call_id] = widget
+        self.tool_widgets[tool_call_id] = widget
         group, solo = sink.get_run()
         group, solo = await self.add_tool_to_run(widget, container, group, solo)
         # Keep the run state in sync; a None value just means "no open group /
         # no lone call" for this stream.
         sink.set_run(group, solo)
 
-    async def _on_tool_result(self, event: FunctionToolResultEvent, sink: "_StreamSink") -> None:
-        widget = self.tool_widgets.get(event.tool_call_id)
+    async def _on_tool_result(
+        self, tool_call_id: str, result: object, wire_status: str, sink: "_StreamSink"
+    ) -> None:
+        widget = self.tool_widgets.get(tool_call_id)
         if widget is not None:
-            content = tool_result_text(getattr(event.part, "content", ""))
+            content = tool_result_text(result)
             if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
                 content, widget, self.app.harness.deps.jobs
             ):
                 pass  # detached: card stays pending, fills when its job settles
             else:
-                status = status_from_part(event.part)
+                # The call's outcome rides on the wire ("done"/"failed"/"denied"
+                # — stream_events.status_from_part), since a renderer fed by
+                # events has no ToolReturnPart to read it off.
+                status = wire_status
                 # A spawn that failed returns its error as a normal (successful)
                 # tool result, so detect the runner's failure text and mark the
                 # card failed rather than letting it render a misleading ✓.
@@ -1166,37 +1238,55 @@ class StreamRenderer:
                         # Read widget.status *after* finish() so a bash non-zero
                         # exit (self-flipped inside finish) is detected.
                         group.note_child_finished(failed=widget.status == "failed")
-        sink.on_result(event)
+        sink.on_result(tool_call_id)
 
-    def _finalize_stale_blocks(self, event, sink: "_StreamSink") -> None:
-        """Finalize any in-flight thinking/text block that ``event`` implies is
+    def _finalize_stale_blocks(self, wire, sink: "_StreamSink") -> None:
+        """Finalize any in-flight thinking/text block that ``wire`` implies is
         now closed, before the event is routed to its handler."""
         # A reasoning block is complete the moment any event other than its own
         # thinking-delta arrives — the next part has started, so cap the thought
         # to its preview now (Ctrl+O still reveals it). A thought that's still
-        # streaming (more ThinkingPartDeltas to come) is left uncapped.
-        if not _is_thinking_delta(event):
+        # streaming (more thinking deltas to come) is left uncapped. Clearing the
+        # pointer is also what makes the next thinking delta open a NEW block.
+        if not isinstance(wire, ThinkingDelta):
             active_thought = sink.get_thinking()
             if active_thought is not None:
                 active_thought.finalize()
                 sink.set_thinking(None)
         # Symmetrically, an assistant text block is complete once any event other
-        # than its own text-delta arrives (a tool call, a thought, or the next text
+        # than its own text delta arrives (a tool call, a thought, or the next text
         # part). Finalize it then so its incremental markdown is replaced by one clean
         # reparse, healing any blocks the streaming path doubled. We do NOT clear the
         # current-assistant pointer (finalize is latched/idempotent, so re-finalizing
         # on later events is a cheap no-op): callers read current_assistant as the
-        # turn's resting reply, and _on_text_start overwrites it for the next part.
-        if not _is_text_delta(event):
+        # turn's resting reply. Instead the block is marked closed, so the next text
+        # delta opens a fresh message rather than appending to this one.
+        if not isinstance(wire, TextDelta):
             active_assistant = sink.get_assistant()
-            if active_assistant is not None:
-                active_assistant.finalize()
+            # ...unless the block hasn't mounted yet, in which case it is still
+            # buffering a whitespace-only opener (see _on_text's deferred mount).
+            # Nothing is on screen to close, and that prefix belongs to the reply
+            # still to come — so the block stays OPEN and the next text delta
+            # resumes it. Closing it here would drop the prefix on exactly the
+            # provider shape the deferred mount exists for (a blank content delta
+            # before the first reasoning delta): the events carried the part index
+            # that reopened the block, the wire does not.
+            buffering = (
+                isinstance(wire, ThinkingDelta)
+                and active_assistant is not None
+                and not active_assistant.is_mounted
+            )
+            if not buffering:
+                sink.set_text_open(False)
+                if active_assistant is not None:
+                    active_assistant.finalize()
 
-    async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
-        """Route one streamed event to the right widget via ``sink``, which knows
+    async def dispatch_wire(self, wire, sink: "_StreamSink") -> None:
+        """Route one wire stream event to the right widget via ``sink``, which knows
         where to mount and how to read/write this stream's run-state. The top-level
         and sub-agent handlers differ only in that sink (and their own pre/post
-        bookkeeping), so the six event branches live here once."""
+        bookkeeping), so the four event branches live here once. Events outside the
+        stream vocabulary are ignored."""
         # If the sink has no container (e.g. a sub-agent sink whose pane isn't
         # mounted yet — headless mode or an early race), there's nowhere to mount
         # widgets; skip the event rather than crashing.
@@ -1206,19 +1296,19 @@ class StreamRenderer:
         # handlers that mount, so the base's ``container: Widget | None`` stays
         # honest without each handler re-checking.
         container: Widget = sink.container
-        self._finalize_stale_blocks(event, sink)
-        # A data-driven route table (rather than an isinstance elif chain) keeps
-        # this dispatcher's own branch count flat regardless of how many event
-        # types it routes — each predicate/handler pair is a single row.
-        routes = (
-            (_is_text_start, lambda: self._on_text_start(event, sink, container)),
-            (_is_text_delta, lambda: self._on_text_delta(event, sink)),
-            (_is_thinking_start, lambda: self._on_thinking_start(event, sink, container)),
-            (_is_thinking_delta, lambda: self._on_thinking_delta(event, sink)),
-            (_is_tool_call, lambda: self._on_tool_call(event, sink, container)),
-            (_is_tool_result, lambda: self._on_tool_result(event, sink)),
-        )
-        for matches, handle in routes:
-            if matches(event):
-                await handle()
-                return
+        self._finalize_stale_blocks(wire, sink)
+        if isinstance(wire, TextDelta):
+            await self._on_text(wire.text, sink, container)
+        elif isinstance(wire, ThinkingDelta):
+            await self._on_thinking(wire.text, sink, container)
+        elif isinstance(wire, ToolCall):
+            await self._on_tool_call(wire.id, wire.name, wire.args, sink, container)
+        elif isinstance(wire, ToolResult):
+            await self._on_tool_result(wire.id, wire.content, wire.status, sink)
+
+    async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
+        """TEMPORARY (phase 3a) pydantic-ai adapter for :meth:`dispatch_wire` —
+        see :func:`wire_from_event`."""
+        wire = wire_from_event(event)
+        if wire is not None:
+            await self.dispatch_wire(wire, sink)

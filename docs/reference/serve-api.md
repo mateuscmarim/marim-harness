@@ -718,13 +718,14 @@ surfaced):
 | `text.delta`     | `{"text": "<chunk>"}`                         |
 | `thinking.delta` | `{"text": "<chunk>"}`                         |
 | `tool.call`      | `{"name": "...", "args": {...}, "id": "..."}` |
-| `tool.result`    | `{"id": "...", "content": "<stringified>"}`   |
+| `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied"}` |
 
 Turn lifecycle:
 
 | Type            | `data`                                                       |
 | --------------- | ------------------------------------------------------------ |
 | `turn.started`  | `{"turn_id": "...", "prompt": "..."}`                        |
+| `turn.usage`    | `{"turn_id": "...", "total_tokens": <n>}` — the running total of the turn's current model run, republished whenever it changes (≈ once per model response); the live in-flight counter, not the per-turn summary |
 | `turn.finished` | `{"turn_id": "...", "output": "...", "usage": {...}}` — or `{"turn_id": "...", "interrupted": true}` for an interrupted turn |
 | `turn.error`    | `{"turn_id": "...", "error": "<detail>"}`                    |
 | `steer.accepted`| `{"text": "..."}`                                            |
@@ -750,12 +751,30 @@ Session and housekeeping:
 | Type                  | `data`                                    |
 | --------------------- | ----------------------------------------- |
 | `session.renamed`     | `{"from": "<old>", "to": "<new>"}`        |
+| `session.ttft`        | `{"seconds": <float>}` — time to first token of the latest streamed request |
+| `session.mode_changed`| `{"mode": "plan" \| "ask" \| "auto"}`     |
+| `session.notice`      | `{"message": "..."}` — a system notice line for the transcript |
 | `tasks.changed`       | `{}` (re-fetch task state out of band)    |
 | `jobs.changed`        | `{}`                                      |
 | `compaction.started`  | `{}`                                      |
 | `compaction.finished` | `{"before": <n>, "after": <n>}`           |
 | `subagent.event`      | `{"stream_id": "...", "event": {...}}` — `event` is a stream-event dict with an inner `"type"` of `text`/`thinking`/`tool_call`/`tool_result` |
+| `subagent.notice`     | `{"stream_id": "...", "message": "..."}`  |
+| `subagent.model`      | `{"stream_id": "...", "model": "..."}`    |
+| `subagent.thinking`   | `{"stream_id": "...", "level": "..."}`    |
+| `subagent.usage`      | `{"stream_id": "...", "usage": {...}}` — `usage` is a `usage_summary` dump |
+| `subagent.cli_activity` | `{"events": [{"type": "text.delta" \| ..., ...}, ...]}` — a CLI sub-agent's replayed stream, already remapped to wire types |
 | `stream.gap`          | `{"resync": "history"}`                   |
+
+Workflow orchestration (`run_workflow`):
+
+| Type                     | `data`                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| `workflow.spawned`       | `{"stream_id": "...", "spawn_type": "...", "task": "...", "parent_tool_call_id": "..."}` |
+| `workflow.started`       | `{"tool_call_id": "...", "title": "..."}`                                      |
+| `workflow.logged`        | `{"tool_call_id": "...", "message": "..."}`                                    |
+| `workflow.finished`      | `{"tool_call_id": "...", "outcome": "...", "failed": <bool>}`                  |
+| `workflow.spawn_finished`| `{"stream_id": "...", "report": "..."}`                                        |
 
 ## Lifecycle semantics
 

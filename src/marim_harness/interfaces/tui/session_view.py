@@ -14,8 +14,9 @@ from textual.widgets import Static
 
 from ...compaction import summary_text
 from ...runtime.harness import strip_turn_context
+from ...stream_events import status_from_part
 from ..branding import BANNER
-from .stream_render import status_from_part, subagent_failed, tool_result_text
+from .stream_render import subagent_failed, tool_result_text
 from .subagents import SubAgentDetailHost, SubAgentWidget
 from .widgets import (
     AssistantMessage,

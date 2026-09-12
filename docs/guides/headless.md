@@ -118,14 +118,16 @@ stream, so a consumer of either sees the same shapes:
 {"type": "text", "text": " test file now."}
 {"type": "thinking", "text": "The assertion compares ..."}
 {"type": "tool_call", "name": "read_file", "args": {"path": "tests/test_auth.py"}, "id": "call_abc123"}
-{"type": "tool_result", "id": "call_abc123", "content": "1: import pytest ..."}
+{"type": "tool_result", "id": "call_abc123", "content": "1: import pytest ...", "status": "done"}
 {"type": "result", "output": "The test fails because ...", "session_id": "2026-07-23-104512-a1b2c3", "name": "Debug failing auth test", "usage": {"input_tokens": 8474, "output_tokens": 412, "total_tokens": 8886, "uncached_input_tokens": 1210, "cache_read_tokens": 7264, "cache_write_tokens": 0, "cost_usd": 0.0184, "cost_is_exact": true}}
 ```
 
 - `text` / `thinking` — incremental deltas of the assistant's answer and
   (when the model emits it) its reasoning.
 - `tool_call` — a tool invocation with its parsed `args` and a `tool_call_id`.
-- `tool_result` — the tool's output, keyed by the same `id`.
+- `tool_result` — the tool's output, keyed by the same `id`, plus `status`
+  (`"done"` / `"failed"` / `"denied"` — an approval-gated tool's outcome, since
+  a consumer of this stream alone has no `ToolReturnPart` to read it off).
 - `result` — the terminal line: the same object the `json` format prints,
   plus the `"type": "result"` envelope.
 

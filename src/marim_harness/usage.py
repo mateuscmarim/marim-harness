@@ -8,6 +8,7 @@ total — the cached read/write tokens are a subset of it, not a separate bucket
 slug OpenRouter uses for model ids.
 """
 
+import dataclasses
 from dataclasses import dataclass
 
 from pydantic_ai.usage import RunUsage
@@ -91,6 +92,25 @@ def usage_summary(usage: RunUsage, model_ref: str | None) -> dict:
         "cost_usd": cost,
         "cost_is_exact": is_exact,
     }
+
+
+def usage_from_dump(data: dict) -> RunUsage:
+    """Rebuild a :class:`RunUsage` from its dict dump — the inverse of the
+    ``dataclasses.asdict`` the event bus publishes (``server/host.py``'s
+    ``_dump_usage``).
+
+    An event-driven front-end receives usage as a wire dict but every consumer
+    downstream (``split_tokens``, :func:`resolve_cost`, the token-split
+    formatter) reads a ``RunUsage``; reconstructing one at that boundary keeps
+    them byte-identical rather than teaching each of them a second shape.
+    Unknown keys are dropped (a newer server may report fields this client
+    doesn't model) and a dump that can't be rebuilt at all yields an empty
+    usage — a mispriced card must never break the render."""
+    fields = {f.name for f in dataclasses.fields(RunUsage)}
+    try:
+        return RunUsage(**{k: v for k, v in data.items() if k in fields})
+    except (TypeError, ValueError):
+        return RunUsage()
 
 
 def estimate_cost(usage: RunUsage, model_ref: str | None) -> float | None:

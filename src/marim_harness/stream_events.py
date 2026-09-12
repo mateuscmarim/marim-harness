@@ -41,6 +41,28 @@ def _jsonify_tool_content(content) -> str:
         return str(content)
 
 
+def status_from_part(part) -> str:
+    """Map a tool-result part to the outcome the event stream reports:
+    'success'/'failed'/'denied' (pydantic-ai sets 'denied' when an approval round
+    rejects the call); a ``RetryPromptPart`` has no outcome and represents a
+    validation/ModelRetry failure. Lives here rather than in the TUI because a
+    front-end rendering from the event stream alone has no part to inspect — the
+    outcome only reaches it if the wire carries it. Without it the TUI defaulted
+    every result to 'done', so a denied write_file rendered a green ✓ instead of
+    the ✕ the widget was built to show.
+
+    Deliberately duck-typed (``getattr``), so it works on a ``ToolReturnPart``, a
+    ``RetryPromptPart``, or a test double alike."""
+    outcome = getattr(part, "outcome", None)
+    if outcome == "denied":
+        return "denied"
+    if outcome == "failed":
+        return "failed"
+    if getattr(part, "part_kind", None) == "retry-prompt":
+        return "failed"
+    return "done"
+
+
 def event_to_dict(event) -> dict | None:
     """Map a Pydantic AI streaming event to a JSON-serializable dict, or None to
     skip events we don't surface."""
@@ -64,5 +86,10 @@ def event_to_dict(event) -> dict | None:
             "type": "tool_result",
             "id": event.tool_call_id,
             "content": _jsonify_tool_content(getattr(event.part, "content", "")),
+            # The call's outcome (see status_from_part). A consumer rendering
+            # from this stream alone has no ToolReturnPart to read it off, so a
+            # denied/failed call would otherwise be indistinguishable from a
+            # successful one.
+            "status": status_from_part(event.part),
         }
     return None

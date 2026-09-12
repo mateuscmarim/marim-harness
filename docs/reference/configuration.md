@@ -90,6 +90,11 @@ id like `local:qwen2.5-coder` addresses any active provider.
 CLI's configured default model). The value is passed to the
 provider verbatim — marim does not validate or rewrite it.
 
+Requests to the `zen` and `zen-go` gateway carry a `marim-harness/<version>`
+User-Agent and a stable `x-opencode-session` id (one per marim process), which
+OpenCode uses for routing and prompt-cache affinity — Go rejects requests
+without it.
+
 The `zen` provider talks to [OpenCode Zen](https://opencode.ai/auth)'s
 OpenAI-compatible gateway at a fixed `https://opencode.ai/zen/v1` (not
 `MARIM_BASE_URL`), authenticated with `OPENCODE_API_KEY`. Its catalog is
