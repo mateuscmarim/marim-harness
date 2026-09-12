@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -23,6 +24,8 @@ _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 # None ⇒ let the claude CLI use its own configured default model.
 _DEFAULT_CLAUDE_CLI_MODEL: str | None = None
+# None ⇒ let the codex CLI use its own configured default model.
+_DEFAULT_CODEX_CLI_MODEL: str | None = None
 _DEFAULT_ZEN_MODEL = "mimo-v2.5-free"
 # OpenCode Zen's OpenAI-compatible endpoint root. Fixed, not MARIM_BASE_URL —
 # that env belongs to the `local` provider and both can be active at once.
@@ -37,7 +40,9 @@ _ZEN_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
-KNOWN_PROVIDERS = frozenset({"openrouter", "local", "google", "claude-cli", "zen", "zen-go"})
+KNOWN_PROVIDERS = frozenset(
+    {"openrouter", "local", "google", "claude-cli", "codex-cli", "zen", "zen-go"}
+)
 
 
 def parse_qualified(
@@ -133,8 +138,9 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    provider: str  # "openrouter" | "local" | "google" | "claude-cli" | "zen" | "zen-go"
-    model: str | None  # None ⇒ claude-cli uses its own configured default
+    # "openrouter" | "local" | "google" | "claude-cli" | "codex-cli" | "zen" | "zen-go"
+    provider: str
+    model: str | None  # None ⇒ claude-cli/codex-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
     # The GLOBAL context budget in tokens — an economic ceiling, not the
@@ -340,53 +346,69 @@ def _common_kwargs() -> dict[str, Any]:
     )
 
 
-def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
-    """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
-    ``common``. Unknown provider falls back to openrouter (historical default)."""
-    if provider == "local":
-        return ModelConfig(
-            provider="local",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
-            base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
-            api_key=os.getenv("MARIM_API_KEY", "local"),
-            **common,
-        )
-    if provider == "zen":
-        return ModelConfig(
-            provider="zen",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_MODEL),
-            base_url=_ZEN_BASE_URL,
-            api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
-            **common,
-        )
-    if provider == "zen-go":
-        return ModelConfig(
-            provider="zen-go",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_GO_MODEL),
-            base_url=_ZEN_GO_BASE_URL,
-            api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
-            **common,
-        )
-    if provider == "google":
-        return ModelConfig(
-            provider="google",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
-            base_url=None,
-            api_key=(
-                os.getenv("GOOGLE_API_KEY")
-                or os.getenv("GEMINI_API_KEY")
-                or os.getenv("MARIM_API_KEY")
-            ),
-            **common,
-        )
-    if provider == "claude-cli":
-        return ModelConfig(
-            provider="claude-cli",
-            model=os.getenv("MARIM_MODEL", _DEFAULT_CLAUDE_CLI_MODEL),
-            base_url=None,
-            api_key=None,  # the CLI owns auth (the Claude subscription)
-            **common,
-        )
+def _local_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="local",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_LOCAL_MODEL),
+        base_url=os.getenv("MARIM_BASE_URL", "http://localhost:11434/v1"),
+        api_key=os.getenv("MARIM_API_KEY", "local"),
+        **common,
+    )
+
+
+def _zen_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="zen",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_MODEL),
+        base_url=_ZEN_BASE_URL,
+        api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
+        **common,
+    )
+
+
+def _zen_go_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="zen-go",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_ZEN_GO_MODEL),
+        base_url=_ZEN_GO_BASE_URL,
+        api_key=os.getenv("OPENCODE_API_KEY") or os.getenv("MARIM_API_KEY"),
+        **common,
+    )
+
+
+def _google_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="google",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_GOOGLE_MODEL),
+        base_url=None,
+        api_key=(
+            os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("MARIM_API_KEY")
+        ),
+        **common,
+    )
+
+
+def _claude_cli_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="claude-cli",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_CLAUDE_CLI_MODEL),
+        base_url=None,
+        api_key=None,  # the CLI owns auth (the Claude subscription)
+        **common,
+    )
+
+
+def _codex_cli_provider_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(
+        provider="codex-cli",
+        model=os.getenv("MARIM_MODEL", _DEFAULT_CODEX_CLI_MODEL),
+        base_url=None,
+        api_key=None,  # the CLI owns auth (`codex login`)
+        **common,
+    )
+
+
+def _openrouter_provider_config(common: dict[str, Any]) -> ModelConfig:
     return ModelConfig(
         provider="openrouter",
         model=os.getenv("MARIM_MODEL", _DEFAULT_OPENROUTER_MODEL),
@@ -396,29 +418,75 @@ def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
     )
 
 
+# Dispatch table for `_provider_config`, keyed by provider name — a dict beats
+# an if/elif/return chain past ruff's PLR0911 (too many returns) ceiling.
+# Openrouter doubles as both a named entry and the fallback for an unknown
+# provider (the historical default), so `_provider_config` looks it up twice
+# rather than duplicating the ModelConfig construction.
+_PROVIDER_CONFIG_BUILDERS: dict[str, Callable[[dict[str, Any]], ModelConfig]] = {
+    "local": _local_provider_config,
+    "zen": _zen_provider_config,
+    "zen-go": _zen_go_provider_config,
+    "google": _google_provider_config,
+    "claude-cli": _claude_cli_provider_config,
+    "codex-cli": _codex_cli_provider_config,
+    "openrouter": _openrouter_provider_config,
+}
+
+
+def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
+    """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
+    ``common``. Unknown provider falls back to openrouter (historical default)."""
+    builder = _PROVIDER_CONFIG_BUILDERS.get(provider, _openrouter_provider_config)
+    return builder(common)
+
+
 def _claude_cli_available() -> bool:
     """True when a ``claude`` binary can be resolved (the only 'cred' this provider
     needs; a not-logged-in CLI fails clearly at first use)."""
-    from ..subagents.cli_backend import resolve_cli_binary
+    from ..claude.env import resolve_cli_binary
 
     return resolve_cli_binary() is not None
 
 
+def _codex_cli_available() -> bool:
+    """True when a ``codex`` binary resolves AND ``codex login`` has run
+    (auth.json under CODEX_HOME). Both, unlike claude-cli's binary-only
+    check: an unauthenticated app-server fails only on the first turn."""
+    from ..codex.env import codex_available
+
+    return codex_available()
+
+
+def _zen_has_creds() -> bool:
+    # One Zen-account key covers both plans; a key without a Go subscription
+    # shows zen-go as active and fails clearly (402/403, surfaced by
+    # _actionable_error_note) at first request.
+    return bool(os.getenv("OPENCODE_API_KEY"))
+
+
+# Dispatch table for `_provider_has_creds`, keyed by provider name — same
+# rationale as `_PROVIDER_CONFIG_BUILDERS`: a dict beats an if/elif/return
+# chain past ruff's PLR0911 ceiling. An unknown provider has no entry, so
+# `_provider_has_creds` falls back to False.
+_CRED_CHECKS: dict[str, Callable[[], bool]] = {
+    "openrouter": lambda: bool(os.getenv("OPENROUTER_API_KEY")),
+    "google": lambda: bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
+    "local": lambda: bool(os.getenv("MARIM_BASE_URL")),
+    "zen": _zen_has_creds,
+    "zen-go": _zen_has_creds,
+    # Indirected through a lambda (rather than the function object itself) so
+    # tests that monkeypatch the module-level `_claude_cli_available` /
+    # `_codex_cli_available` name are honored — a bound reference captured at
+    # dict-construction time would freeze the pre-patch function forever.
+    "claude-cli": lambda: _claude_cli_available(),
+    "codex-cli": lambda: _codex_cli_available(),
+}
+
+
 def _provider_has_creds(provider: str) -> bool:
-    if provider == "openrouter":
-        return bool(os.getenv("OPENROUTER_API_KEY"))
-    if provider == "google":
-        return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-    if provider == "local":
-        return bool(os.getenv("MARIM_BASE_URL"))
-    if provider in ("zen", "zen-go"):
-        # One Zen-account key covers both plans; a key without a Go
-        # subscription shows zen-go as active and fails clearly (402/403,
-        # surfaced by _actionable_error_note) at first request.
-        return bool(os.getenv("OPENCODE_API_KEY"))
-    if provider == "claude-cli":
-        return _claude_cli_available()
-    return False
+    check = _CRED_CHECKS.get(provider)
+    return check() if check is not None else False
 
 
 def detect_active_providers() -> tuple[dict[str, ModelConfig], str]:
@@ -533,6 +601,11 @@ def build_model(cfg: ModelConfig):
 
         return ClaudeCliModel(cfg.model)
 
+    if cfg.provider == "codex-cli":
+        from .codex_cli_model import CodexCliModel
+
+        return CodexCliModel(cfg.model)
+
     from .openrouter_cost import build_openrouter_model
 
     assert cfg.model is not None  # openrouter always has a model id
@@ -564,26 +637,55 @@ class ModelSource:
         ``strict=True`` propagates to the fetchers so a real failure (bad key,
         dead server) raises instead of degrading to ``[]`` — used by provider
         verification, which needs to tell "connected, 0 models" apart from
-        "failed to connect"."""
-        if self.cfg.provider == "openrouter":
-            return await fetch_openrouter_models(self.cfg.api_key, strict=strict)
-        if self.cfg.provider == "google":
-            return await fetch_google_models(self.cfg.api_key, strict=strict)
-        if self.cfg.provider == "local":
-            return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
-        if self.cfg.provider == "zen":
-            return await fetch_zen_models(self.cfg.api_key, strict=strict)
-        if self.cfg.provider == "zen-go":
-            return await fetch_zen_models(
-                self.cfg.api_key, strict=strict, url=_ZEN_GO_BASE_URL + "/models"
-            )
-        if self.cfg.provider == "claude-cli":
-            return [
-                ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
-                ModelEntry(id="opus", name="opus", provider="claude-cli"),
-                ModelEntry(id="haiku", name="haiku", provider="claude-cli"),
-            ]
-        return []
+        "failed to connect". Dispatches through ``_LIST_MODELS_BY_PROVIDER``
+        (defined below the class, mirroring ``_METHODS`` in codex/translate.py)
+        rather than an if/elif/return chain past ruff's PLR0911 ceiling."""
+        handler = _LIST_MODELS_BY_PROVIDER.get(self.cfg.provider)
+        return await handler(self, strict=strict) if handler is not None else []
+
+    async def _list_openrouter(self, *, strict: bool) -> list[ModelEntry]:
+        return await fetch_openrouter_models(self.cfg.api_key, strict=strict)
+
+    async def _list_google(self, *, strict: bool) -> list[ModelEntry]:
+        return await fetch_google_models(self.cfg.api_key, strict=strict)
+
+    async def _list_local(self, *, strict: bool) -> list[ModelEntry]:
+        return await fetch_local_models(self.cfg.base_url, self.cfg.api_key, strict=strict)
+
+    async def _list_zen(self, *, strict: bool) -> list[ModelEntry]:
+        return await fetch_zen_models(self.cfg.api_key, strict=strict)
+
+    async def _list_zen_go(self, *, strict: bool) -> list[ModelEntry]:
+        return await fetch_zen_models(
+            self.cfg.api_key, strict=strict, url=_ZEN_GO_BASE_URL + "/models"
+        )
+
+    async def _list_claude_cli(self, *, strict: bool) -> list[ModelEntry]:
+        return [
+            ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
+            ModelEntry(id="opus", name="opus", provider="claude-cli"),
+            ModelEntry(id="haiku", name="haiku", provider="claude-cli"),
+        ]
+
+    async def _list_codex_cli(self, *, strict: bool) -> list[ModelEntry]:
+        from ..codex import catalog as codex_catalog
+
+        return await codex_catalog.list_codex_models(strict=strict)
+
+
+# Dispatch table for `ModelSource.list_models`, keyed by provider name — same
+# rationale as codex/translate.py's `_METHODS`: handlers are unbound methods,
+# called as `handler(self, strict=strict)`. An unknown provider has no entry,
+# so `list_models` falls back to [].
+_LIST_MODELS_BY_PROVIDER: dict[str, Callable[..., Awaitable[list[ModelEntry]]]] = {
+    "openrouter": ModelSource._list_openrouter,
+    "google": ModelSource._list_google,
+    "local": ModelSource._list_local,
+    "zen": ModelSource._list_zen,
+    "zen-go": ModelSource._list_zen_go,
+    "claude-cli": ModelSource._list_claude_cli,
+    "codex-cli": ModelSource._list_codex_cli,
+}
 
 
 class MultiModelSource:

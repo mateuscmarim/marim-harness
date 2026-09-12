@@ -171,6 +171,10 @@ def _isolated_provider_env(request, monkeypatch):
             monkeypatch.delenv(key, raising=False)
     for key in _PROVIDER_CRED_ENVS:
         monkeypatch.delenv(key, raising=False)
+    # codex-cli detection reads the developer's real ~/.codex/auth.json; point
+    # CODEX_HOME at nothing so provider auto-detection is deterministic. Tests
+    # that want a "logged in" codex set their own CODEX_HOME.
+    monkeypatch.setenv("CODEX_HOME", "/nonexistent/marim-test-codex-home")
 
 
 # Suites whose tests exercise project-local ``.marim/skills`` / ``.marim/agents``.
@@ -186,8 +190,10 @@ _TRUST_PROJECT_SUITES = frozenset(
         "test_agent_hooks.py",
         "test_agent_instructions.py",
         "test_commands.py",
+        "test_codex_live.py",
         "test_plugin_skills.py",
         "test_subagent_cli_spawn.py",
+        "test_subagent_codex_spawn.py",
         "test_subagent_isolation.py",
         "test_subagent_resume.py",
         "test_subagent_safety.py",

@@ -127,8 +127,8 @@ The file **stem is the agent's identity**. Recognized keys:
 | `name` | no | If present, must equal the file stem (a mismatch invalidates the file). |
 | `description` | **yes** | Shown in the spawnable-agents index the model sees; non-empty string. |
 | `tools` | no | Tool names as a comma string or YAML list; unknown names are dropped. Absent/empty ⇒ the read-only set. |
-| `backend` | no | `native` (default, in-process Pydantic AI loop) or `claude-cli`. |
-| `model` | no | Backend-specific default model. For `claude-cli`, a Claude Code model name passed verbatim to `--model`; ignored by the native backend. |
+| `backend` | no | `native` (default, in-process Pydantic AI loop), `claude-cli`, or `codex-cli`. |
+| `model` | no | Backend-specific default model. For `claude-cli`, a Claude Code model name passed verbatim to `--model`; for `codex-cli`, a Codex model id (falls back to `MARIM_CODEX_CLI_MODEL`, then the CLI's default); ignored by the native backend. |
 | `tier` | no | `cheap`, `med`, or `high` — the spec's tier label for the native model router. Unknown values normalize to unset. |
 | `thinking` (alias `effort`) | no | Reasoning-effort level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`). Unknown values degrade to "inherit". |
 
@@ -212,11 +212,11 @@ spawn's model settings untouched.
 
 ## The claude-cli backend
 
-A spec with `backend: claude-cli` runs its spawns as an external
-`claude -p` (Claude Code CLI) process in headless stream-json mode instead of
-the in-process loop — useful for delegating to a Claude subscription. Around
-the swapped engine, the harness wrapping is identical: same worktree
-isolation, hooks bracketing, output cap, transcript persistence, and
+`backend: claude-cli` runs the spawn on its own bidirectional `claude`
+process; each tool Claude runs is approved through marim's mode and panel
+(the panel names the sub-agent), and an interrupted spawn resumes by session
+id. Around the swapped engine, the harness wrapping is identical: same
+worktree isolation, hooks bracketing, output cap, transcript persistence, and
 background handling.
 
 Differences that matter:
@@ -225,15 +225,73 @@ Differences that matter:
   (`sonnet`, `opus`, or a full id), passed straight to `--model`;
   `MARIM_CLAUDE_CLI_MODEL` is the env default. **Tiers do not apply** to
   claude-cli spawns.
-- An interrupted claude-cli spawn resumes through the CLI's own `--resume`:
-  the CLI session id is checkpointed into the spawn's sidecar meta, and marim
-  hands it back rather than replaying its own transcript (the CLI owns its
-  history).
+- An interrupted claude-cli spawn resumes through the CLI's own
+  `--resume <session id>` (checkpointed into the spawn's sidecar meta) — the
+  CLI regenerates the turn from its own session history, not from a replayed
+  prompt. marim separately prepends its own persisted sidecar transcript onto
+  the resumed record so the card and transcript pane keep the pre-interrupt
+  segment; that prefix is for marim's own display/checkpointing only, never
+  sent to the CLI as a prompt.
 - Claude's own Agent/Task sub-agents are demuxed out of the stream and
   rendered as first-class cards in the sub-agents screen, nested under their
   spawn.
-- One spawn is bounded by a wall-clock ceiling, `MARIM_CLAUDE_CLI_TIMEOUT`
-  (default 600 s); `MARIM_CLAUDE_CLI_BIN` picks the executable.
+- `MARIM_CLAUDE_CLI_TIMEOUT` (default 600 s) bounds seconds of *silence*
+  inside one open turn, not the spawn's total wall-clock time (it pauses
+  while an approval prompt is open); `MARIM_CLAUDE_CLI_BIN` picks the
+  executable.
+
+## The codex-cli backend
+
+`backend: codex-cli` runs the agent as one thread on the shared
+`codex app-server` process (the same one the `codex-cli` main-loop provider
+uses; it is started on first use and stays up for the marim process — a
+`codex-cli` session model closing with no thread left on the server closes
+it, spawns alone never do). The agent's prompt becomes the thread's developer instructions;
+the task is the first
+turn.
+
+- **Reach is fixed up front.** The Codex sandbox is `read-only` unless the
+  agent's tools include `write_file`, `edit_file` or `bash` (and never in
+  plan mode). The approval policy follows the parent's mode: `auto` →
+  `on-request`, `ask` → `untrusted` (prompts land in *your* approval panel,
+  labelled with the agent name), `plan` → `never`.
+- **Structured output** (`output_schema=` on `spawn_agent`) is enforced by
+  Codex natively, for any schema root — no prompt contract is appended.
+- **Thinking** follows the usual precedence (spawn `thinking=` → spec
+  `thinking:` → the session level) and maps to Codex reasoning effort.
+- **Resume** reopens the persisted Codex thread (`codex_thread_id` in the
+  spawn's sidecar) and sends the continuation prompt as a new turn.
+- The shared app-server is launched with the user's Codex MCP servers
+  disabled by name and plugins and the apps connector off (see the provider
+  notes in the configuration reference), so MCP grants do not reach the
+  spawn — marim's
+  own MCP servers and Codex's user-level ones alike. A non-empty grant list
+  is noted in the output anyway, as with `claude-cli`.
+
+See [`docs/examples/agents/codex-worker.md`](../examples/agents/codex-worker.md).
+
+## Tiered CLI workers
+
+Both CLI backends ship a ready-to-copy trio in `docs/examples/agents/`, one
+spec per cost/capability tier, so the main agent can pick by task shape the
+same way the native router picks by `tier:`. Copy the ones you want into a
+trusted project's `.marim/agents/` or your global
+`$XDG_CONFIG_HOME/marim/agents/` — they are examples, not bundled defaults,
+because discovery does not check that the `claude` or `codex` binary is
+installed and the pinned model names track each vendor's release schedule.
+
+| Tier | Use for | claude-cli | codex-cli |
+| --- | --- | --- | --- |
+| fast | well-specified mechanical edits, renames, lookups | [`claude-fast`](../examples/agents/claude-fast.md) (haiku) | [`codex-fast`](../examples/agents/codex-fast.md) (gpt-5.6-luna, low effort) |
+| general | self-contained coding tasks delegated end-to-end | [`claude-general`](../examples/agents/claude-general.md) (sonnet) | [`codex-general`](../examples/agents/codex-general.md) (gpt-5.6-terra, medium effort) |
+| deep | multi-file refactors, design, subtle debugging | [`claude-deep`](../examples/agents/claude-deep.md) (opus) | [`codex-deep`](../examples/agents/codex-deep.md) (gpt-5.6-sol, high effort) |
+
+Each description names its siblings ("prefer codex-deep for…, codex-fast
+for…") so the spawnable-agents index the model reads carries the routing
+hint. The `fast` specs drop `web_search`/`fetch_url` and tell the agent to
+stop and report rather than guess when a task turns out to need judgment;
+the Codex specs set `thinking:` explicitly because the CLI's own default
+effort differs per model (`low` on Sol, `medium` on Terra and Luna).
 
 ## Limits and operations
 

@@ -58,8 +58,8 @@ Inside the TUI:
 
 An unnamed session is titled automatically: after a turn completes, a small
 tool-free "titler" agent (running on the session's model — or, under the
-`claude-cli` provider, on an ephemeral clone that never touches your live
-Claude session) reads the transcript and produces a short title of at most six
+`claude-cli`/`codex-cli` providers, on an ephemeral read-only clone that never touches
+the live session's thread) reads the transcript and produces a short title of at most six
 words. It runs in the background so it never delays your turn; headless runs
 wait for it before exiting. An explicit `/name` always wins — once you set a
 name yourself, auto-titling stops for that session.
@@ -246,3 +246,11 @@ One deliberate gap: while a tool approval is pending, the in-memory history
 ends with unanswered tool calls, and that dirty state is *never* persisted.
 Cancelling an approval rolls back to the last cleanly persisted point, so a
 resumed session always starts from a coherent conversation.
+
+`claude-cli` sessions persist the Claude session id as `claude-cli:<id>` and
+resume it on the next turn, even after a restart; if Claude no longer has the
+session, marim starts a fresh one from the flattened history.
+
+A `codex-cli` session also stores its Codex thread id and resumes that thread;
+if Codex has forgotten it, the turn starts a fresh thread seeded with the saved
+history.

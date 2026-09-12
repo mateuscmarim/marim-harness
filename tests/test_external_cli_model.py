@@ -1,0 +1,272 @@
+"""The ExternalCliModel base: one seam set shared by claude-cli and codex-cli."""
+
+from __future__ import annotations
+
+import pytest
+
+from marim_harness.config import claude_cli_model as ccm
+from marim_harness.config.claude_cli_model import ClaudeCliModel
+from marim_harness.config.external_cli import CliModelError, ExternalCliModel, TextFolder
+from marim_harness.session.ctrl import aux_model_for
+from tests.conftest import _make_deps, _make_harness, _text_model
+
+pytestmark = pytest.mark.anyio
+
+
+class _Fake(ExternalCliModel):
+    provider_id = "fake-cli"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clones: list[str] = []
+
+    def ephemeral_clone(self, *, cwd: str) -> _Fake:
+        clone = _Fake()
+        clone.cwd = cwd
+        clone.ephemeral = True
+        self.clones.append(cwd)
+        return clone
+
+    @property
+    def model_name(self) -> str:
+        return "fake"
+
+    async def request(self, messages, model_settings, model_request_parameters):  # pragma: no cover
+        raise NotImplementedError
+
+
+class _Bare(ExternalCliModel):
+    """An ExternalCliModel subclass that does NOT override `ephemeral_clone` —
+    for exercising the base class's own defaults (the loud raise, the
+    steer/compact_remote no-ops) rather than a subclass's override of them."""
+
+    provider_id = "bare-cli"
+
+    @property
+    def model_name(self) -> str:
+        return "bare"
+
+    async def request(self, messages, model_settings, model_request_parameters):  # pragma: no cover
+        raise NotImplementedError
+
+
+class _FakePartsManager:
+    """A minimal stand-in for pydantic-ai's ModelResponsePartsManager: records
+    every `handle_text_delta` call so tests can assert TextFolder's exact
+    vendor-part-id bookkeeping, and forwards each call through as its own
+    ``event`` (TextFolder only ever forwards whatever the manager yields)."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def handle_text_delta(self, *, vendor_part_id: str, content: str):
+        self.calls.append((vendor_part_id, content))
+        return [(vendor_part_id, content)]
+
+
+def test_claude_cli_model_is_an_external_cli_model():
+    assert issubclass(ClaudeCliModel, ExternalCliModel)
+    assert ClaudeCliModel.provider_id == "claude-cli"
+    assert ClaudeCliModel("x").system == "claude-cli"
+    # Backwards-compatible names still resolve from the old module.
+    assert ccm.CliModelError is CliModelError
+    assert ccm._TextFolder is TextFolder
+
+
+def test_base_defaults_are_inert():
+    m = _Fake()
+    assert m.system == "fake-cli"
+    assert m.mode_getter is None and m.cwd == "."
+    assert m.request_approval is None and m.ask_user is None
+    assert m.scratchpad_getter is None and m.thinking_getter is None
+    assert m.session_ref_getter is None and m.on_session_ref is None
+    assert m.steer("x") is False
+    assert m.ephemeral is False
+
+
+def test_aux_model_for_clones_any_external_cli_model():
+    raw = _Fake()
+    aux = aux_model_for(raw, cwd="/ws")
+    assert aux is not raw and isinstance(aux, _Fake) and aux.ephemeral and aux.cwd == "/ws"
+
+
+def test_wire_cli_model_binds_all_seams(tmp_path):
+    harness = _make_harness(_text_model(), _make_deps(tmp_path))
+    m = _Fake()
+    harness.wire_cli_model(m)
+    assert m.mode_getter is not None and m.mode_getter() == harness.mode.value
+    assert m.cwd == str(harness.deps.workspace.root)
+    assert m.on_activity is harness.deps.ui.on_cli_activity
+    assert m.on_subagent is harness.deps.ui.on_subagent_event
+    assert m.on_subagent_model is harness.deps.ui.on_subagent_model
+    assert m.request_approval is harness.deps.ui.request_approval
+    assert m.ask_user is harness.deps.ui.ask_user
+    assert m.scratchpad_getter is not None
+    assert m.thinking_getter is not None and m.thinking_getter() == harness.thinking_level_id
+    assert m.session_ref_getter is not None and m.on_session_ref is not None
+
+
+def test_wire_cli_model_ignores_other_models(tmp_path):
+    harness = _make_harness(_text_model(), _make_deps(tmp_path))
+
+    class _Plain:
+        pass
+
+    plain = _Plain()
+    harness.wire_cli_model(plain)  # no attribute errors, nothing set
+    assert not hasattr(plain, "mode_getter")
+
+
+def test_base_ephemeral_clone_raises_when_a_subclass_forgets_to_override():
+    with pytest.raises(NotImplementedError, match="_Bare must implement ephemeral_clone"):
+        _Bare().ephemeral_clone(cwd="/ws")
+
+
+async def test_base_compact_remote_is_a_noop():
+    assert await _Bare().compact_remote() is None
+
+
+def _folder(pm, *, cards: bool, fold_text=None, is_call=None, activity_events=None) -> TextFolder:
+    return TextFolder(
+        pm,
+        (lambda events: None) if cards else None,
+        activity_events=activity_events or (lambda chunk: []),
+        fold_text=fold_text or (lambda chunk, first: ""),
+        is_call=is_call or (lambda chunk: False),
+    )
+
+
+async def test_text_folder_emit_text_cards_mode_bootstraps_then_deltas():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=True)
+    events = [e async for e in folder.emit_text("hello")]
+    # a brand-new vendor part id gets an empty-content bootstrap call BEFORE
+    # the real delta, so a delta-only consumer never misses the first chunk.
+    assert pm.calls == [("text-0", ""), ("text-0", "hello")]
+    assert events == [("text-0", ""), ("text-0", "hello")]
+
+
+async def test_text_folder_emit_text_cards_mode_skips_bootstrap_on_the_same_part():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=True)
+    _ = [e async for e in folder.emit_text("a")]
+    _ = [e async for e in folder.emit_text("b")]
+    # same part_n ("text-0") both times -> only the FIRST call bootstraps.
+    assert pm.calls == [("text-0", ""), ("text-0", "a"), ("text-0", "b")]
+
+
+async def test_text_folder_emit_text_fold_mode_concatenates_prose_deltas():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False)
+    _ = [e async for e in folder.emit_text("fir")]
+    assert folder.folded_any is True
+    _ = [e async for e in folder.emit_text("st")]
+    # Both chunks land on the SAME part id ("text-0") and join with NOTHING
+    # between them: prose arrives a few characters per delta, so a separator
+    # here would shred every sentence.
+    assert pm.calls == [
+        ("text-0", ""),
+        ("text-0", "fir"),
+        ("text-0", "st"),
+    ]
+
+
+async def test_text_folder_emit_text_fold_mode_blank_line_separates_a_tool_line():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "▸ Bash ls")
+    _ = [e async for e in folder.emit_text("be")]
+    _ = [e async for e in folder.emit_tool("cmd")]
+    assert folder.after_tool is True  # armed: the next prose starts a new block
+    _ = [e async for e in folder.emit_text("af")]
+    _ = [e async for e in folder.emit_text("ter")]
+    # Only the delta that FOLLOWS a folded ▸ line is blank-line separated; the
+    # ones after it continue the same block.
+    assert pm.calls == [
+        ("text-0", ""),
+        ("text-0", "be"),
+        ("text-0", "▸ Bash ls"),
+        ("text-0", "\n\naf"),
+        ("text-0", "ter"),
+    ]
+    assert folder.after_tool is False
+
+
+async def test_text_folder_emit_tool_cards_mode_pushes_activity_and_bumps_part_n_for_calls():
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [f"event-for-{chunk}"],
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: True,
+    )
+    async for _ in folder.emit_tool("call-1"):
+        pass  # pragma: no cover - cards mode yields nothing
+    assert pushed == [["event-for-call-1"]]
+    assert folder.part_n == 1  # a tool CALL opens a fresh part for following prose
+
+
+async def test_text_folder_emit_tool_cards_mode_skips_callback_when_no_events():
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [],  # nothing worth rendering for this chunk
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: True,
+    )
+    async for _ in folder.emit_tool("call-1"):
+        pass  # pragma: no cover
+    assert pushed == []  # on_activity never invoked with an empty event list
+    assert folder.part_n == 1  # but a CALL still bumps part_n regardless
+
+
+async def test_text_folder_emit_tool_cards_mode_result_does_not_bump_part_n():
+    """A tool RESULT (not a call) still pushes its activity events, but must
+    NOT open a fresh text part — only a call does, so prose continues to
+    interleave right after the result on the SAME part."""
+    pushed = []
+
+    async def on_activity(events):
+        pushed.append(events)
+
+    pm = _FakePartsManager()
+    folder = TextFolder(
+        pm,
+        on_activity,
+        activity_events=lambda chunk: [f"event-for-{chunk}"],
+        fold_text=lambda chunk, first: "",
+        is_call=lambda chunk: False,
+    )
+    async for _ in folder.emit_tool("result-1"):
+        pass  # pragma: no cover
+    assert pushed == [["event-for-result-1"]]
+    assert folder.part_n == 0
+
+
+async def test_text_folder_emit_tool_fold_mode_folds_a_nonempty_segment():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "▸ ran ls")
+    events = [e async for e in folder.emit_tool("cmd")]
+    assert pm.calls == [("text-0", ""), ("text-0", "▸ ran ls")]
+    assert events == [("text-0", ""), ("text-0", "▸ ran ls")]
+    assert folder.folded_any is True
+
+
+async def test_text_folder_emit_tool_fold_mode_skips_an_empty_segment():
+    pm = _FakePartsManager()
+    folder = _folder(pm, cards=False, fold_text=lambda chunk, first: "")
+    events = [e async for e in folder.emit_tool("noise")]
+    assert events == []
+    assert pm.calls == []
+    assert folder.folded_any is False

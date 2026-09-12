@@ -8,6 +8,40 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- `codex-cli` provider: `MARIM_PROVIDER=codex-cli` delegates each turn to
+  `codex app-server` (JSON-RPC over stdio) on a ChatGPT/Codex subscription,
+  with approvals brokered through marim's own panel, thinking levels mapped
+  to reasoning effort, `/steer` and `/compact` forwarded to the thread, and
+  the thread id persisted with the session for resume.
+- `backend: codex-cli` sub-agents: one Codex thread per spawn on the shared
+  app-server, read-only sandbox unless the agent has a mutating tool, native
+  `outputSchema` enforcement, resumable via the persisted thread id.
+- Settings > Providers shows a `codex-cli` card (binary + `codex login`
+  detection) and the model picker lists Codex models from `model/list`.
+- The shared `codex app-server` is launched isolated from the user's own
+  Codex setup: every MCP server in their Codex config is disabled by name
+  (`codex mcp list` enumerates them), and plugins and the built-in apps
+  connector are switched off, so a marim thread runs with marim's tool
+  reach only.
+- Tiered CLI worker examples: `docs/examples/agents/{claude,codex}-{fast,general,deep}.md`
+  (haiku/sonnet/opus and gpt-5.6-luna/terra/sol) with a "Tiered CLI workers"
+  section in the sub-agents guide; parsed in CI.
+
+### Changed
+
+- **claude-cli is bidirectional.** The `claude-cli` provider and `backend: claude-cli`
+  sub-agents now keep one long-lived `claude` process per conversation over its
+  stream-json control protocol instead of launching `claude -p` per turn. marim's
+  `auto`/`ask`/`plan` modes, the approval panel and `ask_user` now apply to Claude's
+  tool calls (`--permission-mode` is no longer passed); steer folds into the live turn;
+  Esc in the TUI (Ctrl-C headless) sends an interrupt (kill after a 2 s grace); the session resumes by id after
+  an idle close, crash, model switch or restart. New knob
+  `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` (default 600 s) closes an idle process;
+  `MARIM_CLAUDE_CLI_TIMEOUT` is now a per-turn *silence* bound that pauses while an
+  approval prompt waits. Claude Code ≥ 2.1 required (older versions warn). Closes #109.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

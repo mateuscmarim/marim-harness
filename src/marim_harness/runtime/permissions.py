@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..read_only_commands import is_read_only
 from ..tools.names import NET_TOOLS
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from pydantic_ai import DeferredToolRequests, DeferredToolResults, ToolApproved, ToolDenied
     from pydantic_ai.tools import DeferredToolApprovalResult
 
+    from ..ask_user import Question
+
 
 class Mode(str, Enum):
     ask = "ask"
@@ -32,6 +35,105 @@ class Mode(str, Enum):
     def cycle(self) -> Mode:
         order = [Mode.ask, Mode.auto, Mode.plan]
         return order[(order.index(self) + 1) % len(order)]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """The policy answer for one external-CLI request, before any prompting."""
+
+    accept: bool
+    reason: str = ""
+    ask: bool = False  # True: the caller must prompt (accept is the headless default)
+
+
+@dataclass(frozen=True)
+class UiSeams:
+    """The two UI callbacks an external-CLI broker needs to reach the human —
+    grouped so a broker's constructor reads as mode/paths, then UI."""
+
+    request_approval: Callable[[Any], Awaitable[Any]] | None
+    ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None
+
+
+@dataclass(frozen=True)
+class ExternalRequest:
+    """A transport-neutral view of one thing an external CLI (codex-cli,
+    claude-cli) wants to do: would it change files / run commands / reach the
+    network, and which file paths does it name (when known).
+
+    ``network`` is a separate axis from ``mutating`` because a web fetch or a
+    web search changes nothing locally yet is still outbound egress — the one
+    class of request plan mode has to refuse for a reason other than mutation
+    (see ``decide_external``). Defaulting to False keeps every caller that
+    only knows about mutations (codex's ``decide``) unchanged.
+    """
+
+    mutating: bool
+    paths: tuple[Path, ...] = ()
+    network: bool = False
+
+
+PLAN_READ_ONLY = "plan mode: read-only"
+
+
+def within_root(path: Path, root: Path | None) -> bool:
+    """True when ``path`` resolves to somewhere under ``root`` (symlinks and
+    ``..`` resolved first, so an escape through either is caught)."""
+    if root is None:
+        return False
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def decide_external(
+    mode: Mode,
+    req: ExternalRequest,
+    workspace_root: Path | None,
+    scratchpad: Path | None,
+) -> Decision:
+    """The one approval table both external-CLI brokers apply (spec §Shared
+    policy core). ``ask`` means "prompt if a request_approval seam is bound";
+    with no seam the caller DENIES, because nothing there can grant approval.
+    Both brokers do exactly that (``HEADLESS_DENY_MESSAGE`` on the claude
+    side, the ``_prompt`` guard on the codex side); an unattended run that
+    must write needs ``--mode auto``.
+
+    plan  -> non-mutating, non-network accepted; every mutation AND every
+             outbound-network request denied, never prompts.
+    auto  -> accepted, except a mutation naming a path outside the workspace
+             root AND outside the scratchpad, which is escalated to a prompt.
+    ask   -> non-mutating accepted; a mutation whose paths all sit inside the
+             scratchpad is accepted (mirrors ``_scratchpad_approval`` for
+             native tools); everything else prompts.
+    """
+    if not req.mutating:
+        # Plan mode is read-only *local* research. A prompt-injected agent could
+        # otherwise read any host file and exfiltrate it through a fetch URL or
+        # a search query with zero approval — the same reasoning that makes
+        # ``_plan_decision`` deny marim's own NET_TOOLS, and that makes
+        # ``cli_spawn.run_cli`` hard-deny the CLI's web tools at argv time for
+        # spawns. The main loop cannot use argv (its Mode flips live via /mode
+        # with no respawn), so the denial has to happen here, per request.
+        if req.network and mode is Mode.plan:
+            return Decision(accept=False, reason=PLAN_READ_ONLY)
+        return Decision(accept=True)
+    if mode is Mode.plan:
+        return Decision(accept=False, reason=PLAN_READ_ONLY)
+    if mode is Mode.auto:
+        stray = [
+            p
+            for p in req.paths
+            if not within_root(p, workspace_root) and not within_root(p, scratchpad)
+        ]
+        if stray:
+            return Decision(accept=False, reason=f"outside workspace: {stray[0]}", ask=True)
+        return Decision(accept=True)
+    if req.paths and scratchpad is not None and all(within_root(p, scratchpad) for p in req.paths):
+        return Decision(accept=True, reason="scratchpad write")
+    return Decision(accept=False, ask=True)
 
 
 def _call_args(call: object) -> dict:

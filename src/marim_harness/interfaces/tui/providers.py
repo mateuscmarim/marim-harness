@@ -1,6 +1,6 @@
-"""The settings screen's Providers section: stacked cards for the six built-in
-providers (openrouter / google / zen / zen-go / local / claude-cli), a default-provider radio,
-live apply, implicit verification, and key removal.
+"""The settings screen's Providers section: stacked cards for the seven built-in
+providers (openrouter / google / zen / zen-go / local / claude-cli / codex-cli), a
+default-provider radio, live apply, implicit verification, and key removal.
 
 Credentials save to the GLOBAL .env only (a project .env may not set these keys
 at all — see _PROJECT_ENV_BLOCKLIST in config/env.py), and ``save_env_settings``
@@ -29,6 +29,25 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from ...config.model import ModelSource
+
+
+@dataclass(frozen=True)
+class CliDetection:
+    """Whether each CLI-backed provider's binary (and, for codex, its login)
+    was found — folded from two loose bools into one value object so
+    ``ProvidersPane.__init__`` stays under ruff's PLR0913 argument ceiling.
+    ``for_`` answers "is this provider's CLI detected" for any provider name,
+    defaulting to False for the non-CLI providers ``_configured`` never asks."""
+
+    claude_cli: bool = False
+    codex_cli: bool = False
+
+    def for_(self, provider: str) -> bool:
+        if provider == "claude-cli":
+            return self.claude_cli
+        if provider == "codex-cli":
+            return self.codex_cli
+        return False
 
 
 @dataclass(frozen=True)
@@ -91,6 +110,9 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ),
     # claude-cli stores nothing: the CLI owns auth; status is binary detection.
     ProviderSpec("claude-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
+    # codex-cli stores nothing either: `codex login` owns auth; status is
+    # binary + login detection.
+    ProviderSpec("codex-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
 
@@ -158,14 +180,14 @@ class ProvidersPane(Vertical):
         model_source: object | None,
         status: Callable[[str], None],
         set_badge: Callable[[str], None],
-        cli_detected: bool,
+        cli_detection: CliDetection,
         id: str | None = None,
     ) -> None:
         super().__init__(id=id)
         self._model_source = model_source
         self._status = status
         self._set_badge = set_badge
-        self._cli_detected = cli_detected
+        self._cli_detection = cli_detection
         # Gate commits until mounted: widget events fired while the initial
         # tree mounts (e.g. the RadioSet preselect) must not persist anything.
         self._ready = False
@@ -222,7 +244,17 @@ class ProvidersPane(Vertical):
                     yield Static("API key")
                     yield Input(password=True, id=f"prov-key-{name}")
             if name == "claude-cli":
-                yield Static("(auth handled by the claude CLI itself)", classes="prov-note")
+                yield Static(
+                    "(auth handled by the claude CLI itself)",
+                    classes="prov-note",
+                    id="prov-note-claude-cli",
+                )
+            elif name == "codex-cli":
+                yield Static(
+                    "(auth handled by `codex login`; needs codex ≥ 0.152)",
+                    classes="prov-note",
+                    id="prov-note-codex-cli",
+                )
             elif name == "zen-go":
                 yield Static(
                     "Same key as zen — removing it deconfigures both.",
@@ -242,13 +274,17 @@ class ProvidersPane(Vertical):
         # actually displayed, so the cards show live truth ('✓ connected ·
         # N models') matching what a save would show — skipped when there's
         # no MultiModelSource (embedding/tests) and for claude-cli (nothing
-        # to fetch). Once per pane lifetime: rail navigation away and back
-        # must not re-fire network calls (the cache repaints the verdicts).
+        # to fetch). codex-cli has no key but IS verifiable: its catalog
+        # fetch is a live `model/list` against the app-server, so the card
+        # can prove the CLI actually answers, not just that it is installed.
+        # Once per pane lifetime: rail navigation away and back must not
+        # re-fire network calls (the cache repaints the verdicts).
         if self._verified_once:
             return
         self._verified_once = True
         for spec in PROVIDER_SPECS:
-            if spec.write_key is not None and self._configured(spec):
+            verifiable = spec.write_key is not None or spec.name == "codex-cli"
+            if verifiable and self._configured(spec):
                 self._start_verify(spec.name)
 
     def _arm(self) -> None:
@@ -257,8 +293,8 @@ class ProvidersPane(Vertical):
     # -- painting ----------------------------------------------------------
 
     def _configured(self, spec: ProviderSpec) -> bool:
-        if spec.name == "claude-cli":
-            return self._cli_detected
+        if spec.name in ("claude-cli", "codex-cli"):
+            return self._cli_detection.for_(spec.name)
         return spec_configured(spec)
 
     def _paint_card(self, spec: ProviderSpec) -> None:
@@ -278,13 +314,16 @@ class ProvidersPane(Vertical):
             )
 
     def _status_text(self, spec: ProviderSpec, configured: bool) -> str:
-        if spec.name == "claude-cli":
-            base = "detected on PATH" if configured else "not found"
-        elif configured and spec.name in self._verify_results:
-            # A live verdict beats the static "configured": repaints (the
-            # default marker moving between cards, another card's save) must
-            # not regress a ✓/✗ badge that verification already earned.
+        if configured and spec.name in self._verify_results:
+            # A live verdict beats the static "configured"/"detected":
+            # repaints (the default marker moving between cards, another
+            # card's save) must not regress a ✓/✗ badge that verification
+            # already earned.
             base = self._verify_results[spec.name]
+        elif spec.name == "claude-cli":
+            base = "detected on PATH" if configured else "not found"
+        elif spec.name == "codex-cli":
+            base = "detected + logged in" if configured else "not found or not logged in"
         else:
             base = "configured" if configured else "not configured"
         if spec.name == current_default_provider():

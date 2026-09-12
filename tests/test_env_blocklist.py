@@ -261,3 +261,14 @@ def test_project_env_cannot_weaken_cli_timeout(isolated_env, monkeypatch, tmp_pa
     load_environment()
 
     assert "MARIM_CLAUDE_CLI_TIMEOUT" not in os.environ
+
+
+def test_project_env_cannot_change_cli_idle_timeout(isolated_env, monkeypatch, tmp_path):
+    # The idle reaper is a machine-level knob: a project .env must not be able
+    # to pin an idle `claude` open forever (0) or reap it under every turn.
+    _setup(tmp_path, monkeypatch, "MARIM_CLAUDE_CLI_IDLE_TIMEOUT=0\n")
+    monkeypatch.delenv("MARIM_CLAUDE_CLI_IDLE_TIMEOUT", raising=False)
+
+    load_environment()
+
+    assert "MARIM_CLAUDE_CLI_IDLE_TIMEOUT" not in os.environ

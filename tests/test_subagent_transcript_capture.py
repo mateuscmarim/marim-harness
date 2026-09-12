@@ -1,5 +1,3 @@
-import stat
-import sys
 from pathlib import Path
 
 import pytest
@@ -8,31 +6,30 @@ from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.session import SessionStore, TranscriptStore
 from tests.conftest import _make_deps, _make_harness
-
-_FAKE_CLI = """#!{python}
-import json, sys
-for o in [
-    {{"type": "system", "subtype": "init", "session_id": "sess-abc",
-      "model": "claude-test"}},
-    {{"type": "assistant", "message": {{"content": [
-        {{"type": "text", "text": "looking"}},
-        {{"type": "tool_use", "id": "c1", "name": "Read", "input": {{"file_path": "x"}}}},
-    ]}}}},
-    {{"type": "user", "message": {{"content": [
-        {{"type": "tool_result", "tool_use_id": "c1", "content": "body"}},
-    ]}}}},
-    {{"type": "result", "subtype": "success", "result": "done",
-      "num_turns": 1, "usage": {{"input_tokens": 1, "output_tokens": 1}}}},
-]:
-    sys.stdout.write(json.dumps(o) + "\\n")
-"""
+from tests.fakes import fake_claude_bin
 
 
 def _fake_cli(tmp_path: Path) -> str:
-    p = tmp_path / "fake_claude.py"
-    p.write_text(_FAKE_CLI.format(python=sys.executable))
-    p.chmod(p.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    return str(p)
+    return fake_claude_bin(
+        tmp_path,
+        {
+            "session_id": "sess-abc",
+            "model": "claude-test",
+            "turns": [
+                [
+                    {"text": "looking"},
+                    {"tool_use": {"id": "c1", "name": "Read", "input": {"file_path": "x"}}},
+                    {"tool_result": {"id": "c1", "content": "body"}},
+                    {
+                        "result": {
+                            "result": "done",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        }
+                    },
+                ]
+            ],
+        },
+    )
 
 
 def _cli_agent(tmp_path: Path) -> None:
@@ -100,18 +97,14 @@ async def test_cli_spawn_checkpoints_with_backend_meta(tmp_path, monkeypatch):
 async def test_killed_cli_spawn_rests_at_running_with_session_id(tmp_path, monkeypatch):
     """A CLI process that dies without a result leaves the checkpointed sidecar
     at status=running with the session id — the resumable trail."""
-    dead = tmp_path / "dead_claude.py"
-    dead.write_text(
-        f"#!{sys.executable}\n"
-        "import json, sys\n"
-        'sys.stdout.write(json.dumps({"type": "system", "subtype": "init",'
-        ' "session_id": "sess-dead", "model": "m"}) + "\\n")\n'
-        'sys.stdout.write(json.dumps({"type": "assistant", "message": {"content":'
-        ' [{"type": "text", "text": "partial"}]}}) + "\\n")\n'
-        "sys.exit(1)\n"
+    dead = fake_claude_bin(
+        tmp_path,
+        {
+            "session_id": "sess-dead",
+            "turns": [[{"text": "partial"}, {"exit": {"code": 1}}]],
+        },
     )
-    dead.chmod(dead.stat().st_mode | stat.S_IEXEC | stat.S_IRWXU)
-    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", str(dead))
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", dead)
     _cli_agent(tmp_path)
     store = SessionStore(
         path=tmp_path / "sessions" / "t.json", workspace_root=tmp_path, session_id="t", name="t"

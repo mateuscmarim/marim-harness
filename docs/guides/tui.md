@@ -7,9 +7,10 @@ surface — keys, slash commands, approvals, the sub-agents screen, settings,
 and shell passthrough.
 
 > Provider note: under the `claude-cli` main-loop provider, marim acts as a
-> launcher — Claude Code runs its own tools and its own approval loop, so
-> marim's tools, approval modes, LSP, and MCP do not apply to those turns.
-> Caveats are flagged inline where they matter.
+> launcher — Claude Code runs its own tools, LSP and MCP servers, but every
+> tool call comes back to marim as a permission request, so approval modes,
+> the approval panel, and `ask_user` apply as with a native model. Caveats
+> are flagged inline where they matter.
 
 ## The screen at a glance
 
@@ -51,6 +52,10 @@ Fields are separated by `·`, left to right:
 - **ttft N.Ns** — time-to-first-token of the latest model request: how snappy
   the provider feels right now. It lingers while idle (it describes the last
   request) and clears on a session reset.
+- **quota 37% (5h) · 12% (1w)** — `codex-cli` only: the subscription's
+  primary and secondary rate-limit windows (percent used, window length),
+  refreshed once per turn from `account/rateLimits/read`. Absent for other
+  providers or when the read fails.
 - **working… Nm** — appears only while a turn runs, with the turn's elapsed
   time and an animated spinner in the header/tab title.
 
@@ -103,6 +108,9 @@ When no turn is running, the steer keys simply submit, exactly like `enter`.
 
 **Cancelling**: `esc` cancels the running turn. The turn is flushed in a
 resumable state, the queue pauses, and `turn cancelled` appears in the log.
+Under `claude-cli` a steer is delivered into Claude's running turn, and `esc`
+sends Claude an interrupt control request (the process is killed only if it
+does not stop within 2 s).
 
 Large pastes (over 3 lines or 600 characters) collapse into a
 `[Pasted text #N +…]` marker to keep the box readable; the full text is
@@ -119,10 +127,17 @@ and `bash` (and `run_workflow` when workflows are enabled). Cycle modes with
   session scratchpad directory are pre-approved (that's what it is for).
 - **auto** — every gated call is approved automatically.
 - **plan** — mutations are denied; read-only `bash` commands are approved.
-  The agent researches and presents a plan instead of editing.
+  Outbound network (`fetch_url`/`web_search`, and Claude Code's `WebFetch`/
+  `WebSearch` under the `claude-cli` provider) is denied too — plan mode is
+  local research. The agent researches and presents a plan instead of editing.
 
-Under the `claude-cli` main-loop provider none of this applies — Claude Code
-runs its own tools and its own permission prompts.
+Under the `claude-cli` main-loop provider, Claude Code runs its own tools,
+but its approval requests are brokered into this same panel (labelled for
+Claude), so `auto`/`ask`/`plan` keep their meaning and `ask_user` routes
+through the ask-user panel too. Under `codex-cli`, Codex runs its own tools
+but its approval requests are brokered into this same panel (with the Codex
+command or file diff), so `ask` mode still gates every privileged action and
+`plan` mode is read-only.
 
 ### The approval panel
 
@@ -275,7 +290,8 @@ Two kinds of settings live here:
 
 - Mode (this session), model, theme
 - MCP server enable/disable
-- Provider credentials (Providers section)
+- Provider credentials (Providers section; keyed providers and a detected
+  `codex-cli` are verified live when the section opens)
 - Autonomous wake (session-only; mirrors `/jobs wake`)
 - Dynamic workflows (persists `MARIM_WORKFLOWS` *and* flips the live seam
   when possible)

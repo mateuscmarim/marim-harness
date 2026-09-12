@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from marim_harness.workspace.agents import find_agent
 
 
@@ -44,3 +46,50 @@ def test_example_cli_agent_parses_as_claude_cli(tmp_path: Path):
     defn = find_agent(tmp_path, "cli-worker")
     assert defn is not None
     assert defn.backend == "claude-cli"
+
+
+def test_example_codex_agent_parses_as_codex_cli(tmp_path: Path):
+    import shutil
+
+    src = Path("docs/examples/agents/codex-worker.md")
+    dst = tmp_path / ".marim" / "agents" / "codex-worker.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    defn = find_agent(tmp_path, "codex-worker")
+    assert defn is not None
+    assert defn.backend == "codex-cli"
+    assert defn.model is None  # let the CLI pick; MARIM_CODEX_CLI_MODEL overrides
+    assert defn.thinking == "medium"
+
+
+# The tiered CLI workers (docs/examples/agents/<backend>-<tier>.md, for the
+# claude-cli and codex-cli backends x fast/general/deep) are the copy-to-config
+# examples the sub-agents guide points at; a frontmatter typo there would only
+# surface for a user at spawn time, so parse them in CI.
+_TIERED_EXAMPLES = [
+    ("claude-fast", "claude-cli", "haiku", None),
+    ("claude-general", "claude-cli", "sonnet", None),
+    ("claude-deep", "claude-cli", "opus", None),
+    ("codex-fast", "codex-cli", "gpt-5.6-luna", "low"),
+    ("codex-general", "codex-cli", "gpt-5.6-terra", "medium"),
+    ("codex-deep", "codex-cli", "gpt-5.6-sol", "high"),
+]
+
+
+@pytest.mark.parametrize(("name", "backend", "model", "thinking"), _TIERED_EXAMPLES)
+def test_tiered_cli_examples_parse(
+    tmp_path: Path, name: str, backend: str, model: str, thinking: str | None
+):
+    import shutil
+
+    dst = tmp_path / ".marim" / "agents" / f"{name}.md"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path("docs/examples/agents") / f"{name}.md", dst)
+    defn = find_agent(tmp_path, name)
+    assert defn is not None
+    assert defn.backend == backend
+    assert defn.model == model
+    assert defn.thinking == thinking
+    # Every tier can write: the codex sandbox and claude's tool set key off this.
+    assert {"edit_file", "write_file", "bash"} <= set(defn.tools)
+    assert defn.description
