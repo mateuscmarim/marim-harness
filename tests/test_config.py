@@ -1275,3 +1275,35 @@ async def test_model_source_list_models_routes_zen_go(monkeypatch):
     src = ModelSource(ModelConfig(provider="zen-go", model="glm-5.2", api_key="sk-zen-test"))
     entries = await src.list_models()
     assert [e.id for e in entries] == ["glm-5.2"]
+
+
+def _client_headers(model) -> dict[str, str]:
+    """The default headers the OpenAI-compatible client sends on every request."""
+    return dict(model.client._client.headers)
+
+
+def test_build_model_opencode_sends_session_and_user_agent(monkeypatch):
+    """OpenCode Go (and Zen, same gateway) refuse requests that don't carry a
+    stable per-conversation ``x-opencode-session`` and a self-identifying
+    User-Agent — the header is how they route for prompt-cache affinity."""
+    from dataclasses import replace
+
+    monkeypatch.setenv("MARIM_PROVIDER", "zen-go")
+    monkeypatch.setenv("OPENCODE_API_KEY", "sk-zen-test")
+    cfg = load_config()
+    go = model_mod.build_model(cfg)
+    headers = _client_headers(go)
+    assert headers["user-agent"].startswith("marim-harness/")
+    session = headers["x-opencode-session"]
+    assert len(session) >= 16
+    # Stable for the process: a second model (e.g. an aux/advisor clone, or
+    # zen on the same gateway) rides the same conversation id.
+    zen = model_mod.build_model(replace(cfg, provider="zen"))
+    assert _client_headers(zen)["x-opencode-session"] == session
+
+
+def test_build_model_local_has_no_opencode_headers(monkeypatch):
+    monkeypatch.setenv("MARIM_PROVIDER", "local")
+    cfg = load_config()
+    headers = _client_headers(model_mod.build_model(cfg))
+    assert "x-opencode-session" not in headers

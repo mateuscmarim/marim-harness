@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -36,6 +37,13 @@ _DEFAULT_ZEN_GO_MODEL = "glm-5.2"
 # open coding models only — the subscription changes billing (flat monthly with
 # usage windows), not the protocol.
 _ZEN_GO_BASE_URL = "https://opencode.ai/zen/go/v1"
+# OpenCode's gateway routes on a stable per-conversation `x-opencode-session`
+# (prompt-cache affinity) and rejects Go requests without one ("MissingSessionID"),
+# and asks clients to identify themselves with their own User-Agent rather than
+# the SDK's. One id per marim *process*: build_model runs before any session
+# exists and a process is one conversation for cache purposes — a per-session
+# id would be more precise but would need the model rebuilt on /session switch.
+_OPENCODE_SESSION_ID = uuid.uuid4().hex
 
 # Every provider load_config knows how to wire. An unknown value falls through to
 # the OpenRouter branch (the historical default), but we warn first so a typo
@@ -572,6 +580,19 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw.strip().lower() in _TRUTHY
 
 
+def _opencode_http_client():
+    """pydantic-ai's stock client (its timeouts/limits) plus the two headers the
+    OpenCode gateway wants on every request — see _OPENCODE_SESSION_ID."""
+    from pydantic_ai.models import create_async_http_client
+
+    from ..interfaces.branding import package_version
+
+    client = create_async_http_client()
+    client.headers["User-Agent"] = f"marim-harness/{package_version()}"
+    client.headers["x-opencode-session"] = _OPENCODE_SESSION_ID
+    return client
+
+
 def build_model(cfg: ModelConfig):
     """Construct a Pydantic AI model from config. Imported lazily so tests that
     only check config parsing don't require provider packages."""
@@ -580,7 +601,10 @@ def build_model(cfg: ModelConfig):
 
     if cfg.provider in ("local", "zen", "zen-go"):
         assert cfg.model is not None  # these providers always have a model id
-        provider = OpenAIProvider(base_url=cfg.base_url, api_key=cfg.api_key)
+        http_client = _opencode_http_client() if cfg.provider != "local" else None
+        provider = OpenAIProvider(
+            base_url=cfg.base_url, api_key=cfg.api_key, http_client=http_client
+        )
         return OpenAIChatModel(cfg.model, provider=provider)
 
     if cfg.provider == "google":
