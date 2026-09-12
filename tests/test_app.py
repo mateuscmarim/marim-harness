@@ -19,6 +19,16 @@ def _app(tmp_path: Path) -> HarnessApp:
     return HarnessApp(harness)
 
 
+def test_app_constructs_without_a_running_loop(tmp_path: Path):
+    """The real launch path (`marim <ws>`) builds HarnessApp synchronously and
+    only then calls .run(), which starts the event loop. Anything loop-bound —
+    the SessionHost's worker task, its idle clock — must therefore be created
+    in on_mount, not __init__. Every other test here constructs the app inside
+    an already-running anyio loop, which is exactly why this one is sync."""
+    app = _app(tmp_path)
+    assert app.harness is not None
+
+
 @pytest.mark.anyio
 async def test_status_bar_shows_mode(tmp_path: Path):
     app = _app(tmp_path)
@@ -916,9 +926,9 @@ async def test_failed_turn_shows_error_and_keeps_running(tmp_path: Path):
     async def boom(*a, **k):
         raise RuntimeError("upstream exploded")
 
-    app.host.run_turn = boom  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = boom  # type: ignore[method-assign]
         await app._run_turn("hello")
         await pilot.pause()
         # the app survives the failure
@@ -944,9 +954,9 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
         started.set()
         await asyncio.sleep(3600)
 
-    app.host.run_turn = hang  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = hang  # type: ignore[method-assign]
         await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
         for _ in range(50):
             await pilot.pause()
@@ -1070,9 +1080,9 @@ async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path
         started.set()
         await asyncio.sleep(3600)
 
-    app.host.run_turn = hang  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = hang  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})
@@ -1130,9 +1140,9 @@ async def test_errored_turn_also_settles_pending_widgets(tmp_path: Path):
         raise RuntimeError("upstream exploded")
 
     app = _app(tmp_path)
-    app.host.run_turn = boom  # type: ignore[method-assign]
     async with app.run_test() as pilot:
         await pilot.pause()
+        app.host.run_turn = boom  # type: ignore[method-assign]
 
         log = app.query_one("#log", VerticalScroll)
         tool = ToolCallWidget("bash", {"command": "sleep 999"})

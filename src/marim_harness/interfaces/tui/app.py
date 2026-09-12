@@ -17,7 +17,7 @@ from ...ask_user import Choice, Question
 from ...jobs import JobRegistry
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
-from ...server.bus import EventBus
+from ...server.bus import EventBus, Subscription
 from ...server.host import SessionHost
 from ...server.wire_events import (
     AskPending,
@@ -394,32 +394,14 @@ class HarnessApp(App):
         # it. Value is (panel, focus-before-mount) so removal restores focus the
         # way run_panel's finally always did.
         self._ask_panels: dict[str, tuple[InteractionPanel, Any]] = {}
-        # The harness's session claim stays on the harness (claim hygiene) — the
-        # host is constructed with claim=None so it never tries to flock a second
-        # open-file-description in this process (self-denial: the harness already
-        # holds it). SessionHost is now the SOLE bind_ui consumer; the pump
-        # (started in on_mount) is the only path events reach the renderer.
-        # autonomous_wake=False: the ActivityMonitor owns wake in-process (the
-        # host's own driver is the daemon's; two live drivers would race for the
-        # same job-finished digests — see SessionHost.__init__).
         self._bus = EventBus()
-        self.host = SessionHost(harness, self._bus, autonomous_wake=False)
-        # The wake's job-settle trigger must run synchronously inside the jobs
-        # registry's on_change callback: jobs.wait() marks a completion
-        # wake-consumed the instant it returns, so a wake delivered one bus hop
-        # later (jobs.changed -> pump -> activity) already sees
-        # has_finished_pending() False and never fires. Wrap the host's callback
-        # (bound in SessionHost.__init__) so the wake check stays in the
-        # callback; the pump still delivers jobs.changed for the panel repaint.
-        jobs = harness.deps.jobs
-        host_jobs_changed = jobs.on_change
-
-        def _jobs_changed() -> None:
-            if host_jobs_changed is not None:
-                host_jobs_changed()
-            self.activity.maybe_wake()
-
-        jobs.on_change = _jobs_changed
+        # The in-process SessionHost (the SOLE bind_ui consumer; the pump is the
+        # only path events reach the renderer). Built in on_mount, NOT here: its
+        # __init__ spawns the worker task and reads the loop clock, and the real
+        # launch path constructs HarnessApp synchronously before .run() starts
+        # the loop (tests build it inside an anyio loop, which is why they never
+        # noticed). Bare annotation — reading it before mount is a bug.
+        self.host: SessionHost
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
@@ -446,7 +428,12 @@ class HarnessApp(App):
         # Attach the pump before anything else touches the harness: an event
         # published before a subscriber attaches (no after_seq backlog replay
         # for a fresh subscription — see EventBus.attach) is gone for good.
-        self._pump_task = create_task(self._event_pump())
+        self._bind_host()
+        # attach() runs here, synchronously, rather than inside the pump task:
+        # create_task only schedules the body, so attaching there would leave a
+        # window (until the loop next yields) where a published event has no
+        # subscriber yet and is gone for good.
+        self._pump_task = create_task(self._event_pump(self.host.bus.attach()))
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
@@ -514,13 +501,39 @@ class HarnessApp(App):
         if getattr(self.harness, "trust_prompt", None) is not None:
             self.run_worker(prompt_project_trust(self), group="trust", exit_on_error=False)
 
-    async def _event_pump(self) -> None:
+    def _bind_host(self) -> None:
+        """Build the in-process SessionHost (loop-bound, so on_mount not
+        __init__ — see the ``self.host`` annotation there). The harness's session
+        claim stays on the harness (claim hygiene) — the host gets claim=None so
+        it never tries to flock a second open-file-description in this process
+        (self-denial: the harness already holds it). autonomous_wake=False: the
+        ActivityMonitor owns wake in-process (the host's own driver is the
+        daemon's; two live drivers would race for the same job-finished digests
+        — see SessionHost.__init__)."""
+        self.host = SessionHost(self.harness, self._bus, autonomous_wake=False)
+        # The wake's job-settle trigger must run synchronously inside the jobs
+        # registry's on_change callback: jobs.wait() marks a completion
+        # wake-consumed the instant it returns, so a wake delivered one bus hop
+        # later (jobs.changed -> pump -> activity) already sees
+        # has_finished_pending() False and never fires. Wrap the host's callback
+        # (bound in SessionHost.__init__) so the wake check stays in the
+        # callback; the pump still delivers jobs.changed for the panel repaint.
+        jobs = self.harness.deps.jobs
+        host_jobs_changed = jobs.on_change
+
+        def _jobs_changed() -> None:
+            if host_jobs_changed is not None:
+                host_jobs_changed()
+            self.activity.maybe_wake()
+
+        jobs.on_change = _jobs_changed
+
+    async def _event_pump(self, sub: Subscription) -> None:
         """Render from the bus: the sole path from harness events (bind_ui, now
         exclusively wired to ``self.host``) to the widgets. One Subscription for
         the app's whole lifetime — the same shape a phase-4 remote client would
         get. Dies with the app; see on_unmount for the host worker's own
         teardown, which this pump does NOT own."""
-        sub = self.host.bus.attach()
         try:
             while True:
                 event = await sub.next_event()
