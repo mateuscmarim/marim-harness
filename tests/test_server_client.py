@@ -180,7 +180,10 @@ async def test_remote_host_end_to_end_against_a_real_daemon(server):
         assert host.info.mode == "ask"
         await host.load_session()
         assert host.info.mode == "ask"  # the daemon agrees
-        await host.steer("later")  # idle → refused by the daemon, never raises
+        # Idle → the daemon refuses (409 not_running) and the refusal is
+        # raised so the app can say the text did not go.
+        with pytest.raises(RemoteUnavailable, match="steer not delivered"):
+            await host.steer("later")
     finally:
         await host.close()
 
@@ -403,7 +406,10 @@ async def test_unreadable_history_and_asks_degrade_predictably():
         return _error(404, "not_found", "unknown session")
 
     host = _mock_host(handler)
-    assert await host.pending_asks() == []
+    # A failed read is raised, never reported as "no asks" (which would have
+    # the app dismiss every mounted panel).
+    with pytest.raises(RemoteUnavailable, match="asks not readable"):
+        await host.pending_asks()
     with pytest.raises(RemoteUnavailable, match="unknown session"):
         await host.history()
     with pytest.raises(RemoteUnavailable, match="session not readable"):
@@ -425,7 +431,8 @@ async def test_answer_ask_and_steer_status_mapping():
     # not take the verdict through is raised, not swallowed.
     with pytest.raises(RemoteUnavailable, match="answer not delivered: it broke"):
         await host.answer_ask("broken", {"approve": True})
-    await host.steer("x")  # logged, not raised
+    with pytest.raises(RemoteUnavailable, match="steer not delivered: no turn to steer"):
+        await host.steer("x")
 
 
 # --------------------------------------------------------- read model --

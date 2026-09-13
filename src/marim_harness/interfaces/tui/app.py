@@ -718,7 +718,12 @@ class HarnessApp(App):
             "resynced from history; the running turn's earlier output is not shown."
         )
         self._feed = self.link.attach(after_seq=snapshot.history_seq)
-        await self._reconcile_asks()
+        try:
+            await self._reconcile_asks()
+        except HostClosed as exc:
+            # The panels stay as they are: pending_asks raises rather than
+            # reading as "no asks", so a failed read never dismisses them.
+            self.append_log(ErrorMessage(f"asks not resynced: {exc}"))
 
     def _bind_host(self) -> None:
         """Build the in-process SessionHost (loop-bound, so on_mount not
@@ -1659,7 +1664,13 @@ class HarnessApp(App):
             )
             return
         # The "↪ steering" notice renders off steer.accepted (see the handler).
-        await self.link.steer(text, event.attachments)
+        try:
+            await self.link.steer(text, event.attachments)
+        except HostClosed as exc:
+            # Attached: the daemon refused it (the turn ended under the
+            # keypress) or did not answer. The text is in the box's history;
+            # say why it did not go rather than lose it silently.
+            self.append_log(ErrorMessage(f"steer not delivered: {exc}"))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()

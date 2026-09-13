@@ -247,7 +247,9 @@ class RemoteSessionHost:
         # a notice before it gets here.
         response = await self._request("POST", "/steer", json={"text": text})
         if response.status_code != 200:
-            logger.info("remote steer refused: %s", _error_message(response))
+            # Typically 409 not_running: the turn ended between the keypress
+            # and the request. The text would otherwise vanish silently.
+            raise RemoteUnavailable(f"steer not delivered: {_error_message(response)}")
 
     async def answer_ask(self, ask_id: str, answer: dict) -> bool:
         response = await self._request("POST", f"/asks/{ask_id}", json=answer)
@@ -266,7 +268,9 @@ class RemoteSessionHost:
     async def pending_asks(self) -> list[dict]:
         response = await self._request("GET", "/asks")
         if response.status_code != 200:
-            return []
+            # Not "no asks": a failed read. Returning [] here would have the
+            # app's reconciliation dismiss every mounted panel as stale.
+            raise RemoteUnavailable(f"asks not readable: {_error_message(response)}")
         return list(response.json().get("asks", []))
 
     async def set_mode(self, mode: str) -> None:

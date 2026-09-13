@@ -99,6 +99,8 @@ class _Link:
         self.feeds: list[_Feed] = []
         self.fail_load: Exception | None = None
         self.answer_error: Exception | None = None
+        self.asks_error: Exception | None = None
+        self.steer_error: Exception | None = None
 
     async def load_session(self) -> str:
         self.calls.append("load_session")
@@ -119,6 +121,9 @@ class _Link:
 
     async def pending_asks(self) -> list[dict]:
         self.calls.append("pending_asks")
+        if self.asks_error is not None:
+            error, self.asks_error = self.asks_error, None  # fail once
+            raise error
         return list(self.asks)
 
     async def submit(self, prompt, attachments=None, *, trigger="user") -> str:
@@ -131,6 +136,8 @@ class _Link:
 
     async def steer(self, text, attachments=None) -> None:
         self.calls.append(("steer", text))
+        if self.steer_error is not None:
+            raise self.steer_error
 
     async def answer_ask(self, ask_id, answer) -> bool:
         self.calls.append(("answer", ask_id, answer))
@@ -419,6 +426,50 @@ async def test_undelivered_answer_is_reported_and_the_ask_comes_back(tmp_path, m
             ),
             what="the second answer",
         )
+
+
+@pytest.mark.anyio
+async def test_failed_asks_read_on_resync_keeps_the_panels(tmp_path, monkeypatch):
+    """GET asks failing during a resync is an error to report, not "no
+    asks": the mounted panel must survive it."""
+    payload = {"tool_name": "bash", "args": {"command": "ls"}, "tool_call_id": "c1"}
+    ask = {"id": "a1", "kind": "approval", "payload": payload, "created": "now"}
+
+    def factory(target, root, *, on_state=None):
+        link = _Link(target, root, on_state=on_state)
+        link.asks = [ask]
+        return link
+
+    monkeypatch.setattr(app_mod, "RemoteSessionHost", factory)
+    app = HarnessApp(None, remote=_target(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = app.link
+        await _settle(pilot, lambda: bool(app.query(ApprovalPanel)), what="the parked approval")
+        link.asks_error = RemoteUnavailable("asks not readable: boom")
+        link.feed.push("stream.gap", resync="history")
+        await _settle(
+            pilot,
+            lambda: any("asks not resynced" in t for t in _texts(app, ErrorMessage)),
+            what="the failed-read error",
+        )
+        assert len(app.query(ApprovalPanel)) == 1 and "a1" in app._ask_panels
+
+
+@pytest.mark.anyio
+async def test_undelivered_steer_is_reported(remote):
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    app, links = remote
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        link.steer_error = RemoteUnavailable("steer not delivered: no running turn to steer")
+        app.turns.note_submitted("pretend")
+        await app.on_prompt_input_steer(PromptInput.Steer("faster"))
+        await pilot.pause()
+        assert ("steer", "faster") in link.calls
+        assert any("steer not delivered" in t for t in _texts(app, ErrorMessage))
 
 
 @pytest.mark.anyio
