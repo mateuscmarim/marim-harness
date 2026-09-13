@@ -289,18 +289,15 @@ async def test_subagent_wire_ignores_unknown_stream(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_cli_activity_wire_renders_main_transcript_cards(tmp_path: Path):
-    """The claude-cli side channel renders its tool activity as native cards in
-    the MAIN transcript, sharing the top-level sink's run state."""
+async def test_tool_call_and_result_wire_render_main_transcript_cards(tmp_path: Path):
+    """A top-level tool.call + tool.result pair renders as a native card in the
+    MAIN transcript — the one path both native tools and an external CLI
+    model's own tool activity (published by the host as the same frames) take."""
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        await app.stream.on_cli_activity_wire(
-            [
-                _call("t1", "read_file", {"path": "config.py"}),
-                _result("t1", "PORT = 8080"),
-            ]
-        )
+        await app.stream.on_wire(_call("t1", "read_file", {"path": "config.py"}))
+        await app.stream.on_wire(_result("t1", "PORT = 8080"))
         await pilot.pause()
 
         widget = app.stream.tool_widgets["t1"]

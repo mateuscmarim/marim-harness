@@ -353,16 +353,17 @@ class SessionHost:
         self._publish("subagent.usage", {"stream_id": stream_id, "usage": _dump_usage(usage)})
 
     async def _on_cli_activity(self, events: list) -> None:
-        wire = []
+        """An external CLI model's own tool activity (claude-cli / codex-cli run
+        their tools themselves, so the calls never enter the pydantic-ai stream)
+        is published as the SAME top-level ``tool.call`` / ``tool.result`` events
+        the turn stream produces for a native tool. Every client then renders a
+        CLI provider's tool calls with the code it already has for native ones —
+        the earlier ``subagent.cli_activity`` envelope was a TUI-only side channel
+        that other clients (marim-mobile) dropped along with the rest of
+        ``subagent.*``, so under those providers their transcripts showed no tool
+        calls at all."""
         for event in events:
-            obj = event_to_dict(event)
-            if obj is None:
-                continue
-            wire_type = STREAM_EVENT_TYPES.get(obj.pop("type"))
-            if wire_type is not None:
-                wire.append({"type": wire_type, **obj})
-        if wire:
-            self._publish("subagent.cli_activity", {"events": wire})
+            self._publish_stream_event(event, self._session_id())
 
     async def _on_workflow_spawn(
         self, stream_id: str, spawn_type: str, task: str, parent_tool_call_id: str
@@ -411,6 +412,29 @@ class SessionHost:
         (EventBus.publish returns the Event, which those callback signatures
         don't accept)."""
         self.bus.publish(type, data)
+
+    def _session_id(self) -> str | None:
+        store = self.harness.session.store
+        return store.session_id if store is not None else None
+
+    def _publish_stream_event(self, event, session_id: str | None) -> None:
+        """Publish one pydantic-ai stream event as its top-level wire event
+        (``text.delta`` / ``thinking.delta`` / ``tool.call`` / ``tool.result``);
+        an event outside the surfaced vocabulary publishes nothing. Shared by the
+        turn stream and the CLI-model activity side channel so both produce
+        byte-identical frames."""
+        obj = event_to_dict(event)
+        if obj is None:
+            return
+        wire_type = STREAM_EVENT_TYPES.get(obj.pop("type"))
+        if wire_type is None:
+            return
+        if wire_type == "tool.result":
+            # Image returns ride as cache references (see image_refs): the
+            # dict form already carries the text placeholder.
+            part = getattr(event, "part", None)
+            obj["images"] = image_refs(getattr(part, "content", None), session_id)
+        self.bus.publish(wire_type, obj)
 
     # ------------------------------------------------------------- turns --
     async def _worker_loop(self) -> None:
@@ -461,20 +485,9 @@ class SessionHost:
                 if total != last_total:
                     last_total = total
                     self.bus.publish("turn.usage", {"turn_id": turn_id, "total_tokens": total})
-                obj = event_to_dict(event)
-                if obj is None:
-                    continue
-                wire_type = STREAM_EVENT_TYPES.get(obj.pop("type"))
-                if wire_type == "tool.result":
-                    # Image returns ride as cache references (see image_refs):
-                    # the dict form already carries the text placeholder.
-                    part = getattr(event, "part", None)
-                    obj["images"] = image_refs(getattr(part, "content", None), session_id)
-                if wire_type is not None:
-                    self.bus.publish(wire_type, obj)
+                self._publish_stream_event(event, session_id)
 
-        store = self.harness.session.store
-        session_id = store.session_id if store is not None else None
+        session_id = self._session_id()
         return await self.harness.run_turn(
             prompt, event_stream_handler=handler, attachments=attachments
         )

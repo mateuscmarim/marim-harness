@@ -530,31 +530,55 @@ async def test_subagent_side_channels_published(tmp_path):
     await host.aclose()
 
 
-async def test_cli_activity_converts_events_to_wire(tmp_path):
+async def test_cli_activity_publishes_top_level_tool_events(tmp_path):
+    """An external CLI model's own tool calls (claude-cli / codex-cli run their
+    tools themselves) go out as the SAME top-level ``tool.call`` /
+    ``tool.result`` frames a native tool produces — not a TUI-only envelope
+    other clients drop — so every client renders them with its native-tool
+    code. ``tool.result`` carries the ``images`` key like the turn stream's."""
+    from datetime import datetime, timezone
+
+    from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent, ToolReturnPart
+
     deps = _make_deps(tmp_path, mode=Mode.auto)
     harness = _make_harness(_text_only_model(), deps)
     host = SessionHost(harness, EventBus())
     events = _spy(host.bus)
 
     assert harness.deps.ui.on_cli_activity is not None
-    stream_event = PartStartEvent(index=0, part=TextPart(content="hi"))
-    await harness.deps.ui.on_cli_activity([stream_event])
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(tool_name="Bash", args={"command": "ls"}, tool_call_id="cli-1")
+    )
+    result = FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="Bash",
+            content="ok",
+            tool_call_id="cli-1",
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+    )
+    await harness.deps.ui.on_cli_activity([call, result])
 
-    activity = next(e for e in events if e.type == "subagent.cli_activity")
-    assert activity.data["events"], "expected at least one wire event"
-    assert activity.data["events"][0]["type"] == "text.delta"
+    assert not any(e.type.startswith("subagent.") for e in events)
+    tool_call = next(e for e in events if e.type == "tool.call")
+    assert tool_call.data == {"id": "cli-1", "name": "Bash", "args": {"command": "ls"}}
+    tool_result = next(e for e in events if e.type == "tool.result")
+    assert tool_result.data["id"] == "cli-1"
+    assert tool_result.data["content"] == "ok"
+    assert tool_result.data["status"] == "done"
+    assert tool_result.data["images"] == []
     await host.aclose()
 
 
-async def test_cli_activity_drops_unconvertible_events_without_publishing_empty(tmp_path):
+async def test_cli_activity_with_no_events_publishes_nothing(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.auto)
     harness = _make_harness(_text_only_model(), deps)
     host = SessionHost(harness, EventBus())
     events = _spy(host.bus)
 
     assert harness.deps.ui.on_cli_activity is not None
-    await harness.deps.ui.on_cli_activity([])  # no events converted -> nothing published
-    assert not any(e.type == "subagent.cli_activity" for e in events)
+    await harness.deps.ui.on_cli_activity([])
+    assert events == []
     await host.aclose()
 
 
@@ -772,8 +796,8 @@ async def test_cli_activity_skips_unconvertible_events_but_keeps_the_rest(tmp_pa
     text = PartStartEvent(index=0, part=TextPart(content="hi"))
     await harness.deps.ui.on_cli_activity([object(), text])
 
-    activity = next(e for e in events if e.type == "subagent.cli_activity")
-    assert [w["type"] for w in activity.data["events"]] == ["text.delta"]
+    assert [e.type for e in events] == ["text.delta"]
+    assert events[0].data == {"text": "hi"}
     await host.aclose()
 
 

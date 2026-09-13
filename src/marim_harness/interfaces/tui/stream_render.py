@@ -47,8 +47,8 @@ def wire_from_event(event) -> WireEvent | None:
     event isn't part of the surfaced vocabulary.
 
     TEMPORARY (phase 3a): the app still hands the renderer raw pydantic-ai events
-    on three legacy paths (``on_events`` / ``on_subagent_event`` /
-    ``on_cli_activity``). Routing them through the *same* conversion the
+    on two legacy paths (``on_events`` / ``on_subagent_event``). Routing them
+    through the *same* conversion the
     ``SessionHost`` publishes with (``event_to_dict`` + ``STREAM_EVENT_TYPES``)
     is what makes the legacy paths and the bus path render identically — and
     what keeps this module free of ``pydantic_ai.messages``. Deleted once the app
@@ -949,7 +949,7 @@ class StreamRenderer:
 
     def _log_container(self) -> VerticalScroll:
         """The main log's mount target — the one query-selector site shared by
-        every top-level-sink construction (``on_events``, ``on_cli_activity``) and
+        every top-level-sink construction (``on_events``, ``on_wire``) and
         by ``claim_workflow_spawn``'s standalone card mount."""
         return self.app.query_one("#log", VerticalScroll)
 
@@ -1034,7 +1034,12 @@ class StreamRenderer:
         ``thinking.delta`` / ``tool.call`` / ``tool.result``), already parsed by
         the app's pump. Anything else is ignored here — the pump routes the rest
         of the vocabulary (asks, workflow cards, session status) to its own
-        handlers."""
+        handlers. An external CLI model's own tool activity (claude-cli /
+        codex-cli run their tools themselves) arrives here too: the host
+        publishes it as the same ``tool.call`` / ``tool.result`` events, so a
+        card mounted for it finalizes the in-flight assistant text and the
+        model's next text part opens a fresh message below it, exactly as for a
+        native tool."""
         await self.dispatch_wire(wire, _TopLevelSink(self, self._log_container()))
 
     async def on_subagent_wire(self, stream_id: str, wire: WireEvent, usage=None) -> None:
@@ -1047,21 +1052,6 @@ class StreamRenderer:
         direct widget mutation is safe and parallel streams stay race-free by
         stream_id."""
         await self._route_subagent(stream_id, wire, usage_from_dump(usage) if usage else None)
-
-    async def on_cli_activity_wire(self, events: list) -> None:
-        """Render a claude-cli model's own tool_use/tool_result as native tool cards
-        in the MAIN transcript. That provider delegates the turn to ``claude -p`` and
-        returns text only (Claude runs its own tools), so these display-only events
-        arrive via this side-channel instead of the turn's own stream — keeping them
-        out of the agent graph (no double-execution). A ``_TopLevelSink`` shares the
-        renderer's current-assistant/run state with the turn stream, so a card
-        mounted here finalizes the in-flight assistant text and the model's next
-        text part opens a fresh message below it — preserving interleaving. Fired on
-        the app's event loop during the live turn, so direct widget mutation is
-        safe."""
-        sink = _TopLevelSink(self, self._log_container())
-        for wire in events:
-            await self.dispatch_wire(wire, sink)
 
     async def _route_subagent(self, stream_id: str, wire, usage) -> None:
         """Shared body of the sub-agent stream entry points: fold ``usage`` (a
@@ -1084,12 +1074,6 @@ class StreamRenderer:
         see :func:`wire_from_event`. ``usage`` here is the live ``RunUsage``
         object the runner passes, not a wire dump."""
         await self._route_subagent(stream_id, wire_from_event(event), usage)
-
-    async def on_cli_activity(self, events: list) -> None:
-        """TEMPORARY (phase 3a) pydantic-ai adapter for
-        :meth:`on_cli_activity_wire` — see :func:`wire_from_event`."""
-        wires = [wire for e in events if (wire := wire_from_event(e)) is not None]
-        await self.on_cli_activity_wire(wires)
 
     async def on_subagent_notice(self, stream_id: str, message: str) -> None:
         """Show an out-of-band status line (e.g. a transient-error retry) on the

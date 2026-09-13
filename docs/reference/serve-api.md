@@ -826,6 +826,11 @@ surfaced):
 | `tool.call`      | `{"name": "...", "args": {...}, "id": "..."}` |
 | `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied", "images": [{"sha": "...", "media_type": "image/png", "bytes": 4096}]}` — `images` lists any image the tool returned (a `read_file` on a PNG, an MCP image block); `content` carries a text placeholder in its place, and the bytes are served at `GET .../images/{sha}` the moment the event is published |
 
+Under the `claude-cli` and `codex-cli` providers the CLI runs its own tools,
+so those calls never enter the model loop's stream; the daemon publishes them
+as the same `tool.call` / `tool.result` events (with `status`), so a client
+renders a CLI provider's tool calls with no special case.
+
 Turn lifecycle:
 
 | Type            | `data`                                                       |
@@ -869,7 +874,6 @@ Session and housekeeping:
 | `subagent.model`      | `{"stream_id": "...", "model": "..."}`    |
 | `subagent.thinking`   | `{"stream_id": "...", "level": "..."}`    |
 | `subagent.usage`      | `{"stream_id": "...", "usage": {...}}` — `usage` is a `usage_summary` dump |
-| `subagent.cli_activity` | `{"events": [{"type": "text.delta" \| ..., ...}, ...]}` — a CLI sub-agent's replayed stream, already remapped to wire types |
 | `stream.gap`          | `{"resync": "history"}`                   |
 
 Workflow orchestration (`run_workflow`):

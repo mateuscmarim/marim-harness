@@ -35,7 +35,6 @@ from ...server.wire_events import (
     SessionTtft,
     SteerAccepted,
     StreamGap,
-    SubagentCliActivity,
     SubagentEvent,
     SubagentModel,
     SubagentNotice,
@@ -155,7 +154,7 @@ async def _handle_subagent_event(app: "HarnessApp", wire: SubagentEvent) -> None
     # contract (serve-api.md) keeps the inner "type" as the raw stream-event
     # kind (text/thinking/tool_call/tool_result) — while parse_wire_event only
     # speaks wire types (text.delta/...). Remap here, the way the host does for
-    # cli_activity, or every sub-agent stream parses as unknown and vanishes.
+    # the turn stream, or every sub-agent stream parses as unknown and vanishes.
     wire_type = STREAM_EVENT_TYPES.get(str(wire.event.get("type")))
     if wire_type is None:
         return
@@ -163,11 +162,6 @@ async def _handle_subagent_event(app: "HarnessApp", wire: SubagentEvent) -> None
     if nested is None:
         return
     await app.stream.on_subagent_wire(wire.stream_id, nested, wire.usage)
-
-
-async def _handle_subagent_cli_activity(app: "HarnessApp", wire: SubagentCliActivity) -> None:
-    parsed = [w for e in wire.events if (w := parse_wire_event(e)) is not None]
-    await app.stream.on_cli_activity_wire(parsed)
 
 
 async def _handle_subagent_notice(app: "HarnessApp", wire: SubagentNotice) -> None:
@@ -355,7 +349,6 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     ToolCall: _handle_stream_wire,
     ToolResult: _handle_stream_wire,
     SubagentEvent: _handle_subagent_event,
-    SubagentCliActivity: _handle_subagent_cli_activity,
     SubagentNotice: _handle_subagent_notice,
     SubagentModel: _handle_subagent_model,
     SubagentThinking: _handle_subagent_thinking,
