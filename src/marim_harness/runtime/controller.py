@@ -8,6 +8,7 @@ consumables, steer buffering) from model/session/MCP lifecycle management.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterable, Callable, Sequence
@@ -18,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import DeferredToolRequests, StructuredDict, capture_run_messages
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -82,6 +83,17 @@ _CONTENTION_BACKOFF_SECONDS = 2.0
 # other site emits it. See TurnController._is_structured_exhaustion for why the
 # message — not a ValidationError in the cause chain — is the discriminator.
 _OUTPUT_RETRY_EXHAUSTED = "maximum output retries"
+
+
+def _remaining(limit: int | None, spent: int) -> int | None:
+    """What a turn-wide limit leaves for the next round: ``None`` stays
+    unbounded; a limit already met or exceeded floors at 0 (pydantic-ai
+    treats a 0 request_limit as "refuse the next request", which is the
+    intended terminal state — a negative value would mean the same but
+    read as a bug in a traceback)."""
+    if limit is None:
+        return None
+    return max(0, limit - spent)
 
 
 def _exhaustion_errors(exc: BaseException) -> list[str]:
@@ -374,6 +386,7 @@ class TurnController:
         get_thinking: Callable[[], str | None] = lambda: None,
         lsp_toolset: FunctionToolset[Deps] | None = None,
         output_type: Any = None,
+        usage_limits: UsageLimits | None = None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -404,6 +417,20 @@ class TurnController:
         self._structured_type: Any = (
             StructuredDict(output_type) if isinstance(output_type, dict) else output_type
         )
+        # Per-turn usage limits (HarnessConfig.usage_limits). The limit is a
+        # property of the TURN, but pydantic-ai checks limits against the
+        # RunUsage handed to each agent.run — and every round of the approval
+        # loop gets a fresh one (see _run_with_approval for why that stays
+        # so). _round_usage_limits therefore rebases the turn limit onto
+        # what the turn has already spent before each round.
+        self._usage_limits = usage_limits
+        # This turn's spend across every round, success or failure. Reset at
+        # the top of run_turn; every bank into session.usage during the turn
+        # also lands here (see _bank_usage), so it is both the per-round
+        # limit rebase and the `usage` a TurnOutcome reports. A fresh object
+        # per turn, so an outcome returned earlier is never mutated by a
+        # later turn.
+        self._turn_usage = RunUsage()
 
         # One-shot turn state (consumed by _assemble_prompt, restored on failure).
         self._pending_error_note: str | None = None
@@ -536,6 +563,7 @@ class TurnController:
                 result=retry_outcome.result,
                 structured_output=None,
                 errors=errors,
+                usage=self._turn_usage,
             )
         return retry_outcome
 
@@ -864,6 +892,48 @@ class TurnController:
 
         return _wrapped
 
+    def _bank_usage(self, delta: RunUsage) -> None:
+        """Bank one round's spend into BOTH the turn accumulator and the
+        session total. Every in-turn bank must go through here: a round that
+        reached session.usage but not the turn accumulator would let the next
+        round overshoot the turn's usage limit and under-report the outcome's
+        ``usage``."""
+        self._turn_usage.incr(delta)
+        self.session.add_usage(delta)
+
+    def _round_usage_limits(self) -> UsageLimits | None:
+        """The turn's usage limit expressed for the next agent.run round.
+
+        pydantic-ai checks a limit against the ``usage`` object it is given,
+        and each round gets a fresh ``RunUsage`` (the failure-path banking
+        depends on that — see _run_with_approval). So a turn-wide limit has
+        to be rebased: the round may spend what the turn has left. A limit
+        already reached rebases to 0, which pydantic-ai rejects before the
+        round's first request (``requests >= request_limit``) — exactly the
+        "no more requests this turn" the caller asked for. Token limits are
+        checked after each response, so a round can still overshoot by one
+        response's worth; that matches pydantic-ai's own single-run
+        semantics and is the documented behavior of ``total_tokens_limit``.
+        Every count limit is rebased; ``cost_limit`` is not (RunUsage.cost
+        needs the model's price table, which the accumulator here doesn't
+        carry), so a cost limit composed through ``with_config_overrides``
+        applies per round. ``per_request_input_tokens_limit`` is per request
+        by definition and passes through. None when no limit is configured,
+        so the default path is untouched.
+        """
+        limits = self._usage_limits
+        if limits is None:
+            return None
+        spent = self._turn_usage
+        return dataclasses.replace(
+            limits,
+            request_limit=_remaining(limits.request_limit, spent.requests),
+            tool_calls_limit=_remaining(limits.tool_calls_limit, spent.tool_calls),
+            input_tokens_limit=_remaining(limits.input_tokens_limit, spent.input_tokens),
+            output_tokens_limit=_remaining(limits.output_tokens_limit, spent.output_tokens),
+            total_tokens_limit=_remaining(limits.total_tokens_limit, spent.total_tokens),
+        )
+
     async def _handle_run_failure(
         self,
         exc: BaseException,
@@ -888,7 +958,7 @@ class TurnController:
         # (it can't block the re-raise / Ctrl-C). Counts the failed
         # attempt on the overflow-retry path too: those tokens were
         # spent before the compaction-and-retry below.
-        self.session.add_usage(round_usage)
+        self._bank_usage(round_usage)
         # A steer flushed into this round may never have reached a
         # request boundary; put it back in the buffer (for the
         # overflow retry below, or the TUI's turn-end pickup) before
@@ -1061,13 +1131,27 @@ class TurnController:
         # busy state / queued-prompt drain behind it) must not block on it.
         # Headless settles the task before teardown via wait_autoname.
         self.session.schedule_autoname()
+        # `usage` is the turn accumulator itself (not a copy): the dict-schema
+        # corrective round that may follow this outcome banks into the same
+        # object, so the outcome the caller finally receives reflects the
+        # whole turn either way.
         if isinstance(output, str):
             return TurnOutcome(
-                subtype="success", result=output, structured_output=None, errors=None
+                subtype="success",
+                result=output,
+                structured_output=None,
+                errors=None,
+                usage=self._turn_usage,
             )
         # Structured-output terminal: the deferred arm never reaches here —
         # _run_with_approval intercepts DeferredToolRequests mid-loop.
-        return TurnOutcome(subtype="success", result=None, structured_output=output, errors=None)
+        return TurnOutcome(
+            subtype="success",
+            result=None,
+            structured_output=output,
+            errors=None,
+            usage=self._turn_usage,
+        )
 
     async def _run_with_approval(
         self,
@@ -1113,6 +1197,7 @@ class TurnController:
                         event_stream_handler=event_stream_handler,
                         toolsets=toolsets,
                         usage=round_usage,
+                        usage_limits=self._round_usage_limits(),
                         # None ⇒ keep the agent's own [str, DeferredToolRequests];
                         # a structured harness overrides it on every round,
                         # continuations included (see _run_output_type).
@@ -1124,7 +1209,7 @@ class TurnController:
                         # infra failure: bank the spend, flush what the run
                         # produced, and report through the outcome. No error
                         # note — there is nothing the model can act on next turn.
-                        self.session.add_usage(round_usage)
+                        self._bank_usage(round_usage)
                         self._reclaim_undelivered_steers()
                         await self._flush_resumable(captured, resumable)
                         # The flush wrote a repaired, resumable history —
@@ -1138,6 +1223,7 @@ class TurnController:
                             result=None,
                             structured_output=None,
                             errors=_exhaustion_errors(exc),
+                            usage=self._turn_usage,
                         )
                     retry = await self._handle_run_failure(
                         exc, captured, resumable, deferred_results, round_usage, retried
@@ -1176,7 +1262,7 @@ class TurnController:
             # execute them); persist them as real tool messages so replay,
             # GET history and compaction see them like marim's own tools.
             self.session.history = expand_cli_activity(result.all_messages())
-            self.session.add_usage(result.usage)
+            self._bank_usage(result.usage)
             # Record the last request's real input-token count so the next
             # compaction check gates on the provider's measurement rather than the
             # chars/4 estimate alone (which undershoots dense code ~25% and can sail
@@ -1235,6 +1321,9 @@ class TurnController:
         # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
         # session-lived, so the counter must be re-zeroed as each turn starts.
         self.deps.advisor_uses = 0
+        # Fresh per-turn spend accumulator (a NEW object, not a reset in place:
+        # the previous turn's TurnOutcome still references the old one).
+        self._turn_usage = RunUsage()
         # Defensive: a turn always begins with a clean, persisted history, so the
         # dirty-history latch must be down. Every normal exit already clears it;
         # this guards against an exotic exit path leaving it stuck True and

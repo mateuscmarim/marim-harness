@@ -109,6 +109,15 @@ agent run.
   (see [Resumability](#resumability-persisted-sessions) below), so the next
   turn can pick up from what already happened rather than from before the
   turn.
+- **A tripped usage limit raises `UsageLimitExceeded`** (pydantic-ai's
+  exception) out of `run_turn`, the same way an infra failure does — a
+  turn that blew its budget is a failed attempt, not a result. The limit
+  set by `with_usage_limits(...)` covers the whole turn across approval
+  rounds, so a model that keeps calling a gated tool stops after
+  `request_limit` requests no matter how many times it was approved. The
+  spend up to the trip is still banked on `harness.session.usage` (and the
+  persisted session, if any), so an unattended embedder can log it before
+  exiting. A limit that isn't reached is invisible.
 - **Hard provider failures spill a debug payload** best-effort to
   `<workspace>/.marim/last-provider-error.json` regardless of session
   config. Gitignore `.marim/` if your workspace is a repo — see
@@ -154,6 +163,7 @@ audit: Audit = outcome.structured_output
 | `result` | final assistant text; `None` when the run ended in pure structured output |
 | `structured_output` | the validated model instance (BaseModel schema) or dict (JSON Schema) |
 | `errors` | failure detail on error subtypes |
+| `usage` | a `RunUsage` for **this turn** — requests, tokens, tool calls summed across every approval round. `harness.session.usage` stays the cumulative total across turns; `outcome.usage` is this turn's slice of it. |
 
 Enforcement differs by schema kind: a `BaseModel` is validated by
 pydantic-ai inside the run (with retries); a JSON Schema dict constrains

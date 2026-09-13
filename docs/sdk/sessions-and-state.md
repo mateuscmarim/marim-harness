@@ -58,6 +58,18 @@ when you opt in (`global_instructions=True` via `with_config_overrides`, or
 (global `AGENTS.md`, skills, plugins, memory index) — everything else stays
 workspace-scoped.
 
+## What a bare build reads inside the workspace
+
+Workspace-scoped is not the same as "anything in the workspace is trusted".
+A bare build reads workspace files **only through the tools the model
+calls** — it does not, on its own, read the workspace's `AGENTS.md` /
+`CLAUDE.md` into the system prompt. That is opt-in via
+`with_instructions(project=True)` (or `with_defaults()`), because for an
+embedder whose workspace is an untrusted checkout (a review bot over a
+contributor's branch) those files are attacker-controlled text that would
+otherwise land straight in the model's instructions. Opt in when the
+workspace is yours; leave it off when it isn't.
+
 ## The `.marim/` spill
 
 **One workspace-local exception** to "nothing is written uninvited":
@@ -96,6 +108,8 @@ directory your sessions base lives in and can be wiped by deleting the
 | Memory | off | `with_memory()` | `with_memory(dir=...)` |
 | Skills (read-only scan) | off | `with_skills()` | `with_skills(dirs=[...])` |
 | Global instructions / plugins (XDG read) | off | `with_defaults()` or `global_instructions=True` | no (XDG by definition) |
+| Workspace `AGENTS.md` / `CLAUDE.md` into the system prompt | off | `with_defaults()` or `with_instructions(project=True)` | n/a — workspace-local by definition |
+| Workspace file edits (`write_file`/`edit_file`) | on, gated | `with_files_write(False)` turns them off | confined to `workspace` root |
 | Stats ledger | off | `with_sessions()` (default on; `stats=False` / `MARIM_STATS=0` offs) | sibling `stats/` of sessions base (`with_sessions(dir=...)`) |
 | Workspace file edits | via gated tools | — | confined to `workspace` root |
 | `.marim/last-provider-error.json` | on hard provider failure | always (best-effort) | no — workspace-local |

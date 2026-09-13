@@ -18,6 +18,7 @@ from ..mcp.discovered_instructions_capability import DiscoveredInstructionsCapab
 if TYPE_CHECKING:
     from pydantic_ai.agent import EventStreamHandler
     from pydantic_ai.models import Model
+    from pydantic_ai.usage import UsageLimits
 
     from ..config.model import ModelSource, MultiModelSource
     from ..session.claim import SessionClaim
@@ -76,7 +77,7 @@ from .deps import (
     SubAgentUsageCb,
     WorkflowRunner,
 )
-from .instructions import register_instructions
+from .instructions import InstructionSources, register_instructions
 from .permissions import Mode
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,22 @@ class HarnessConfig:
     # on; the builder turns it off so an embedded harness never reads the
     # embedding user's marim config dir.
     global_instructions: bool = True
+    # Register the project-instructions closure (the workspace's ``AGENTS.md``
+    # / ``CLAUDE.md`` in the system prompt). The CLI keeps this on: the user
+    # launched marim inside their own project. The builder turns it off for a
+    # bare build — an embedder's workspace is often a clone of someone
+    # else's code (a PR under review, say), and its author would otherwise
+    # write straight into the system prompt; ``with_instructions(project=True)``
+    # or ``with_defaults()`` opts back in. Registration-time, like
+    # global_instructions, so the closure is absent rather than empty.
+    project_instructions: bool = True
+    # Per-TURN usage limits on the main agent (HarnessBuilder.with_usage_limits).
+    # None ⇒ unbounded, today's behavior. The limit covers the whole turn —
+    # every approval continuation and corrective round — not one agent.run
+    # round: TurnController rebases it per round against the turn's running
+    # usage (see _round_usage_limits). Tripping it raises pydantic-ai's
+    # UsageLimitExceeded out of run_turn with the spend already banked.
+    usage_limits: UsageLimits | None = None
     # Gates the instruction closures that advertise a tool group (sub-agent
     # roster for spawn_agent, skill index for activate_skill, memory index
     # for recall) so an embedded harness's prompt never mentions a tool it
@@ -378,7 +395,10 @@ def build_collaborators(
         agent,
         mcp,
         cfg.proactive_memory,
-        global_instructions=cfg.global_instructions,
+        sources=InstructionSources(
+            global_instructions=cfg.global_instructions,
+            project_instructions=cfg.project_instructions,
+        ),
         groups=cfg.groups,
     )
     # Session-scoped LSP server pool, reachable by the navigation/diagnostics
@@ -632,6 +652,7 @@ class Harness:
             get_model=lambda: self.current_model,
             get_thinking=lambda: self.thinking_level_id,
             output_type=cfg.output_type,
+            usage_limits=cfg.usage_limits,
         )
         # Advisor: build ONE advise callable for the harness lifetime; which
         # model it consults is re-resolved PER CALL through the closure over
