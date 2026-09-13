@@ -11,6 +11,10 @@ def test_turn_outcome_fields_and_defaults():
     assert ok.result == "hello"
     assert ok.structured_output is None
     assert ok.errors is None
+    # `usage` defaults to an empty RunUsage so hand-built outcomes (tests,
+    # adapters) need not supply one; the controller always does.
+    assert ok.usage.requests == 0
+    assert ok.usage.total_tokens == 0
 
 
 def test_turn_outcome_is_frozen():

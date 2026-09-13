@@ -234,8 +234,10 @@ def test_bare_build_excludes_group_gated_instruction_closures(tmp_path: Path):
     # embedding user's ~/.config/marim).
     assert "_global_instructions" not in names
     assert "_plugin_instructions" not in names
+    # Gated on project_instructions (a bare build never lets the workspace's
+    # own AGENTS.md into the system prompt — see with_instructions(project=)).
+    assert "_project_instructions" not in names
     # Ungated closures still register.
-    assert "_project_instructions" in names
     assert "_mcp_index" in names
     assert "_memory_policy" in names
 
@@ -249,7 +251,87 @@ def test_with_defaults_includes_group_gated_instruction_closures(tmp_path: Path)
         "_memory_indexes",
         "_global_instructions",
         "_plugin_instructions",
+        "_project_instructions",
     } <= names
+
+
+def test_with_instructions_project_opts_in_and_is_sticky(tmp_path: Path):
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_instructions(project=True)
+        # A later call that doesn't mention `project` must not flip it back.
+        .with_instructions(extra="be brief")
+        .build()
+    )
+    assert "_project_instructions" in _instruction_closure_names(h)
+
+
+def test_with_defaults_then_project_false_drops_project_instructions(tmp_path: Path):
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_defaults()
+        .with_instructions(project=False)
+        .build()
+    )
+    assert "_project_instructions" not in _instruction_closure_names(h)
+
+
+def test_with_files_write_off_removes_write_tools(tmp_path: Path):
+    h = HarnessBuilder(workspace=tmp_path, model=TestModel()).with_files_write(False).build()
+    names = _tool_names(h)
+    assert "write_file" not in names
+    assert "edit_file" not in names
+    assert {"read_file", "glob", "tree", "grep"} <= names
+    # The scratchpad closure advertises an approval bypass for write/edit;
+    # with the tools gone it must not register either.
+    assert "_scratchpad" not in _instruction_closure_names(h)
+
+
+def test_with_files_write_off_rejects_subagent_write_grant(tmp_path: Path):
+    defn = AgentDef(
+        name="w",
+        description="",
+        prompt="",
+        tools=frozenset({"write_file"}),
+        source="programmatic",
+    )
+    with pytest.raises(BuilderError) as exc:
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_files_write(False)
+            .with_subagent(defn)
+            .build()
+        )
+    assert any("disabled groups" in p for p in exc.value.problems)
+
+
+def test_with_usage_limits_lands_on_config(tmp_path: Path):
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_usage_limits(request_limit=3, total_tokens_limit=1000)
+        .build()
+    )
+    limits = h.turn_controller._usage_limits  # noqa: SLF001
+    assert limits is not None
+    assert limits.request_limit == 3
+    assert limits.total_tokens_limit == 1000
+    # pydantic-ai's UsageLimits defaults request_limit to 50; an unset limit
+    # here must mean unbounded, not 50.
+    h2 = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_usage_limits(total_tokens_limit=1000)
+        .build()
+    )
+    assert h2.turn_controller._usage_limits.request_limit is None  # noqa: SLF001
+    # And no call at all leaves the controller on the unbounded default path.
+    h3 = HarnessBuilder(workspace=tmp_path, model=TestModel()).build()
+    assert h3.turn_controller._usage_limits is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize("kwargs", [{"request_limit": 0}, {"total_tokens_limit": -5}])
+def test_with_usage_limits_rejects_non_positive(tmp_path: Path, kwargs):
+    with pytest.raises(ValueError, match="must be >= 1"):
+        HarnessBuilder(workspace=tmp_path, model=TestModel()).with_usage_limits(**kwargs)
 
 
 def test_bare_build_instructions_never_mention_ungranted_tools(tmp_path: Path):

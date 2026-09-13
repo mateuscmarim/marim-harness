@@ -26,6 +26,34 @@ pre-1.0, minor versions may contain breaking changes.
   rate limits (`get_usage`) once and shows the five-hour and seven-day
   windows as `quota 11% (5h) · 59% (1w)`, the way `codex-cli` already did.
 
+- **`HarnessBuilder.with_usage_limits(request_limit=, total_tokens_limit=)`**
+  — a per-turn budget for the main agent. The cap spans the whole turn
+  (every approval round counts against the same budget, not one `agent.run`
+  round), so a model that keeps calling a gated tool cannot outrun it by
+  getting approved. Tripping it raises pydantic-ai's `UsageLimitExceeded`
+  out of `run_turn` with the spend up to that point still banked on
+  `session.usage`. Unset limits are unbounded (pydantic-ai's own
+  `request_limit` default of 50 does not leak through).
+- **`HarnessBuilder.with_files_write(enabled)`** — `with_files_write(False)`
+  builds a read-only harness: neither `write_file` nor `edit_file` is
+  registered (nor the scratchpad prompt paragraph that advertises them), and
+  a sub-agent granting either is a `build()` error like any other disabled
+  group.
+- **`TurnOutcome.usage`** — a `RunUsage` for this turn summed across
+  approval rounds. `session.usage` stays the cumulative total across turns.
+
+### Changed
+
+- **Breaking (SDK): a bare `HarnessBuilder` build no longer injects the
+  workspace's `AGENTS.md`/`CLAUDE.md` into the system prompt.** Project
+  instructions were read unconditionally, which for an embedder whose
+  workspace is an untrusted checkout (a review bot over a contributor's
+  branch) was a straight prompt-injection path into the model. They are
+  now opt-in via `with_instructions(project=True)`; `with_defaults()` — and
+  therefore the CLI — turns them on, and `with_instructions(project=False)`
+  after it turns them off. Embedders that relied on the old behaviour add
+  the one call.
+
 ### Fixed
 
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
