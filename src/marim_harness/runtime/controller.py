@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 from ..compaction import estimate_tokens, last_request_input_tokens
 from ..thinking import settings_for
 from ..tools.names import LSP_TOOLS
+from .cli_activity import expand_cli_activity
 from .context import (
     actionable_error_note as _actionable_error_note,
 )
@@ -659,7 +660,9 @@ class TurnController:
         try:
             recovered = _repair_unanswered_tool_calls(
                 _drop_contentless_responses(
-                    _drop_nameless_tool_calls(list(captured) if captured else resumable)
+                    _drop_nameless_tool_calls(
+                        expand_cli_activity(list(captured) if captured else resumable)
+                    )
                 )
             )
             self.session.history = recovered
@@ -1168,7 +1171,11 @@ class TurnController:
             # doesn't re-emit context the model already saw. Idempotent across
             # rounds — only the first success matters.
             self._consumed_this_turn = _ConsumedContext()
-            self.session.history = result.all_messages()
+            # A CLI provider's own tool calls ride the response as a ledger
+            # (they must not be ToolCallParts while the graph runs, or it would
+            # execute them); persist them as real tool messages so replay,
+            # GET history and compaction see them like marim's own tools.
+            self.session.history = expand_cli_activity(result.all_messages())
             self.session.add_usage(result.usage)
             # Record the last request's real input-token count so the next
             # compaction check gates on the provider's measurement rather than the

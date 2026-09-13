@@ -270,3 +270,79 @@ async def test_text_folder_emit_tool_fold_mode_skips_an_empty_segment():
     assert events == []
     assert pm.calls == []
     assert folder.folded_any is False
+
+
+# --- ActivityLedger -----------------------------------------------------------------
+
+
+def _call_event(call_id: str = "t1"):
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    return FunctionToolCallEvent(
+        part=ToolCallPart(tool_name="read_file", args={"path": "a"}, tool_call_id=call_id)
+    )
+
+
+def _result_event(call_id: str = "t1", content: str = "ok", *, failed: bool = False):
+    from pydantic_ai.messages import FunctionToolResultEvent, ToolReturnPart
+
+    return FunctionToolResultEvent(
+        part=ToolReturnPart(
+            tool_name="tool",
+            content=content,
+            tool_call_id=call_id,
+            outcome="failed" if failed else "success",
+        )
+    )
+
+
+def test_activity_ledger_attaches_on_the_first_tool_entry_only():
+    from pydantic_ai.messages import PartStartEvent, TextPart
+
+    from marim_harness.config.external_cli import ActivityLedger
+
+    attached: list = []
+    ledger = ActivityLedger(attached.append)
+    ledger.note_event(PartStartEvent(index=0, part=TextPart(content="")))
+    # Parts alone never attach: a tool-free turn stays byte-identical.
+    assert attached == [] and ledger.entries == [{"kind": "part", "index": 0}]
+    ledger.note_activity([_call_event()])
+    ledger.note_activity([_result_event(failed=True)])
+    ledger.note_event(PartStartEvent(index=1, part=TextPart(content="")))
+    assert len(attached) == 1 and attached[0] is ledger.entries  # the live list, not a copy
+    assert ledger.entries == [
+        {"kind": "part", "index": 0},
+        {"kind": "call", "id": "t1", "name": "read_file", "args": {"path": "a"}},
+        {"kind": "result", "id": "t1", "content": "ok", "outcome": "failed"},
+        {"kind": "part", "index": 1},
+    ]
+
+
+def test_activity_ledger_caps_a_huge_result():
+    from marim_harness.config.external_cli import MAX_RECORDED_RESULT_CHARS, ActivityLedger
+
+    ledger = ActivityLedger(lambda entries: None)
+    ledger.note_activity([_result_event(content="x" * (MAX_RECORDED_RESULT_CHARS + 500))])
+    recorded = ledger.entries[0]["content"]
+    assert recorded.startswith("x" * MAX_RECORDED_RESULT_CHARS)
+    assert recorded.endswith("…[truncated 500 chars]")
+    assert len(recorded) < MAX_RECORDED_RESULT_CHARS + 100
+
+
+async def test_activity_ledger_recording_wraps_the_side_channel_and_keeps_none():
+    from marim_harness.config.external_cli import ActivityLedger
+
+    ledger = ActivityLedger(lambda entries: None)
+    assert ledger.recording(None) is None  # fold mode: no side-channel, no ledger
+    forwarded: list = []
+
+    async def on_activity(events):
+        forwarded.extend(events)
+
+    wrapped = ledger.recording(on_activity)
+    assert wrapped is not None
+    await wrapped([_call_event("c")])
+    assert [e.part.tool_call_id for e in forwarded] == ["c"]
+    assert ledger.entries == [
+        {"kind": "call", "id": "c", "name": "read_file", "args": {"path": "a"}}
+    ]

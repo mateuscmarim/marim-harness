@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.messages import FunctionToolCallEvent, ModelResponse, TextPart
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.usage import RequestUsage
 
@@ -58,7 +58,13 @@ from ..claude.process import (
 from ..claude.protocol import CLOSED
 from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
-from .external_cli import CliModelError, ExternalCliModel, TextFolder
+from .external_cli import (
+    CLI_ACTIVITY_KEY,
+    ActivityLedger,
+    CliModelError,
+    ExternalCliModel,
+    TextFolder,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -957,12 +963,18 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     _on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
     _on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
 
-    async def _demuxed_objs(self) -> AsyncIterator[dict]:
+    async def _demuxed_objs(
+        self, activity: Callable[[list], Awaitable[None]] | None, folder: TextFolder
+    ) -> AsyncIterator[dict]:
         """Tee the raw stream through a CliSubagentDemux: Claude-side sub-agent
         traffic is delivered out-of-band (the synthesized spawn_agent call/
-        return via _on_activity — the top-level sink claims those and builds
-        the live card — and child events via _on_subagent, keyed by the spawn's
-        tool_use id); everything else flows on to the chunk pipeline.
+        return via ``activity`` — the ledger-recording wrap of _on_activity,
+        so the spawn persists like any other tool; the top-level sink claims
+        those and builds the live card — and child events via _on_subagent,
+        keyed by the spawn's tool_use id); everything else flows on to the
+        chunk pipeline. A spawn call also bumps the folder's part like a
+        ToolUseChunk would, so the prose after it starts a fresh text part
+        below the card (live and in the persisted split alike).
 
         ``stream_event`` objects bypass the demux: it only knows whole
         assistant/user messages. The main turn's deltas pass straight through;
@@ -979,15 +991,23 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                 continue
             routed, remainder = demux.route(obj)
             for r in routed:
-                if r.stream_id is None:
-                    if self._on_activity is not None:
-                        await self._on_activity([r.event])
-                elif self._on_subagent is not None:
-                    if r.model and self._on_subagent_model is not None:
-                        await self._on_subagent_model(r.stream_id, r.model)
-                    await self._on_subagent(r.stream_id, r.event, r.usage)
+                await self._deliver_routed(r, activity, folder)
             if remainder is not None:
                 yield remainder
+
+    async def _deliver_routed(
+        self, r, activity: Callable[[list], Awaitable[None]] | None, folder: TextFolder
+    ) -> None:
+        """One demux-routed event to its sink (see ``_demuxed_objs``)."""
+        if r.stream_id is None:
+            if activity is not None:
+                await activity([r.event])
+                if isinstance(r.event, FunctionToolCallEvent):
+                    folder.part_n += 1
+        elif self._on_subagent is not None:
+            if r.model and self._on_subagent_model is not None:
+                await self._on_subagent_model(r.stream_id, r.model)
+            await self._on_subagent(r.stream_id, r.event, r.usage)
 
     def _finalize_done(self, done: DoneChunk | None) -> None:
         """Mirror ``request()``: a stream that ends without a proper ``result``
@@ -1020,14 +1040,16 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # The demux tee is active only when the sub-agent side-channel is wired
         # (a UI is bound); headless keeps the cheap filter-only path in
         # consume_cli_stream (Claude-side child traffic is simply dropped there).
-        objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
+        ledger = ActivityLedger(self._attach_activity)
+        activity = ledger.recording(self._on_activity)
         folder = TextFolder(
             self._parts_manager,
-            self._on_activity,
+            activity,
             activity_events=cli_activity_events,
             fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
         )
+        objs = self._demuxed_objs(activity, folder) if self._on_subagent is not None else self._objs
         thinking = _ThinkingParts(self._parts_manager)
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk
@@ -1042,8 +1064,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                     done = chunk
                     continue
                 async for ev in self._events_for(chunk, folder, thinking):
+                    ledger.note_event(ev)
                     yield ev
         self._finalize_done(done)
+
+    def _attach_activity(self, entries: list[dict]) -> None:
+        """The ledger's first tool entry: expose it on the response (merged
+        into any provider_details already set) so it survives into
+        ``get()`` — including an interrupted stream's partial ``get()``."""
+        self.provider_details = {**(self.provider_details or {}), CLI_ACTIVITY_KEY: entries}
 
     @property
     def model_name(self) -> str:

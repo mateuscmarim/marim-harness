@@ -54,7 +54,13 @@ from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, Thi
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..runtime.permissions import Mode
 from .claude_cli_model import extract_system, flatten_history, latest_user_text
-from .external_cli import CliModelError, ExternalCliModel, TextFolder
+from .external_cli import (
+    CLI_ACTIVITY_KEY,
+    ActivityLedger,
+    CliModelError,
+    ExternalCliModel,
+    TextFolder,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -480,26 +486,38 @@ class CodexStreamedResponse(StreamedResponse):
     async def _get_event_iterator(self):
         if self._items is None:
             return
+        ledger = ActivityLedger(self._attach_activity)
         folder = TextFolder(
             self._parts_manager,
-            self._on_activity,
+            ledger.recording(self._on_activity),
             activity_events=activity_events,
             fold_text=fold_activity_text,
             is_call=lambda item: isinstance(item, ActivityStart),
         )
         async for item in self._items:
-            if isinstance(item, TextDelta):
-                async for ev in folder.emit_text(item.delta):
-                    yield ev
-            elif isinstance(item, ThinkingDelta):
-                for ev in self._parts_manager.handle_thinking_delta(
-                    vendor_part_id=f"think-{item.item_id}", content=item.delta
-                ):
-                    yield ev
-            elif isinstance(item, (ActivityStart, ActivityEnd)):
-                async for ev in folder.emit_tool(item):
-                    yield ev
+            async for ev in self._events_for(item, folder):
+                ledger.note_event(ev)
+                yield ev
         await self._settle()
+
+    async def _events_for(self, item: object, folder: TextFolder):
+        """The pydantic-ai events for one translated item."""
+        if isinstance(item, TextDelta):
+            async for ev in folder.emit_text(item.delta):
+                yield ev
+        elif isinstance(item, ThinkingDelta):
+            for ev in self._parts_manager.handle_thinking_delta(
+                vendor_part_id=f"think-{item.item_id}", content=item.delta
+            ):
+                yield ev
+        elif isinstance(item, (ActivityStart, ActivityEnd)):
+            async for ev in folder.emit_tool(item):
+                yield ev
+
+    def _attach_activity(self, entries: list[dict]) -> None:
+        """The ledger's first tool entry: expose it on the response so it
+        survives into ``get()`` (an interrupted stream's partial one too)."""
+        self.provider_details = {**(self.provider_details or {}), CLI_ACTIVITY_KEY: entries}
 
     async def _settle(self) -> None:
         """Runs once the items drain: fold the turn's usage and mark the

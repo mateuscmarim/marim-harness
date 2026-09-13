@@ -909,15 +909,31 @@ async def test_request_stream_routes_claude_subagents_to_side_channels(tmp_path,
     model.on_subagent = on_subagent
     model.on_subagent_model = on_subagent_model
     try:
-        text = await _stream_text(model)
+        async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            resp = stream.get()
     finally:
         await model.aclose()
+    text = "".join(getattr(p, "content", "") for p in resp.parts)
     spawn_names = [e.part.tool_name for e in activity if hasattr(e, "part")]
     assert spawn_names.count("spawn_agent") == 2
     assert sub_events and all(sid == "tsub" for sid, _, _ in sub_events)
     assert any(u is not None and u.output_tokens == 2 for _, _, u in sub_events)
     assert ("tsub", "claude-haiku-4-5") in sub_models
     assert text == "Four."  # the child's "4" (delta AND block) never entered the main text
+    # The synthesized spawn_agent call/return bypass TextFolder but still
+    # reach the ledger (through the same recording wrap), so a resumed
+    # transcript rebuilds the spawn card; the prose after the spawn starts a
+    # fresh part below it, exactly like an ordinary tool card.
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+
+    assert resp.provider_details is not None
+    ledger = resp.provider_details[CLI_ACTIVITY_KEY]
+    assert [e["kind"] for e in ledger] == ["call", "result", "part"]
+    assert ledger[0]["name"] == "spawn_agent" and ledger[0]["id"] == "tsub"
+    assert ledger[1]["id"] == "tsub" and ledger[1]["outcome"] == "success"
+    assert ledger[2] == {"kind": "part", "index": 0}
 
 
 @pytest.mark.anyio
@@ -1059,3 +1075,54 @@ async def test_old_claude_version_warns_once(tmp_path, monkeypatch, caplog):
     finally:
         await model.aclose()
     assert caplog.text.count("1.0.99") == 1
+
+
+@pytest.mark.anyio
+async def test_request_stream_records_tool_activity_ledger_for_persistence(tmp_path, monkeypatch):
+    """Cards mode: the tool calls pushed out-of-band are ALSO recorded on the
+    response's provider_details (interleaved with the part indexes) so the
+    controller can persist them as real tool messages; fold mode (no UI)
+    records nothing — its ▸ lines are the record."""
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+
+    scenario = {
+        "turns": [
+            [
+                {"text": "Looking."},
+                {"tool_use": {"id": "t1", "name": "Read", "input": {"file_path": "/a.py"}}},
+                {"tool_result": {"id": "t1", "content": "print(1)"}},
+                {"text": "Done."},
+            ]
+        ]
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+
+    async def on_activity(events):
+        pass
+
+    model.on_activity = on_activity
+    try:
+        async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            resp = stream.get()
+    finally:
+        await model.aclose()
+    assert [p.content for p in resp.parts] == ["Looking.", "Done."]
+    assert resp.provider_details is not None
+    assert resp.provider_details[CLI_ACTIVITY_KEY] == [
+        {"kind": "part", "index": 0},
+        {"kind": "call", "id": "t1", "name": "read_file", "args": {"path": "/a.py"}},
+        {"kind": "result", "id": "t1", "content": "print(1)", "outcome": "success"},
+        {"kind": "part", "index": 1},
+    ]
+
+    fold = _model(tmp_path, monkeypatch, scenario)
+    try:
+        async with fold.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            folded = stream.get()
+    finally:
+        await fold.aclose()
+    assert folded.provider_details is None and "▸" in folded.parts[0].content
