@@ -88,24 +88,30 @@ gives you:
 | On by default | Off by default (opt in via `with_*`) |
 | --- | --- |
 | File reads: `read_file`, `glob`, `tree`, `grep` | `bash` |
-| File writes (gated): `write_file`, `edit_file` | `net` (`web_search`, `fetch_url`, also gated) |
+| File writes (gated): `write_file`, `edit_file` — `with_files_write(False)` turns them off | `net` (`web_search`, `fetch_url`, also gated) |
 | Mode `auto` (gated tools run unprompted) | `memory` (`remember`, `recall`) |
 | An in-memory session (nothing touches disk) | `skills` (`activate_skill`, `read_skill_file`) |
-| | `tasks` (`update_tasks`, `ask_user`, `present_plan`) |
+| No per-turn usage cap | `tasks` (`update_tasks`, `ask_user`, `present_plan`) |
 | | `jobs` (background job tools) |
 | | `spawn` (`spawn_agent` — implied by `with_subagent`) |
 | | LSP (manager + the six navigation tools) |
 | | MCP servers, hooks, extra instructions |
+| | The workspace's `AGENTS.md`/`CLAUDE.md` in the system prompt (`with_instructions(project=True)`) |
+| | Per-turn usage limits (`with_usage_limits(...)`) |
 
 Everything with reach beyond reading/writing files in the workspace is
 opt-in. The system prompt is gated the same way: a bare build's instructions
 never advertise `spawn_agent`, `activate_skill`, or `recall`, because those
-closures only register when the matching group is loaded.
+closures only register when the matching group is loaded — and never
+include the workspace's own `AGENTS.md`, since in an untrusted checkout
+that file is a prompt-injection path (see [Sessions &
+state](sessions-and-state.md#what-a-bare-build-reads-inside-the-workspace)).
 
-`with_defaults()` flips every tool group on plus LSP-with-tools and the
-user-level global instructions — the "give me everything the CLI has, minus
-workspace scanning" shortcut. It is also the one builder call that performs
-XDG reads; see [Sessions & state](sessions-and-state.md).
+`with_defaults()` flips every tool group on plus LSP-with-tools, the
+user-level global instructions, and the workspace's project instructions —
+the "give me everything the CLI has, minus workspace scanning" shortcut. It
+is also the one builder call that performs XDG reads; see [Sessions &
+state](sessions-and-state.md).
 
 ## Where to next
 

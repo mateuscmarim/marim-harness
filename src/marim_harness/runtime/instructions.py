@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -318,12 +319,26 @@ def _advisor_guidance(ctx: RunContext[Deps]) -> str:
     return ADVISOR_GUIDANCE
 
 
+@dataclass(frozen=True)
+class InstructionSources:
+    """Which *files* may land in the system prompt — as opposed to the
+    tool-group gates, which are about what the prompt may advertise.
+
+    Both default on (the CLI shape); the builder's bare build turns both off
+    and opts each back in separately. See ``register_instructions`` for what
+    each gate covers and why the project one exists at all.
+    """
+
+    global_instructions: bool = True
+    project_instructions: bool = True
+
+
 def register_instructions(
     agent: HarnessAgent,
     mcp_manager: McpManager,
     proactive_memory: bool,
     *,
-    global_instructions: bool = True,
+    sources: InstructionSources | None = None,
     groups: ToolGroups | None = None,
 ) -> None:
     """Register all dynamic instruction closures on ``agent``.
@@ -348,21 +363,37 @@ def register_instructions(
     (matching ``BuiltinToolProvider``'s own None-means-all convention, so the
     two never drift independently).
 
-    ``global_instructions`` gates the user-level closure *and*
+    ``sources`` (``None`` means both on, mirroring ``groups``) gates the
+    two closures that read an instruction *file* into the prompt.
+
+    ``sources.global_instructions`` gates the user-level closure *and*
     ``_plugin_instructions``: both reach into the embedding user's
     ``~/.config/marim`` directory (plugin instructions also read
     project-local ``.marim/plugins``, but plugins themselves are only
     discoverable there once installed through the CLI's global state) — CLI
     keeps this on; HarnessBuilder-embedded harnesses turn it off so a bare
-    ``.build()`` never reaches outside the workspace for either. Every other
-    closure (project instructions, MCP index, tool catalog, memory policy)
-    registers unconditionally — none of them advertise a gateable tool group
-    or read outside the workspace/what the caller explicitly opted into.
+    ``.build()`` never reaches outside the workspace for either.
+
+    ``sources.project_instructions`` gates ``_project_instructions`` — the
+    workspace's own ``AGENTS.md`` / ``CLAUDE.md``. That file is *inside* the workspace,
+    but it is still someone's text landing verbatim in the system prompt: an
+    embedder whose workspace is a checkout of untrusted code (a PR reviewer
+    over the author's clone) must be able to keep it out, or the repository
+    author gets a prompt-injection channel the embedder never opened. The
+    CLI keeps it on — the user launched marim in their own project — and the
+    builder's bare build turns it off (``with_instructions(project=True)`` /
+    ``with_defaults()`` opt in). Every other closure (MCP index, tool
+    catalog, memory policy) registers unconditionally — none of them
+    advertise a gateable tool group or read anything the caller didn't
+    explicitly compose.
     """
     spawn_on = groups is None or groups.spawn
     skills_on = groups is None or groups.skills
     memory_on = groups is None or groups.memory
     files_write_on = groups is None or groups.files_write
+    files = sources if sources is not None else InstructionSources()
+    global_instructions = files.global_instructions
+    project_instructions = files.project_instructions
 
     def _mcp_index(ctx: RunContext[Deps]) -> str:
         return mcp_manager.mcp_index_text()
@@ -378,7 +409,7 @@ def register_instructions(
 
     gated: list[tuple[bool, Callable[[RunContext[Deps]], Any]]] = [
         (global_instructions, _global_instructions),
-        (True, _project_instructions),
+        (project_instructions, _project_instructions),
         (files_write_on, _scratchpad),
         (global_instructions, _plugin_instructions),
         (memory_on, _memory_indexes),

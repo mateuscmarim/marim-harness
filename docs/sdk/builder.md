@@ -35,7 +35,7 @@ Each method flips one tool group on. Groups map to tool names as follows
 | Method | Group | Tools registered |
 | --- | --- | --- |
 | *(always on)* | `files_read` | `read_file`, `glob`, `tree`, `grep` |
-| *(always on)* | `files_write` | `write_file`, `edit_file` *(gated)* |
+| *(on by default)* `with_files_write(enabled=True)` | `files_write` | `write_file`, `edit_file` *(gated)* — `with_files_write(False)` makes a read-only build |
 | `with_bash(policy=None)` | `bash` | `bash` *(gated)* |
 | `with_net()` | `net` | `web_search`, `fetch_url` *(gated)* |
 | `with_memory(dir=None)` | `memory` | `remember`, `recall` |
@@ -49,6 +49,12 @@ Each method flips one tool group on. Groups map to tool names as follows
 
 Details per method:
 
+- **`with_files_write(enabled=True)`** — the write group is on by default;
+  `with_files_write(False)` drops `write_file` and `edit_file` (and the
+  scratchpad prompt paragraph that advertises them) for a read-only build —
+  a reviewer, an auditor, anything that must never touch the workspace.
+  Read tools stay. A sub-agent that grants a write tool under a read-only
+  build is a `build()` error (disabled group), same as any other group.
 - **`with_bash(policy=None)`** — `policy` is a
   [`CommandPolicy`](integrations.md#command-policy-bash) allow/deny list; omitting
   it allows every command (subject to the mode — `plan` still restricts bash
@@ -88,10 +94,31 @@ Details per method:
   [Exported capabilities](capabilities.md).
 - **`with_tool(fn, requires_approval=False)`** — registers a custom tool on
   the exact same path as the built-ins. See [Custom tools](custom-tools.md).
-- **`with_instructions(extra=None, replace=None)`** — `replace` swaps the
-  whole base system prompt; `extra` appends a paragraph and is repeatable
-  (each call appends another). They compose: the base (default or replaced)
-  comes first, extras follow in call order, joined by blank lines.
+- **`with_instructions(extra=None, replace=None, project=None)`** —
+  `replace` swaps the whole base system prompt; `extra` appends a paragraph
+  and is repeatable (each call appends another). They compose: the base
+  (default or replaced) comes first, extras follow in call order, joined by
+  blank lines. `project=True` opts into the **workspace's own
+  `AGENTS.md`/`CLAUDE.md`** being appended to the system prompt; a bare
+  build leaves it **off**, because in an embedder whose workspace is an
+  untrusted clone (a review bot over a contributor's PR) that file is
+  attacker-controlled text on a straight path into the model. `project=None`
+  (the default) leaves the setting alone, so a later `with_instructions(
+  extra=...)` never flips it back; `with_defaults()` turns it on (the CLI
+  preset) and `with_instructions(project=False)` after it turns it off
+  again.
+- **`with_usage_limits(request_limit=None, total_tokens_limit=None)`** —
+  caps one **turn** of the main agent: `request_limit` bounds model
+  requests, `total_tokens_limit` bounds input+output tokens. The cap spans
+  the whole turn — every approval round of the loop in
+  [Turns](turns.md#the-approval-loop) counts against the same budget, not
+  one `agent.run` round — so a model that keeps calling a tool cannot
+  outrun it by getting approved. Tripping the cap raises pydantic-ai's
+  `UsageLimitExceeded` out of `run_turn`; the spend up to that point is
+  still banked on `harness.session.usage`. Each limit is `>= 1` or `None`
+  (unbounded — including `request_limit`, which pydantic-ai would otherwise
+  default to 50); `ValueError` at the call otherwise. Sub-agents are not
+  covered — they run on their own agents.
 - **`with_sessions(dir=None)`** — opts into persistence. See
   [Sessions & state](sessions-and-state.md#sessions).
 - **`with_mode(mode)`** — initial `Mode` (`Mode.auto` / `Mode.ask` /
@@ -105,8 +132,9 @@ Details per method:
 - **`with_hooks(runner)`** — attaches a `HookRunner` for lifecycle hooks. See
   [Integrations](integrations.md#lifecycle-hooks). Incompatible with
   `with_deps` (see below).
-- **`with_defaults()`** — every tool group, LSP with tools, and the
-  user-level global instructions. Does *not* do workspace scanning (project
+- **`with_defaults()`** — every tool group, LSP with tools, the
+  user-level global instructions, and the workspace's project instructions
+  (`AGENTS.md`/`CLAUDE.md`). Does *not* do workspace scanning (project
   hooks/MCP/skills discovery stays a CLI concern). This is the one call that
   opts into XDG reads.
 

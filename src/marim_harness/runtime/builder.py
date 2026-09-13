@@ -55,7 +55,9 @@ class HarnessBuilder:
 
     Bare ``build()`` gives file read tools plus gated write/edit, mode ``auto``,
     an in-memory session, and nothing else — everything with reach (shell,
-    network, LSP, MCP, spawning) is opt-in via ``with_*`` methods.
+    network, LSP, MCP, spawning) is opt-in via ``with_*`` methods, and so is
+    the one thing a bare build could otherwise pull from the workspace into
+    the system prompt (its ``AGENTS.md``; see ``with_instructions``).
     """
 
     def __init__(self, *, workspace: Path, model: Model | str) -> None:
@@ -78,6 +80,7 @@ class HarnessBuilder:
         self._custom_tools: list[tuple[Callable, bool]] = []
         self._instructions_replace: str | None = None
         self._instructions_extra: list[str] = []
+        self._project_instructions = False
         self._sessions_dir: Path | None = None
         self._sessions = False
         self._stats_enabled = True
@@ -94,6 +97,15 @@ class HarnessBuilder:
         self._built = False
 
     # -- composition setters (chainable, no I/O) ---------------------------
+
+    def with_files_write(self, enabled: bool = True) -> HarnessBuilder:
+        """Keep (default) or drop the ``files_write`` group — ``write_file``
+        and ``edit_file``. ``Mode.plan`` already *denies* those calls, but the
+        model still sees the tools and spends rounds trying them; a read-only
+        embedder (a reviewer over a clone it must never touch) wants them
+        absent from the tool list altogether. ``files_read`` is always on."""
+        self._groups["files_write"] = enabled
+        return self
 
     def with_bash(self, policy: CommandPolicy | None = None) -> HarnessBuilder:
         self._groups["bash"] = True
@@ -166,13 +178,53 @@ class HarnessBuilder:
         return self
 
     def with_instructions(
-        self, *, extra: str | None = None, replace: str | None = None
+        self,
+        *,
+        extra: str | None = None,
+        replace: str | None = None,
+        project: bool | None = None,
     ) -> HarnessBuilder:
+        """``replace`` swaps the base system prompt; ``extra`` appends a
+        paragraph (repeatable). ``project`` opts the workspace's own
+        ``AGENTS.md`` / ``CLAUDE.md`` into the system prompt — OFF for a bare
+        build, because the workspace is often a checkout of code the embedder
+        does not trust (a PR under review) and its author would otherwise
+        write straight into the prompt; ``with_defaults()`` turns it on the
+        way the CLI has it. ``None`` leaves the current setting alone so a
+        second ``with_instructions(extra=...)`` call can't silently flip it."""
         if replace is not None:
             self._instructions_replace = replace
         if extra is not None:
             self._instructions_extra.append(extra)
+        if project is not None:
+            self._project_instructions = project
         return self
+
+    def with_usage_limits(
+        self, *, request_limit: int | None = None, total_tokens_limit: int | None = None
+    ) -> HarnessBuilder:
+        """Bound every turn: at most ``request_limit`` model requests and
+        ``total_tokens_limit`` tokens (input + output) per ``run_turn``,
+        counted across the turn's approval continuations and corrective
+        rounds, not per round. Tripping a limit raises pydantic-ai's
+        ``UsageLimitExceeded`` out of ``run_turn`` — a failed attempt, not an
+        outcome — with the spend so far already banked in ``session.usage``.
+        ``None`` leaves that limit off. Other ``UsageLimits`` fields are
+        reachable via ``with_config_overrides(usage_limits=UsageLimits(...))``
+        (mind that class's own ``request_limit=50`` default)."""
+        from pydantic_ai.usage import UsageLimits
+
+        for name, value in (
+            ("request_limit", request_limit),
+            ("total_tokens_limit", total_tokens_limit),
+        ):
+            if value is not None and value < 1:
+                raise ValueError(f"with_usage_limits: {name} must be >= 1 or None, got {value!r}")
+        return self.with_config_overrides(
+            usage_limits=UsageLimits(
+                request_limit=request_limit, total_tokens_limit=total_tokens_limit
+            )
+        )
 
     def with_sessions(
         self, dir: Path | None = None, *, stats: bool = True, stats_dir: Path | None = None
@@ -238,6 +290,7 @@ class HarnessBuilder:
         self._lsp = True
         self._lsp_tools = True
         self._global_instructions = True
+        self._project_instructions = True
         return self
 
     # -- CLI-preset escape hatches (advanced; used by bootstrap) -----------
@@ -550,6 +603,7 @@ class HarnessBuilder:
             lsp_enabled=self._lsp,
             lsp_registry=lsp_registry,
             global_instructions=self._global_instructions,
+            project_instructions=self._project_instructions,
             # Threads the composed ToolGroups through to register_instructions
             # so instruction closures that advertise a tool group (spawn/
             # skills/memory) are gated exactly like the tools themselves —
