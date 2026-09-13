@@ -39,6 +39,7 @@ from marim_harness.runtime.permissions import Mode
 from marim_harness.server import client as client_mod
 from marim_harness.server.attach import RemoteTarget
 from marim_harness.server.client import (
+    ReconnectPolicy,
     RemoteInfo,
     RemoteSessionHost,
     RemoteSubscription,
@@ -536,7 +537,9 @@ def _subscription(script, **kw) -> tuple[RemoteSubscription, list[str], list[flo
         await asyncio.sleep(0)
 
     kw.setdefault("clock", _Clock(1.0))
-    sub = RemoteSubscription(script, on_state=states.append, sleep=sleep, **kw)
+    policy_fields = {k: kw.pop(k) for k in ("lost_after", "backoff", "clock") if k in kw}
+    policy = ReconnectPolicy(sleep=sleep, **policy_fields)
+    sub = RemoteSubscription(script, on_state=states.append, policy=policy, **kw)
     return sub, states, sleeps
 
 

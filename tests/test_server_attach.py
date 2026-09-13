@@ -19,8 +19,8 @@ from marim_harness.server.attach import (
     AttachDecision,
     RemoteTarget,
     discover,
+    http_fetch,
     read_token,
-    urllib_fetch,
 )
 from marim_harness.server.runtime import write_runtime
 from marim_harness.session.claim import try_acquire
@@ -213,21 +213,21 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-def test_urllib_fetch_speaks_bearer_http_and_fails_soft():
+def test_http_fetch_speaks_bearer_http_and_fails_soft():
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
     try:
-        assert urllib_fetch(f"{base}/json", "tok") == {"ok": True}
-        assert urllib_fetch(f"{base}/json", None) == {"ok": True}
-        assert urllib_fetch(f"{base}/list", "tok") is None  # a dict or nothing
-        assert urllib_fetch(f"{base}/bad", "tok") is None
-        assert urllib_fetch(f"{base}/missing", "tok") is None
+        assert http_fetch(f"{base}/json", "tok") == {"ok": True}
+        assert http_fetch(f"{base}/json", None) == {"ok": True}
+        assert http_fetch(f"{base}/list", "tok") is None  # a dict or nothing
+        assert http_fetch(f"{base}/bad", "tok") is None
+        assert http_fetch(f"{base}/missing", "tok") is None
     finally:
         server.shutdown()
         server.server_close()
     assert ("/json", "Bearer tok") in _Handler.seen
     assert ("/json", None) in _Handler.seen
     # A closed port: refused, not raised.
-    assert urllib_fetch(base + "/json", "tok") is None
+    assert http_fetch(base + "/json", "tok") is None

@@ -374,6 +374,18 @@ def _deserialise(raw: list[dict], session_id: str) -> list[ModelMessage]:
 OpenSocket = Callable[["int | None"], Any]
 
 
+@dataclass(frozen=True)
+class ReconnectPolicy:
+    """How a :class:`RemoteSubscription` rides out an outage: the backoff
+    bounds, how long before it gives up, and the clock/sleep it measures
+    with (injectable so the tests never wait on wall time)."""
+
+    lost_after: float = LOST_AFTER
+    backoff: tuple[float, float] = RECONNECT_BACKOFF
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], Any] = asyncio.sleep
+
+
 class RemoteSubscription:
     """A ``bus.Subscription`` look-alike fed by the daemon's WebSocket.
 
@@ -395,19 +407,17 @@ class RemoteSubscription:
         after_seq: int | None = None,
         on_state: StateCallback | None = None,
         on_event: Callable[[Event], None] | None = None,
-        lost_after: float = LOST_AFTER,
-        backoff: tuple[float, float] = RECONNECT_BACKOFF,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], Any] = asyncio.sleep,
+        policy: ReconnectPolicy | None = None,
     ) -> None:
         self._open_socket = open_socket
         self._after_seq = after_seq
         self._on_state = on_state
         self._on_event = on_event
-        self._lost_after = lost_after
-        self._backoff = backoff
-        self._clock = clock
-        self._sleep = sleep
+        policy = policy if policy is not None else ReconnectPolicy()
+        self._lost_after = policy.lost_after
+        self._backoff = policy.backoff
+        self._clock = policy.clock
+        self._sleep = policy.sleep
         self._queue: asyncio.Queue[Event] = asyncio.Queue()
         self.last_seq: int | None = None
         self.state = "connecting"

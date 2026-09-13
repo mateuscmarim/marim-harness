@@ -6,7 +6,7 @@ claims used to refuse ("already open in daemon (pid N) at http://…"). This
 module turns that refusal into an attach decision, and nothing more: it reads
 the claim sidecar, probes the daemon it names, reads the daemon's token file
 and matches the workspace against the daemon's registry. Every step is a
-small local read or a ≤1s HTTP GET through ``urllib`` — ``default_cmd``
+small local read or a ≤1s HTTP GET through ``httpx`` — ``default_cmd``
 defers heavy imports deliberately, so this module imports neither httpx nor
 pydantic-ai.
 
@@ -18,10 +18,7 @@ first decision).
 
 from __future__ import annotations
 
-import json
 import logging
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +31,7 @@ logger = logging.getLogger(__name__)
 PROBE_TIMEOUT = 1.0
 
 # ``fetch(url, token) -> parsed JSON body | None``. Injected by the launch
-# tests; the default speaks HTTP through urllib.
+# tests; the default speaks HTTP through httpx.
 Fetch = Callable[[str, "str | None"], "dict | None"]
 
 
@@ -66,20 +63,20 @@ class AttachDecision:
     reason: str | None = None
 
 
-def urllib_fetch(url: str, token: str | None) -> dict | None:
+def http_fetch(url: str, token: str | None) -> dict | None:
     """GET ``url`` (bearer-authenticated when ``token`` is given) and parse the
-    JSON body; None on any failure. The one network call this module makes."""
-    req = urllib.request.Request(url)
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
+    JSON body; None on any failure — a refused port, a non-2xx status, a body
+    that is not a JSON object. The one network call this module makes; on
+    httpx (a core dependency) so the launch never needs the ``[serve]`` extra
+    to probe a daemon."""
+    import httpx
+
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT) as resp:  # noqa: S310
-            body = resp.read()
-    except (urllib.error.URLError, OSError, ValueError):
-        return None
-    try:
-        data = json.loads(body)
-    except ValueError:
+        response = httpx.get(url, headers=headers, timeout=PROBE_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+    except (httpx.HTTPError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -127,7 +124,7 @@ def discover(
     session_path: Path,
     *,
     state_dir: Path,
-    fetch: Fetch = urllib_fetch,
+    fetch: Fetch = http_fetch,
 ) -> AttachDecision:
     """Decide whether the process holding ``session_path``'s claim is a daemon
     this launch can attach to.
