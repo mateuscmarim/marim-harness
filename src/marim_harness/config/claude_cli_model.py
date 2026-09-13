@@ -20,8 +20,16 @@ interrupt is a control request rather than a kill; and the conversation
 resumes by session id after an idle close, a crash, or a marim restart.
 
 Prose and thinking arrive as ``stream_event`` deltas; ``assistant`` objects
-contribute only their ``tool_use`` blocks (their text repeats the deltas);
-``user`` objects contribute ``tool_result`` blocks. See ``consume_cli_stream``.
+contribute their ``tool_use`` blocks (their text repeats the deltas) and the
+request's ``usage`` — the real prompt size, kept as the model's
+``context_report``; ``user`` objects contribute ``tool_result`` blocks. See
+``consume_cli_stream``.
+
+Cost: the ``result``'s ``usage`` is per turn but its ``total_cost_usd`` is
+CUMULATIVE over the process (verified live on 2.1.270: 0.0109 → 0.0137 →
+0.0162 across three turns), and a resumed process restarts at zero. Charging
+it per turn double-counts the ledger, so ``CostMeter`` bills the delta since
+the previous result and resets whenever a process is spawned.
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -56,8 +64,10 @@ from ..claude.process import (
     turn_objects,
 )
 from ..claude.protocol import CLOSED
+from ..claude.quota import quota_from_usage
 from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
+from .context_report import CONTEXT_REPORT_KEY, ContextReport, prompt_tokens
 from .external_cli import (
     CLI_ACTIVITY_KEY,
     ActivityLedger,
@@ -65,6 +75,7 @@ from .external_cli import (
     ExternalCliModel,
     TextFolder,
 )
+from .quota import QuotaHint
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -209,6 +220,55 @@ def request_usage_from_cli(cli_usage: dict | None, total_cost_usd: float | None)
     )
 
 
+def charge_cost(usage: RequestUsage, cost_usd: float | None) -> RequestUsage:
+    """``usage`` with ``cost_usd`` stored under ``details[COST_DETAIL_KEY]``
+    (micro-USD, rounded like ``request_usage_from_cli``); unchanged when the
+    cost is unknown."""
+    if cost_usd is None:
+        return usage
+    return RequestUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        details={**usage.details, COST_DETAIL_KEY: round(cost_usd * 1_000_000)},
+    )
+
+
+class CostMeter:
+    """Turns the ``result``'s CUMULATIVE ``total_cost_usd`` into per-turn
+    charges: each ``charge`` bills the increase since the previous result.
+    One meter per process — ``reset`` on spawn, because a fresh or resumed
+    ``claude`` starts its running total at zero (the CLI documents it so).
+    A total that went DOWN on a live process means the CLI reset it (the
+    documented mid-session ``/clear``); then the new total IS everything
+    spent since the reset, so it is billed whole and becomes the baseline —
+    never a negative charge.
+
+    The meter keeps its baseline in the ledger's own unit — micro-USD,
+    rounded the way ``charge_cost`` rounds — and bills integer differences.
+    Rounding each USD delta on its own would let the ledger's sum drift from
+    the CLI's total by a micro-dollar per turn (the live 0.0108757 →
+    0.0136693 → 0.0161742 sums to 16,175 that way against a 16,174 total);
+    differences of already-rounded totals telescope exactly."""
+
+    def __init__(self) -> None:
+        self._billed_micro = 0
+
+    def reset(self) -> None:
+        self._billed_micro = 0
+
+    def charge(self, cumulative_usd: float | None) -> float | None:
+        """The USD to bill for the result reporting ``cumulative_usd``, or
+        None when the result carried no cost."""
+        if cumulative_usd is None:
+            return None
+        total = round(cumulative_usd * 1_000_000)
+        delta = total - self._billed_micro if total >= self._billed_micro else total
+        self._billed_micro = total
+        return delta / 1_000_000
+
+
 # Claude tool_use -> the single arg worth showing on the activity line. Tools not
 # listed render as the bare name. Mirrors the TUI's native label keys.
 _ACTIVITY_ARG = {
@@ -280,6 +340,19 @@ class ToolResultChunk:
 
 
 @dataclass
+class PromptUsageChunk:
+    """One ``assistant`` object's ``message.usage``: the size of the request
+    Claude just made (cache-inclusive input tokens). The CLI repeats the same
+    usage on every ``assistant`` object of one response (one per content
+    block), so consumers treat it as a level, not a delta. ``model`` is the
+    ``message.model`` that answered — the key under which the result's
+    ``modelUsage`` reports its window."""
+
+    prompt_tokens: int
+    model: str | None = None
+
+
+@dataclass
 class InitChunk:
     """The turn's ``system/init``: the session id (the resume key, persisted
     as the session ref) and the CLI version (checked against
@@ -303,6 +376,17 @@ class DoneChunk:
     complete: bool
     error_detail: str = ""
     aborted: bool = False
+    # The result's running ``total_cost_usd`` (cumulative over the process —
+    # see ``CostMeter``); the usage above carries NO cost until the model
+    # bills the per-turn delta.
+    cumulative_cost_usd: float | None = None
+    # ``modelUsage[<model>].contextWindow`` for the model that did the most
+    # input work over the process (the fallback when no request named its
+    # model), and the per-model map so the model behind the LAST request
+    # can be looked up directly — after a fallback to a smaller-window
+    # model the old model's cumulative total keeps it heaviest for a while.
+    context_window: int | None = None
+    context_windows: dict[str, int] = field(default_factory=dict)
 
 
 def _flatten_result_content(content) -> str:
@@ -405,20 +489,70 @@ def _result_chunk(obj: dict, *, produced_text: bool) -> DoneChunk:
     (partial output beats none) by leaving ``complete=True`` with the error in
     ``error_detail``; with NO usable text the turn is a bare failure and
     ``complete=False`` makes the model raise ``CliModelError``."""
-    usage = request_usage_from_cli(obj.get("usage"), obj.get("total_cost_usd"))
-    session_id = obj.get("session_id")
+    usage = request_usage_from_cli(obj.get("usage"), None)
+    facts = {
+        "session_id": obj.get("session_id"),
+        "usage": usage,
+        "cumulative_cost_usd": _cumulative_cost(obj),
+        "context_window": _context_window(obj),
+        "context_windows": _context_windows(obj),
+    }
     error = _result_error_subtype(obj)
     if error is None:
-        return DoneChunk(session_id=session_id, usage=usage, complete=True)
+        return DoneChunk(complete=True, **facts)
     if obj.get("terminal_reason") in _ABORTED_REASONS:
-        return DoneChunk(session_id=session_id, usage=usage, complete=True, aborted=True)
+        return DoneChunk(complete=True, aborted=True, **facts)
     logger.warning("claude CLI result reported an error: %s", error)
-    return DoneChunk(
-        session_id=session_id,
-        usage=usage,
-        complete=produced_text,
-        error_detail=f"CLI result error: {error}",
-    )
+    return DoneChunk(complete=produced_text, error_detail=f"CLI result error: {error}", **facts)
+
+
+def _cumulative_cost(obj: dict) -> float | None:
+    cost = obj.get("total_cost_usd")
+    return float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
+
+
+def _context_windows(obj: dict) -> dict[str, int]:
+    """``model id -> contextWindow`` from the result's ``modelUsage`` (one
+    entry per model the process has used); entries without a usable window
+    are left out, and a ``modelUsage`` that is not a mapping at all reads as
+    empty (the window is a nicety; a malformed one must not fail the turn)."""
+    out: dict[str, int] = {}
+    usage = obj.get("modelUsage")
+    for model, entry in usage.items() if isinstance(usage, dict) else ():
+        if not isinstance(entry, dict):
+            continue
+        window = entry.get("contextWindow")
+        if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+            continue
+        out[str(model)] = window
+    return out
+
+
+def _context_window(obj: dict) -> int | None:
+    """The context window of the model that did the turn, from the result's
+    ``modelUsage`` (cumulative per model over the process). A turn can
+    involve several models (a haiku sub-task under a sonnet main loop), so
+    the entry with the most input tokens is taken as the main loop's; None
+    when the result carries no usable window. Only a fallback: the adapter
+    prefers the window of the model its last request named."""
+    best: tuple[int, int] | None = None
+    windows = _context_windows(obj)  # only models with a usable window qualify
+    for model, window in windows.items():
+        weight = _input_weight(obj["modelUsage"][model])
+        if best is None or weight > best[0]:
+            best = (weight, window)
+    return best[1] if best else None
+
+
+def _input_weight(entry: dict) -> int:
+    """How much input a ``modelUsage`` entry has done (uncached + cache
+    reads); junk buckets weigh nothing."""
+    total = 0
+    for k in ("inputTokens", "cacheReadInputTokens"):
+        v = entry.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            total += int(v)
+    return total
 
 
 def _closed_detail(obj: dict) -> str:
@@ -450,6 +584,10 @@ def _event_chunks(obj: dict) -> Iterator:
         if chunk is not None:
             yield chunk
     elif kind == "assistant":
+        message = obj.get("message") or {}
+        usage = message.get("usage")
+        if isinstance(usage, dict):
+            yield PromptUsageChunk(prompt_tokens(usage), str(message.get("model") or "") or None)
         yield from _tool_use_chunks(obj)
     elif kind == "user" and not obj.get("isReplay"):
         # `isReplay` is the CLI echoing back a message marim itself sent (the
@@ -462,7 +600,8 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncGenerator:
     one ``DoneChunk``.
 
     Prose/thinking come from ``stream_event`` deltas (``TextChunk`` /
-    ``ThinkingChunk``); ``assistant`` objects add ``ToolUseChunk``s; ``user``
+    ``ThinkingChunk``); ``assistant`` objects add a ``PromptUsageChunk`` (the
+    request's size, for the context report) and ``ToolUseChunk``s; ``user``
     objects add ``ToolResultChunk``s (``isReplay`` echoes of our own messages
     are dropped); ``system/init`` becomes an ``InitChunk``; every other
     ``system`` subtype (status, thinking_tokens, the sub-agent lifecycle noise)
@@ -674,6 +813,20 @@ class ClaudeCliModel(ExternalCliModel):
         # inside a pydantic-ai Agent). Mirrors CodexCliModel._clones.
         self._clones: list[ClaudeCliModel] = []
         self._broker: ClaudeApprovalBroker | None = None
+        # What Claude reports about its own context and subscription, for the
+        # status bar / GET session (read the way codex-cli's quota_hint is:
+        # `getattr(model, ...)`). Refreshed per assistant event / per result
+        # / once per turn respectively; None until the first reading.
+        self.context_report: ContextReport | None = None
+        self.quota_hint: QuotaHint | None = None
+        # The window is a per-model constant learned at each result; kept
+        # apart so the next turn's first reading carries it before its own
+        # result arrives. ``_prompt_model`` is the model the last request
+        # named, so the result's per-model windows can be read for IT rather
+        # than for whichever model has done the most work over the process.
+        self._context_window: int | None = None
+        self._prompt_model: str | None = None
+        self._cost = CostMeter()
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
         """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
@@ -752,6 +905,10 @@ class ClaudeCliModel(ExternalCliModel):
         )
         await process.start()
         self._process = process
+        # A new process — fresh or resumed — restarts the CLI's running cost
+        # total at zero; the meter must follow or the first result is billed
+        # against the old process's total.
+        self._cost.reset()
         return process
 
     async def _ensure_process(self, messages: list) -> tuple[ClaudeProcess, bool]:
@@ -818,10 +975,63 @@ class ClaudeCliModel(ExternalCliModel):
             await process.aclose()
             self._process = None
 
-    def _note_init(self, chunk: InitChunk) -> None:
+    def _note(self, chunk: InitChunk | PromptUsageChunk) -> None:
+        """A mid-turn chunk the model itself keeps state from: the init's
+        session id / version, and each request's prompt size (the live
+        context report, window carried over from the last result)."""
+        if isinstance(chunk, PromptUsageChunk):
+            if chunk.model and chunk.model != self._prompt_model:
+                # A model change (a fallback, a /model switch) invalidates
+                # the carried window until the result names the new one.
+                self._prompt_model, self._context_window = chunk.model, None
+            self.context_report = ContextReport(chunk.prompt_tokens, self._context_window)
+            return
         note_old_version_once(chunk.version)
         if chunk.session_id and not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + chunk.session_id)
+
+    def _settle_turn(self, done: DoneChunk) -> RequestUsage:
+        """The turn's usage with its per-turn cost billed (``CostMeter``), and
+        the context report's window refreshed from the result.
+
+        Deliberately NOT called for a turn that raises (a ``result`` that
+        errored with no usable text): the raise records no usage anywhere, so
+        advancing the meter there would drop that turn's spend from the
+        ledger for good. Leaving the baseline where it was makes the next
+        successful turn carry the failed one's cost — attributed late, but
+        the session total stays equal to the CLI's own running total, which
+        is the number the ledger is meant to reproduce."""
+        window = done.context_windows.get(self._prompt_model or "") or done.context_window
+        if window:
+            self._context_window = window
+            if self.context_report is not None:
+                self.context_report = self.context_report.with_window(window)
+        return charge_cost(done.usage, self._cost.charge(done.cumulative_cost_usd))
+
+    def _response_details(self) -> dict | None:
+        """``provider_details`` for the turn's response: the context report,
+        persisted so a resumed session shows Claude's last known numbers
+        before its first new turn (``context_report.last_context_report``)."""
+        if self.context_report is None:
+            return None
+        return {CONTEXT_REPORT_KEY: self.context_report.to_payload()}
+
+    async def _refresh_quota(self, process: ClaudeProcess) -> None:
+        """Poll ``get_usage`` once, after the turn's result (on the consuming
+        task's normal await path, never inside a cancellation-time
+        ``finally``), and keep the reading for the status bar. Best-effort:
+        the hint is informational, and an aux clone (whose process is about
+        to close) is skipped outright. A failed poll CLEARS the hint rather
+        than leaving the previous reading up: the status bar renders any
+        hint it has, and a number nobody refreshed is a stale claim about a
+        quota that keeps moving."""
+        if self.ephemeral or not process.alive:
+            return
+        try:
+            self.quota_hint = quota_from_usage(await process.read_usage())
+        except Exception as exc:  # noqa: BLE001 - best-effort status-line hint
+            logger.debug("claude get_usage failed: %s", exc)
+            self.quota_hint = None
 
     # --- pydantic-ai entry points --------------------------------------------------
     async def request(
@@ -837,12 +1047,14 @@ class ClaudeCliModel(ExternalCliModel):
         try:
             async with aclosing(consume_cli_stream(objs)) as stream:
                 async for chunk in stream:
-                    if isinstance(chunk, InitChunk):
-                        self._note_init(chunk)
+                    if isinstance(chunk, (InitChunk, PromptUsageChunk)):
+                        self._note(chunk)
                     elif isinstance(chunk, DoneChunk):
                         done = chunk
                     else:
                         folded.add(chunk)
+            if done is not None and done.complete:
+                await self._refresh_quota(process)
         finally:
             await objs.aclose()
             await self._after_turn(process, handle)
@@ -855,8 +1067,9 @@ class ClaudeCliModel(ExternalCliModel):
             # construction-time value — so a multi-turn history doesn't carry
             # identical, stale timestamps across every ModelResponse.
             timestamp=datetime.now(tz=timezone.utc),
-            usage=done.usage,
+            usage=self._settle_turn(done),
             provider_name="claude-cli",
+            provider_details=self._response_details(),
         )
 
     @asynccontextmanager
@@ -876,7 +1089,10 @@ class ClaudeCliModel(ExternalCliModel):
             # Per-response timestamp (see request()): stamped when the stream is
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
-            _on_init=self._note_init,
+            _on_note=self._note,
+            _finish=self._settle_turn,
+            _details=self._response_details,
+            _after=lambda: self._refresh_quota(process),
             _on_activity=self.on_activity,
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
@@ -958,7 +1174,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     _objs: AsyncIterator[dict] | None = None
     _model_id: str = "default"
     _ts: datetime | None = None
-    _on_init: Callable[[InitChunk], None] | None = None
+    # The model's own bookkeeping seams: init/prompt-usage chunks as they
+    # stream (session id, live context report); the DoneChunk → usage
+    # settle (per-turn cost); the provider_details to persist; and the
+    # once-per-turn quota poll awaited after the settle (best-effort, never
+    # raises into the stream — mirrors CodexStreamedResponse._after).
+    _on_note: Callable[[InitChunk | PromptUsageChunk], None] | None = None
+    _finish: Callable[[DoneChunk], RequestUsage] | None = None
+    _details: Callable[[], dict | None] | None = None
+    _after: Callable[[], Awaitable[None]] | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
     _on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
     _on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
@@ -1012,10 +1236,16 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     def _finalize_done(self, done: DoneChunk | None) -> None:
         """Mirror ``request()``: a stream that ends without a proper ``result``
         (Claude died / produced no result) is a FAILED turn — raise so the
-        harness flushes its resumable baseline (clean failure)."""
+        harness flushes its resumable baseline (clean failure). Otherwise
+        settle the usage (per-turn cost) and attach the context report to
+        the response's provider_details (merged, next to the activity
+        ledger) so it persists with the turn."""
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
-        self._usage = done.usage
+        self._usage = self._finish(done) if self._finish is not None else done.usage
+        details = self._details() if self._details is not None else None
+        if details:
+            self.provider_details = {**(self.provider_details or {}), **details}
         self._finished = True
 
     async def _events_for(self, chunk, folder: TextFolder, thinking: _ThinkingParts):
@@ -1031,8 +1261,8 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             thinking.close()
             async for ev in folder.emit_tool(chunk):
                 yield ev
-        elif isinstance(chunk, InitChunk) and self._on_init is not None:
-            self._on_init(chunk)
+        elif isinstance(chunk, (InitChunk, PromptUsageChunk)) and self._on_note is not None:
+            self._on_note(chunk)
 
     async def _get_event_iterator(self):
         if self._objs is None:
@@ -1067,6 +1297,10 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                     ledger.note_event(ev)
                     yield ev
         self._finalize_done(done)
+        # After the settle: a cancellation landing in this await must not
+        # cost the turn its usage (same ordering as CodexStreamedResponse).
+        if self._after is not None:
+            await self._after()
 
     def _attach_activity(self, entries: list[dict]) -> None:
         """The ledger's first tool entry: expose it on the response (merged

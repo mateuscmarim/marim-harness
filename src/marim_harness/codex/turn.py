@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 
 from pydantic_ai.usage import RequestUsage
 
+from ..config.context_report import ContextReport
 from ..config.external_cli import CliModelError
 from .server import CLOSED, CodexServer, ThreadHandle
 from .translate import ItemTranslator, TurnDone, TurnFailure, UsageUpdate
@@ -36,6 +37,12 @@ class TurnState:
     first_usage: UsageUpdate | None = None
     done: TurnDone | None = None
     failure: str | None = None
+    # The newest usage update's context reading (``last.inputTokens`` —
+    # Codex's inputTokens is cache-inclusive — against the model window),
+    # published through ``on_context`` as it streams so the status bar moves
+    # mid-turn; None until the first update.
+    context: ContextReport | None = None
+    on_context: Callable[[ContextReport], None] | None = None
 
 
 def text_input(text: str) -> dict:
@@ -78,6 +85,7 @@ def _fold(item: object, state: TurnState) -> object | None:
         state.usage_total = item.total
         if state.first_usage is None:
             state.first_usage = item
+        _note_context(item, state)
         return None
     if isinstance(item, TurnDone):
         state.done = item
@@ -88,6 +96,19 @@ def _fold(item: object, state: TurnState) -> object | None:
             state.done = TurnDone("failed", item.message)
         return None
     return item
+
+
+def _note_context(item: UsageUpdate, state: TurnState) -> None:
+    """Fold one usage update into the turn's context report. An update with
+    no ``last`` (a start-of-turn snapshot) is skipped rather than reported
+    as an empty context."""
+    if not item.last:
+        return
+    used = int(item.last.get("inputTokens") or 0)
+    window = item.model_context_window or (state.context.window if state.context else None)
+    state.context = ContextReport(used, window)
+    if state.on_context is not None:
+        state.on_context(state.context)
 
 
 async def turn_events(

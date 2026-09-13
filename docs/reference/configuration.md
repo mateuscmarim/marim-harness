@@ -131,6 +131,17 @@ close that gap but breaks subscription auth, so it is not used). Requires Claude
 Code 2.1 or newer (older versions log a warning). The thinking level (`/think`)
 is a no-op under this provider.
 
+The status bar's `ctx` field shows Claude's own context under this provider:
+each `assistant` event carries the prompt size of that request (uncached
+input plus both cache buckets), and the turn's `result` names the model's
+context window. After each turn marim also asks the CLI for its `get_usage`
+rate limits once and shows them as `quota 11% (5h) · 59% (1w)` (the
+five-hour and seven-day windows); a failed read is ignored. Cost in the
+usage ledger is per turn: the CLI's `result` reports a *running* total for
+the process (documented as resetting on a fresh or resumed session and on a
+mid-session `/clear`), so marim bills each turn the increase since the
+previous result and starts over whenever it launches a new process.
+
 No API key is read for this provider — the CLI owns its own subscription auth.
 The model picker's `claude-cli` catalog is the CLI's own `/model` menu, read
 from its stream-json handshake: it lists whatever aliases and models the
@@ -195,7 +206,9 @@ after `--resume` reports only its own tokens rather than the whole thread's
 history. After each turn marim also polls `account/rateLimits/read` once and
 shows the subscription quota in the status bar as `quota 37% (5h) · 12% (1w)`
 (primary and secondary windows); a failed read is ignored and the field
-simply stays absent. The Settings › Providers card verifies the CLI live on
+simply stays absent. The same notification's `last.inputTokens` and
+`modelContextWindow` feed the status bar's `ctx` field, so it shows Codex's
+own prompt size and window rather than an estimate over marim's mirror. The Settings › Providers card verifies the CLI live on
 show (a `model/list` against the app-server) and reports
 `✓ connected · N models` like a keyed provider.
 
@@ -215,7 +228,11 @@ Compaction and masking trigger at `min(budget, 0.8 × window)`, where the 0.8
 safety ratio applies only when the window is *known* (discovered from the
 provider catalog / local probe, or stated via `MARIM_CONTEXT_WINDOW`). A
 negative `MARIM_CONTEXT_BUDGET` is treated as garbage and fails **closed** to
-the 100k default (only an explicit `0` uncaps).
+the 100k default (only an explicit `0` uncaps). Under `claude-cli` and
+`codex-cli` the CLI's own auto-compaction governs its context; marim's
+threshold still gates compaction of the mirrored history, but the status
+bar's gauge shows the backend's reported context, not this threshold (see
+the provider notes above).
 
 `MARIM_CONTEXT_BUDGETS` pairs are fnmatch patterns matched against the model
 id, first match wins; `=0` or an empty value means "no budget for this model"

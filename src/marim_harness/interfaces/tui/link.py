@@ -91,6 +91,8 @@ class LinkInfo(Protocol):
     @property
     def quota_hint(self) -> Any: ...
     @property
+    def context_report(self) -> Any: ...
+    @property
     def model_source(self) -> Any: ...
 
 
@@ -206,6 +208,17 @@ class LocalLinkInfo:
     @property
     def quota_hint(self) -> Any:
         return getattr(self._harness.current_model, "quota_hint", None)
+
+    @property
+    def context_report(self) -> Any:
+        """The CLI backend's own context reading (``ContextReport``), or
+        None under marim's own providers — then the status bar shows the
+        estimate over ``history_tokens``. A resumed CLI session shows the
+        persisted reading until its first new turn."""
+        from ...config.context_report import current_context_report
+
+        harness = self._harness
+        return current_context_report(harness.current_model, harness.session.history)
 
     @property
     def model_source(self) -> Any:

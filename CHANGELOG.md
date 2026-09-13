@@ -10,6 +10,22 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **The CLI backends report their own context.** Under `claude-cli` and
+  `codex-cli` the status bar's `ctx` field now shows the backend's real
+  numbers — the prompt size of its most recent model request (system
+  prompt, `CLAUDE.md`/`AGENTS.md` and tool schemas included, as the CLI's
+  own `/context` counts them) over the model's context window — instead of
+  a chars/4 estimate over marim's mirrored history against marim's default
+  budget. Claude reports it on every `assistant` event and names the window
+  at the turn's `result`; Codex on `thread/tokenUsage/updated`. The reading
+  persists with the turn so a resumed session shows the backend's last
+  known context before its first new turn, and `GET .../sessions/{sid}`
+  carries it as `context` (`{"used", "window"}`) with the rendered quota
+  hint as `quota`; the attached TUI reads both over the wire.
+- **`claude-cli` quota hint.** After each turn marim asks the CLI for its
+  rate limits (`get_usage`) once and shows the five-hour and seven-day
+  windows as `quota 11% (5h) · 59% (1w)`, the way `codex-cli` already did.
+
 - **`HarnessBuilder.with_usage_limits(request_limit=, total_tokens_limit=)`**
   — a per-turn budget for the main agent. The cap spans the whole turn
   (every approval round counts against the same budget, not one `agent.run`
@@ -37,6 +53,16 @@ pre-1.0, minor versions may contain breaking changes.
   therefore the CLI — turns them on, and `with_instructions(project=False)`
   after it turns them off. Embedders that relied on the old behaviour add
   the one call.
+
+### Fixed
+
+- **`claude-cli` cost was double-counted in the usage ledger.** On the
+  bidirectional transport every `result` carries the process's *running*
+  `total_cost_usd`, not the turn's cost, and marim billed each turn the
+  whole total — a three-turn session was charged roughly six turns. Each
+  turn now bills the increase since the previous result, and the baseline
+  resets whenever a new `claude` process is launched (a fresh or resumed
+  session starts its total at zero).
 
 ## [0.7.2] - 2026-09-13
 

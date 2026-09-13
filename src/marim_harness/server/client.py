@@ -37,6 +37,7 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
 
 from ..compaction import estimate_tokens, repair_masked_narrowed_returns
+from ..config.context_report import ContextReport
 from ..images import rehydrate_images
 from ..jobs import Job
 from ..session.claim import SessionClaimed
@@ -95,7 +96,11 @@ class RemoteInfo:
     message_count: int = 0
     compact_threshold: int = 0
     duration_seconds: float = 0.0
+    # The daemon's already-rendered quota hint and the CLI backend's own
+    # context reading (``GET session``'s ``quota`` / ``context``); both
+    # None under marim's own providers, and refreshed on the idle edge.
     quota_hint: str | None = None
+    context_report: ContextReport | None = None
     # The remote TUI has no model catalog of its own; the picker is local-only.
     model_source: Any = None
 
@@ -116,6 +121,11 @@ class RemoteInfo:
             self.usage = usage_from_summary(payload["usage"])
         if payload.get("compact_threshold") is not None:
             self.compact_threshold = int(payload["compact_threshold"])
+        if "context" in payload:
+            self.context_report = ContextReport.from_payload(payload["context"])
+        if "quota" in payload:
+            quota = payload["quota"]
+            self.quota_hint = str(quota) if quota else None
 
     def observe(self, event: Event) -> None:
         """Keep the read model current from the events the pump delivers.

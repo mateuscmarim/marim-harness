@@ -605,6 +605,41 @@ def test_create_session_with_model_persists(client):
     assert detail["session"]["model"] == "claude-cli:opus"
 
 
+def test_live_session_fields_carry_the_backend_context_and_quota():
+    """``GET session`` answers the CLI backend's own context reading and
+    quota hint next to the usage split; both are null under marim's own
+    providers (no report), and every live field is None on a cold session."""
+    from types import SimpleNamespace
+
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.config.context_report import ContextReport
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
+    from marim_harness.server.http import _live_session_fields
+
+    assert _live_session_fields(None) == {
+        "usage": None,
+        "compact_threshold": None,
+        "context": None,
+        "quota": None,
+    }
+    session = SimpleNamespace(usage=RunUsage(), compact_threshold=100_000, history=[])
+    cli = SimpleNamespace(
+        context_report=ContextReport(27_516, 200_000),
+        quota_hint=QuotaHint(QuotaWindow(11, 300), QuotaWindow(59, 10080)),
+    )
+    host = SimpleNamespace(
+        harness=SimpleNamespace(session=session, model_id="x", current_model=cli)
+    )
+    fields = _live_session_fields(host)
+    assert fields["context"] == {"used": 27_516, "window": 200_000}
+    assert fields["quota"] == "quota 11% (5h) · 59% (1w)"
+    assert fields["compact_threshold"] == 100_000
+    host.harness.current_model = SimpleNamespace()  # one of marim's own providers
+    fields = _live_session_fields(host)
+    assert fields["context"] is None and fields["quota"] is None
+
+
 def test_effective_model_prefers_loaded_host():
     from types import SimpleNamespace
 

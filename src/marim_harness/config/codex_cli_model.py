@@ -54,6 +54,7 @@ from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, Thi
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..runtime.permissions import Mode
 from .claude_cli_model import extract_system, flatten_history, latest_user_text
+from .context_report import CONTEXT_REPORT_KEY, ContextReport
 from .external_cli import (
     CLI_ACTIVITY_KEY,
     ActivityLedger,
@@ -174,6 +175,11 @@ class CodexCliModel(ExternalCliModel):
         # once per turn; the TUI status bar renders it. None until the first
         # turn completes, or whenever the read fails.
         self.quota_hint: QuotaHint | None = None
+        # The latest context reading (`thread/tokenUsage/updated`: the last
+        # response's prompt size against the model window), refreshed with
+        # every update while a turn streams; the status bar / GET session
+        # prefer it over marim's estimate. None until the first update.
+        self.context_report: ContextReport | None = None
         # Per-model catalog of reasoning efforts (model id -> efforts), filled
         # lazily from model/list on the first turn; drives effort_for.
         self._efforts: dict[str, list[str]] | None = None
@@ -388,7 +394,7 @@ class CodexCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         server, handle, turn_id = await self._begin_turn(messages, model_settings)
-        state = TurnState()
+        state = self._turn_state()
         parts: list[str] = []
         async for item in turn_events(server, handle, state, turn_id=turn_id):
             if isinstance(item, TextDelta):
@@ -407,6 +413,7 @@ class CodexCliModel(ExternalCliModel):
             timestamp=datetime.now(tz=timezone.utc),
             usage=usage,
             provider_name="codex-cli",
+            provider_details=self._response_details(),
         )
 
     @asynccontextmanager
@@ -418,12 +425,13 @@ class CodexCliModel(ExternalCliModel):
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
         server, handle, turn_id = await self._begin_turn(messages, model_settings)
-        state = TurnState()
+        state = self._turn_state()
         stream = CodexStreamedResponse(
             model_request_parameters=model_request_parameters,
             _items=turn_events(server, handle, state, turn_id=turn_id),
             _after=lambda: self._refresh_quota(server),
             _finish=lambda: finish_turn(handle, state),
+            _details=self._response_details,
             _model_id=self.model_name,
             _ts=datetime.now(tz=timezone.utc),
             _on_activity=self.on_activity,
@@ -436,7 +444,25 @@ class CodexCliModel(ExternalCliModel):
                     await server.interrupt(handle)
                 handle.current_turn_id = None
 
-    # --- quota -------------------------------------------------------------------------
+    # --- context / quota ----------------------------------------------------------------
+    def _turn_state(self) -> TurnState:
+        """A turn's accumulator, publishing each usage update's context
+        reading onto ``context_report`` as it streams. Seeded with the last
+        report so a window learned on an earlier turn survives an update
+        that omits ``modelContextWindow``."""
+        return TurnState(context=self.context_report, on_context=self._note_context)
+
+    def _note_context(self, report: ContextReport) -> None:
+        self.context_report = report
+
+    def _response_details(self) -> dict | None:
+        """``provider_details`` for the turn's response: the context report,
+        persisted so a resumed session shows Codex's last known numbers
+        before its first new turn (``context_report.last_context_report``)."""
+        if self.context_report is None:
+            return None
+        return {CONTEXT_REPORT_KEY: self.context_report.to_payload()}
+
     async def _refresh_quota(self, server: CodexServer) -> None:
         """Poll ``account/rateLimits/read`` once, after a turn's events have
         drained (so it runs on the consuming task's normal await path, never
@@ -447,6 +473,9 @@ class CodexCliModel(ExternalCliModel):
             self.quota_hint = quota_from(await server.read_rate_limits())
         except Exception as exc:  # noqa: BLE001 - best-effort status-line hint
             logger.debug("codex account/rateLimits/read failed: %s", exc)
+            # Clear rather than keep the previous reading: the status bar
+            # renders any hint it has, and a stale number is a false claim.
+            self.quota_hint = None
 
     # --- live controls ---------------------------------------------------------------
     def steer(self, text: str) -> bool:
@@ -479,6 +508,9 @@ class CodexStreamedResponse(StreamedResponse):
     # quota poll. Best-effort — it never raises into the stream.
     _after: Callable[[], Awaitable[None]] | None = None
     _finish: Callable[[], RequestUsage] | None = None
+    # The provider_details to attach at settle (the context report), merged
+    # next to the activity ledger.
+    _details: Callable[[], dict | None] | None = None
     _model_id: str = "default"
     _ts: datetime | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
@@ -526,6 +558,9 @@ class CodexStreamedResponse(StreamedResponse):
         usage. The poll is best-effort and never raises into the stream."""
         if self._finish is not None:
             self._usage = self._finish()
+        details = self._details() if self._details is not None else None
+        if details:
+            self.provider_details = {**(self.provider_details or {}), **details}
         self._finished = True
         if self._after is not None:
             await self._after()

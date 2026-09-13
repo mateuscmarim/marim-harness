@@ -1126,3 +1126,368 @@ async def test_request_stream_records_tool_activity_ledger_for_persistence(tmp_p
     finally:
         await fold.aclose()
     assert folded.provider_details is None and "▸" in folded.parts[0].content
+
+
+# --- context report, per-turn cost, quota (Phase 1 of the CLI parity roadmap) --------
+
+
+def test_cost_meter_bills_the_delta_since_the_previous_result():
+    from marim_harness.config.claude_cli_model import CostMeter
+
+    meter = CostMeter()
+    # The live 2.1.270 numbers: cumulative 0.0109 → 0.0137 → 0.0162. Each
+    # charge is a difference of micro-USD-rounded totals (so 0.0108757
+    # bills as 0.010876), never the raw float difference.
+    assert meter.charge(0.0108757) == pytest.approx(0.010876)
+    assert meter.charge(0.0136693) == pytest.approx(0.002793)
+    assert meter.charge(0.0161742) == pytest.approx(0.002505)
+    assert meter.charge(None) is None
+    # A total that went DOWN (the CLI documents that a mid-session /clear
+    # resets it) is never a negative charge: the new total is what was spent
+    # since the reset, so it is billed whole and becomes the baseline.
+    assert meter.charge(0.001) == pytest.approx(0.001)
+    assert meter.charge(0.002) == pytest.approx(0.001)
+    meter.reset()
+    assert meter.charge(0.0005) == pytest.approx(0.0005)
+
+
+def test_cost_meter_deltas_sum_exactly_to_the_cli_total_in_micro_usd():
+    """The ledger stores each turn's charge as rounded micro-USD; the meter
+    bills differences of rounded TOTALS so those integers telescope to the
+    CLI's own total instead of drifting a micro-dollar per turn."""
+    from marim_harness.config.claude_cli_model import CostMeter
+
+    meter = CostMeter()
+    totals = [0.0108757, 0.0136693, 0.0161742]
+    billed = [round(meter.charge(t) * 1_000_000) for t in totals]  # type: ignore[operator]
+    assert billed == [10_876, 2_793, 2_505]
+    assert sum(billed) == round(totals[-1] * 1_000_000) == 16_174
+
+
+def test_charge_cost_sets_only_the_cost_detail():
+    from pydantic_ai.usage import RequestUsage
+
+    from marim_harness.config.claude_cli_model import charge_cost
+
+    base = RequestUsage(input_tokens=5, output_tokens=2, cache_read_tokens=3, details={"x": 1})
+    assert charge_cost(base, None) is base
+    charged = charge_cost(base, 0.0000007)
+    assert charged.input_tokens == 5 and charged.cache_read_tokens == 3
+    assert charged.details == {"x": 1, COST_DETAIL_KEY: 1}
+
+
+@pytest.mark.anyio
+async def test_consume_reports_prompt_usage_and_result_facts():
+    """An ``assistant`` object's usage is the request's size (a
+    ``PromptUsageChunk`` before its tool_use blocks); the ``result`` carries
+    the running cost and the main model's window on the DoneChunk, and its
+    usage carries NO cost — the model bills the per-turn delta."""
+    from marim_harness.config.claude_cli_model import PromptUsageChunk
+
+    chunks = await _collect(
+        [
+            _INIT,
+            {
+                "type": "assistant",
+                "message": {
+                    "usage": {
+                        "input_tokens": 3,
+                        "cache_read_input_tokens": 27_000,
+                        "cache_creation_input_tokens": 500,
+                        "output_tokens": 9,
+                    },
+                    "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                },
+            },
+            _result(
+                "done",
+                total_cost_usd=0.0136693,
+                modelUsage={
+                    "claude-haiku-4-5-20251001": {"inputTokens": 50, "contextWindow": 200_000},
+                    "claude-opus-4-1": {
+                        "inputTokens": 3,
+                        "cacheReadInputTokens": 27_000,
+                        "contextWindow": 1_000_000,
+                    },
+                    "junk": {"contextWindow": "wide"},
+                },
+            ),
+        ]
+    )
+    assert chunks[1] == PromptUsageChunk(27_503)  # no message.model on this one
+    assert isinstance(chunks[2], ToolUseChunk)
+    done = chunks[-1]
+    assert isinstance(done, DoneChunk) and done.complete
+    assert done.cumulative_cost_usd == pytest.approx(0.0136693)
+    assert done.context_window == 1_000_000  # the model that did the most input work
+    assert done.context_windows == {
+        "claude-haiku-4-5-20251001": 200_000,
+        "claude-opus-4-1": 1_000_000,
+    }
+    assert COST_DETAIL_KEY not in done.usage.details
+
+
+@pytest.mark.anyio
+async def test_consume_without_model_usage_leaves_the_window_unknown():
+    chunks = await _collect([_INIT, _result("ok", total_cost_usd=None, modelUsage=None)])
+    done = chunks[-1]
+    assert isinstance(done, DoneChunk)
+    assert done.context_window is None and done.cumulative_cost_usd is None
+
+
+def test_context_windows_ignore_a_malformed_model_usage():
+    from marim_harness.config.claude_cli_model import _context_window, _context_windows
+
+    for junk in (["not", "a", "mapping"], "string", 7, None):
+        assert _context_windows({"modelUsage": junk}) == {}
+        assert _context_window({"modelUsage": junk}) is None
+    assert _context_windows({"modelUsage": {"m": {"contextWindow": "big"}, "n": 3}}) == {}
+
+
+_USAGE_REPORT = {
+    "subscription_type": "max",
+    "rate_limits_available": True,
+    "rate_limits": {
+        "five_hour": {"utilization": 11, "resets_at": "2026-09-13T22:40:00+00:00"},
+        "seven_day": {"utilization": 59, "resets_at": "2026-09-16T18:00:00+00:00"},
+    },
+}
+
+
+def _cost_scenario() -> dict:
+    """Three turns whose results carry a CUMULATIVE cost (0.001 / 0.003 /
+    0.006) and a window; each turn's assistant object reports a growing
+    prompt size. The fake answers ``get_usage`` with a Max-plan reading."""
+
+    def turn(text: str, prompt: int, cumulative: float) -> list:
+        return [
+            {
+                "raw": {
+                    "type": "assistant",
+                    "message": {
+                        "usage": {"input_tokens": prompt, "output_tokens": 1},
+                        "content": [{"type": "text", "text": text}],
+                    },
+                    "session_id": "S1",
+                }
+            },
+            {"text": text},
+            {
+                "result": {
+                    "total_cost_usd": cumulative,
+                    "modelUsage": {
+                        "claude-sonnet-4-6": {"inputTokens": 1, "contextWindow": 200_000}
+                    },
+                }
+            },
+        ]
+
+    return {
+        "usage_report": _USAGE_REPORT,
+        "turns": [
+            turn("one", 30_000, 0.001),
+            turn("two", 31_000, 0.003),
+            turn("three", 33_000, 0.006),
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_request_bills_each_turn_its_own_cost_and_keeps_the_context_report(
+    tmp_path, monkeypatch
+):
+    from marim_harness.config.context_report import CONTEXT_REPORT_KEY, ContextReport
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
+
+    model = _model(tmp_path, monkeypatch, _cost_scenario())
+    assert model.context_report is None and model.quota_hint is None
+    history = _user("first")
+    try:
+        r1 = await model.request(history, None, ModelRequestParameters())
+        history = history + [r1, ModelRequest(parts=[UserPromptPart(content="second")])]
+        r2 = await model.request(history, None, ModelRequestParameters())
+        history = history + [r2, ModelRequest(parts=[UserPromptPart(content="third")])]
+        r3 = await model.request(history, None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    # Cumulative on the wire, per-turn in the ledger: 0.001, 0.002, 0.003.
+    assert [r.usage.details[COST_DETAIL_KEY] for r in (r1, r2, r3)] == [1000, 2000, 3000]
+    assert model.context_report == ContextReport(33_000, 200_000)
+    # Each response persists the report it ended with (the window is known
+    # from the first result on).
+    assert r1.provider_details == {CONTEXT_REPORT_KEY: {"used": 30_000, "window": 200_000}}
+    assert r3.provider_details == {CONTEXT_REPORT_KEY: {"used": 33_000, "window": 200_000}}
+    assert model.quota_hint == QuotaHint(QuotaWindow(11, 300), QuotaWindow(59, 10080))
+    # The poll went out once per turn, after each result, with skip_behaviors.
+    polls = [
+        m
+        for m in read_claude_log(tmp_path)
+        if (m.get("request") or {}).get("subtype") == "get_usage"
+    ]
+    assert len(polls) == 3 and all(m["request"]["skip_behaviors"] is True for m in polls)
+
+
+@pytest.mark.anyio
+async def test_request_stream_settles_cost_report_and_quota_like_request(tmp_path, monkeypatch):
+    from marim_harness.config.context_report import CONTEXT_REPORT_KEY, ContextReport
+
+    model = _model(tmp_path, monkeypatch, _cost_scenario())
+    seen: list = []
+    history = _user("first")
+    try:
+        for _ in range(2):
+            async with model.request_stream(history, None, ModelRequestParameters()) as stream:
+                async for _ in stream:
+                    if model.context_report is not None:
+                        seen.append(model.context_report)
+                resp = stream.get()
+            history = history + [resp, ModelRequest(parts=[UserPromptPart(content="again")])]
+    finally:
+        await model.aclose()
+    assert resp.usage.details[COST_DETAIL_KEY] == 2000  # 0.003 − 0.001
+    assert resp.provider_details == {CONTEXT_REPORT_KEY: {"used": 31_000, "window": 200_000}}
+    assert model.context_report == ContextReport(31_000, 200_000)
+    # The report moved while the FIRST turn streamed (before its result knew
+    # the window), so the status bar sees it mid-turn.
+    assert ContextReport(30_000, None) in seen
+    assert model.quota_hint is not None and model.quota_hint.render() == "quota 11% (5h) · 59% (1w)"
+
+
+@pytest.mark.anyio
+async def test_respawn_resets_the_cost_baseline(tmp_path, monkeypatch):
+    """A fresh process restarts the CLI's running total at zero: its first
+    result must be billed in full, not against the dead process's total
+    (which would bill it as a zero-cost turn). The fake replays turn 1 for
+    the new process, so both results carry the same cumulative 0.005."""
+    scenario = {"turns": [[{"result": {"total_cost_usd": 0.005}}]]}
+    model = _model(tmp_path, monkeypatch, scenario)
+    history = _user("first")
+    try:
+        r1 = await model.request(history, None, ModelRequestParameters())
+        assert model._process is not None
+        await model._process.aclose()  # the idle reaper / a crash
+        history = history + [r1, ModelRequest(parts=[UserPromptPart(content="second")])]
+        r2 = await model.request(history, None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert r1.usage.details[COST_DETAIL_KEY] == 5000
+    assert r2.usage.details[COST_DETAIL_KEY] == 5000
+    assert len(read_claude_argvs(tmp_path)) > 1  # a new process served turn two
+
+
+@pytest.mark.anyio
+async def test_context_window_follows_the_model_behind_the_last_request(tmp_path, monkeypatch):
+    """After a fallback from a 1M-window model to a 200k one, the old model's
+    cumulative input keeps it the heaviest ``modelUsage`` entry — the window
+    must come from the model the last ``assistant`` event named, and the
+    carried window is dropped the moment a request names a new model."""
+    from marim_harness.config.context_report import ContextReport
+
+    usage = {
+        "claude-opus-4-1": {"inputTokens": 900_000, "contextWindow": 1_000_000},
+        "claude-sonnet-4-6": {"inputTokens": 50_000, "contextWindow": 200_000},
+    }
+
+    def turn(model: str, prompt: int) -> list:
+        return [
+            {
+                "raw": {
+                    "type": "assistant",
+                    "message": {
+                        "model": model,
+                        "usage": {"input_tokens": prompt, "output_tokens": 1},
+                        "content": [{"type": "text", "text": "x"}],
+                    },
+                    "session_id": "S1",
+                }
+            },
+            {"text": "x"},
+            {"result": {"modelUsage": usage}},
+        ]
+
+    scenario = {"turns": [turn("claude-opus-4-1", 800_000), turn("claude-sonnet-4-6", 40_000)]}
+    model = _model(tmp_path, monkeypatch, scenario)
+    seen: list = []
+    history = _user("first")
+    try:
+        r1 = await model.request(history, None, ModelRequestParameters())
+        assert model.context_report == ContextReport(800_000, 1_000_000)
+        history = history + [r1, ModelRequest(parts=[UserPromptPart(content="second")])]
+        async with model.request_stream(history, None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                seen.append(model.context_report)
+    finally:
+        await model.aclose()
+    # Mid-turn the reading named the new model's size with NO window (the
+    # 1M one no longer applies); the result then filled in sonnet's.
+    assert ContextReport(40_000, None) in seen
+    assert model.context_report == ContextReport(40_000, 200_000)
+
+
+@pytest.mark.anyio
+async def test_a_failed_turn_leaves_its_spend_for_the_next_turn_to_bill(tmp_path, monkeypatch):
+    """A ``result`` that errored with no text raises, and the raise records no
+    usage — so the meter is NOT advanced past it: the next successful turn
+    bills the failed turn's spend too, and the ledger's total still equals
+    the CLI's running total (0.006) instead of losing the failed 0.004."""
+    scenario = {
+        "turns": [
+            [
+                {
+                    "result": {
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "result": "",
+                        "total_cost_usd": 0.004,
+                    }
+                }
+            ],
+            [{"text": "ok"}, {"result": {"total_cost_usd": 0.006}}],
+        ]
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+    history = _user("first")
+    try:
+        with pytest.raises(CliModelError):
+            await model.request(history, None, ModelRequestParameters())
+        resp = await model.request(history, None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert resp.usage.details[COST_DETAIL_KEY] == 6000
+    assert len(read_claude_argvs(tmp_path)) == 1  # same process, same running total
+
+
+@pytest.mark.anyio
+async def test_quota_poll_failure_is_ignored_and_ephemeral_clones_skip_it(tmp_path, monkeypatch):
+    model = _model(tmp_path, monkeypatch, {"usage_report": {"rate_limits_available": False}})
+    clone = model.ephemeral_clone(cwd=str(tmp_path))
+    try:
+        await model.request(_user("hi"), None, ModelRequestParameters())
+        await clone.request(_user("hi"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert model.quota_hint is None and clone.quota_hint is None
+    polls = [
+        m
+        for m in read_claude_log(tmp_path)
+        if (m.get("request") or {}).get("subtype") == "get_usage"
+    ]
+    assert len(polls) == 1  # the main model only; the clone never asks
+
+
+@pytest.mark.anyio
+async def test_a_failed_quota_poll_clears_the_previous_hint(tmp_path, monkeypatch):
+    """The status bar renders any hint the adapter holds, so a poll that
+    fails must drop the previous reading instead of leaving it up stale."""
+    from types import SimpleNamespace
+
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
+
+    model = _model(tmp_path, monkeypatch, {})
+    model.quota_hint = QuotaHint(QuotaWindow(11, 300), None)
+
+    async def failing_read_usage():
+        raise TimeoutError("no answer")
+
+    await model._refresh_quota(SimpleNamespace(alive=True, read_usage=failing_read_usage))  # type: ignore[arg-type]
+    assert model.quota_hint is None

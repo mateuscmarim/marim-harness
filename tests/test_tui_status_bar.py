@@ -63,6 +63,10 @@ class _StatusBarApp(App[None]):
             def quota_hint(self):
                 return getattr(harness.current_model, "quota_hint", None)
 
+            @property
+            def context_report(self):
+                return getattr(harness.current_model, "context_report", None)
+
         self.link = SimpleNamespace(info=_Info())
 
 
@@ -160,3 +164,22 @@ async def test_quota_hint_read_off_the_current_model():
         assert "quota 37% (5h) · 12% (1w)" in str(bar.render())
         pilot.app.harness.current_model = SimpleNamespace(quota_hint=None)
         assert "quota" not in str(bar.render())
+
+
+@pytest.mark.anyio
+async def test_context_gauge_prefers_the_backend_report():
+    """Under a CLI backend the ctx field shows the backend's own prompt size
+    against the model's window instead of the chars/4 estimate over marim's
+    mirror; a report without a window yet shows the used tokens over 0."""
+    from types import SimpleNamespace
+
+    from marim_harness.config.context_report import ContextReport
+
+    async with _StatusBarApp().run_test() as pilot:
+        bar = pilot.app.query_one(StatusBar)
+        pilot.app.harness.current_model = SimpleNamespace(
+            context_report=ContextReport(27_516, 200_000)
+        )
+        assert "ctx 27.5k/200k (14%)" in str(bar.render())
+        pilot.app.harness.current_model = SimpleNamespace(context_report=ContextReport(1_500))
+        assert "ctx 1.5k/0 (0%)" in str(bar.render())

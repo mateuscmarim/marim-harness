@@ -8,6 +8,7 @@ import pytest
 
 from marim_harness.codex.server import CodexServer, ThreadHandle
 from marim_harness.codex.turn import TurnState, turn_events
+from marim_harness.config.context_report import ContextReport
 
 pytestmark = pytest.mark.anyio
 
@@ -51,3 +52,38 @@ async def test_stale_completion_from_the_previous_turn_is_skipped():
     _ = [item async for item in turn_events(server, handle, state, turn_id="turn-2")]
     assert state.done is not None
     assert handle.events.empty()
+
+
+def _usage(total: dict, last: dict, window: int | None = None) -> tuple[str, dict]:
+    usage: dict = {"total": total, "last": last}
+    if window is not None:
+        usage["modelContextWindow"] = window
+    return ("thread/tokenUsage/updated", {"tokenUsage": usage})
+
+
+async def test_usage_updates_fold_into_the_context_report():
+    """Each ``last`` is the prompt size of the newest request (cache-inclusive
+    ``inputTokens``); the window is learned from the update that carries it
+    and kept when a later one does not. Start-of-turn snapshots with no
+    ``last`` are not reported as an empty context, and every reading is
+    pushed to ``on_context`` as it lands (the status bar reads it mid-turn)."""
+    server = CodexServer(binary="unused", timeout=2.0)
+    handle = _handle()
+    handle.events.put_nowait(_usage({"inputTokens": 100}, {}))
+    handle.events.put_nowait(_usage({"inputTokens": 140}, {"inputTokens": 40}, 272_000))
+    handle.events.put_nowait(_usage({"inputTokens": 190}, {"inputTokens": 50}))
+    handle.events.put_nowait(_completed("turn-1"))
+    seen: list[ContextReport] = []
+    state = TurnState(on_context=seen.append)
+    _ = [item async for item in turn_events(server, handle, state, turn_id="turn-1")]
+    assert seen == [ContextReport(40, 272_000), ContextReport(50, 272_000)]
+    assert state.context == ContextReport(50, 272_000)
+
+
+async def test_turn_without_usage_leaves_the_context_unknown():
+    server = CodexServer(binary="unused", timeout=2.0)
+    handle = _handle()
+    handle.events.put_nowait(_completed("turn-1"))
+    state = TurnState()
+    _ = [item async for item in turn_events(server, handle, state, turn_id="turn-1")]
+    assert state.context is None

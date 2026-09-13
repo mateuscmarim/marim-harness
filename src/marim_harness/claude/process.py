@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 _INIT_TIMEOUT = 30.0
 _INTERRUPT_GRACE = 2.0
+# Cap on the once-per-turn `get_usage` poll: a status-line nicety must never
+# hold the turn's settle for the default 30 s control timeout.
+_USAGE_TIMEOUT = 5.0
 _TERM_GRACE = 2.0
 # stdout EOF and the child reaper race: without a short settle the synthetic
 # CLOSED object would carry a half-read stderr tail and returncode None.
@@ -435,6 +438,16 @@ class ClaudeProcess:
         if self._client is None or self.closed.is_set():
             raise ProcessClosed("claude is not running")
         await self._client.user(text)
+
+    async def read_usage(self, timeout: float = _USAGE_TIMEOUT) -> dict:
+        """The ``get_usage`` control answer: the subscription's rate-limit
+        windows (see ``claude/quota.py``) plus the process's running totals.
+        ``skip_behaviors`` keeps the CLI from acting on the reading (it is a
+        status-line poll, not a user command). Raises like ``control`` —
+        the caller treats it as best-effort."""
+        if self._client is None or self.closed.is_set():
+            raise ProcessClosed("claude process is closed")
+        return await self._client.control("get_usage", timeout=timeout, skip_behaviors=True)
 
     async def interrupt(self, handle: TurnHandle, grace: float = _INTERRUPT_GRACE) -> None:
         """Send ``interrupt`` and wait up to ``grace`` for the turn's aborted

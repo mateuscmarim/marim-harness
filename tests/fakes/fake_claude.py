@@ -72,10 +72,16 @@ class Fake:
             }
         )
 
-    def _init_body(self, msg: dict) -> dict:
+    def _control_body(self, msg: dict) -> dict:
+        """The between-turns control answers the scenario can script:
+        ``initialize`` carries the model menu (``models``), ``get_usage`` the
+        rate-limit reading (``usage_report``); anything else an empty
+        success."""
         subtype = (msg.get("request") or {}).get("subtype")
         if subtype == "initialize" and "models" in self.scenario:
             return {"models": self.scenario["models"]}
+        if subtype == "get_usage" and "usage_report" in self.scenario:
+            return self.scenario["usage_report"]
         return {}
 
     def _assistant(self, content: list[dict]) -> dict:
@@ -147,7 +153,7 @@ class Fake:
                 # a late interrupt) gets an empty success — nothing to abort.
                 # `initialize` alone carries the scenario's model menu when
                 # one is given, the way the real CLI's handshake does.
-                self.respond(msg["request_id"], self._init_body(msg))
+                self.respond(msg["request_id"], self._control_body(msg))
             elif kind == "user" and not msg.get("isReplay"):
                 self.run_turn(msg)
 

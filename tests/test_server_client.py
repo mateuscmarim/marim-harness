@@ -539,6 +539,23 @@ def test_remote_info_apply_session_tolerates_an_older_daemon():
         0,
     )
     assert info.compact_threshold == 99
+    # An older daemon never sends context/quota: both stay unset.
+    assert info.context_report is None and info.quota_hint is None
+
+
+def test_remote_info_apply_session_reads_the_backend_context_and_quota():
+    from marim_harness.config.context_report import ContextReport
+
+    info = RemoteInfo(workspace_root=Path("/ws"), session_id="s1")
+    info.apply_session({"context": {"used": 27_516, "window": 200_000}, "quota": "quota 11% (5h)"})
+    assert info.context_report == ContextReport(27_516, 200_000)
+    assert info.quota_hint == "quota 11% (5h)"
+    # The daemon says the session moved to a provider without a report.
+    info.apply_session({"context": None, "quota": None})
+    assert info.context_report is None and info.quota_hint is None
+    # A malformed reading is dropped, not crashed on.
+    info.apply_session({"context": {"used": "lots"}, "quota": ""})
+    assert info.context_report is None and info.quota_hint is None
 
 
 def test_remote_info_observe_follows_events():
