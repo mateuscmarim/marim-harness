@@ -74,6 +74,11 @@ class ToolResult(BaseModel):
     # status_from_part). Defaulted so an older server that omits it renders as a
     # plain success, exactly as before the field existed.
     status: str = "done"
+    # Image returns (read_file on a PNG/JPEG) as references, never bytes:
+    # ``[{"sha", "media_type", "bytes"}]``, each resolvable at
+    # ``GET .../images/{sha}``. ``content`` keeps the text placeholder. Empty
+    # for a text-only result, and for an older server that predates the field.
+    images: list[dict] = Field(default_factory=list)
 
 
 class AskPending(BaseModel):

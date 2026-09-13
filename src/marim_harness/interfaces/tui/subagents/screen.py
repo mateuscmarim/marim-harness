@@ -121,7 +121,8 @@ class SubAgentsScreen:
         self._app.run_worker(self._resume(card), group="subagent-resume", exit_on_error=False)
 
     async def _resume(self, card) -> None:
-        resume = self._app.harness.deps.services.resume_subagent
+        harness = self._app.harness
+        resume = harness.deps.services.resume_subagent if harness is not None else None
         if resume is None:
             return
         job_id, message = await resume(card.stream_id)
@@ -221,12 +222,10 @@ class SubAgentsScreen:
         Runs as a worker off the sync repaint path (``_repaint_list`` already set
         ``pane.transcript_loaded``). A missing store or sidecar just renders a
         fallback note — the guard is already set, so it isn't retried."""
-        store = self._app.harness.session.store
-        if store is None:
+        transcripts = self._app.session.transcripts()
+        if transcripts is None:
             return
-        from ....session import TranscriptStore
-
-        msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
+        msgs = transcripts.read(stream_id)
         if msgs is not None:
             await self._app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
             # A nested background spawn buried in this transcript replays as a

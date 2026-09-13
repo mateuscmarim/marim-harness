@@ -47,7 +47,9 @@ dependencies = [
 # flatlatex renders LaTeX math spans in replies as Unicode (see
 # interfaces/tui/math_markdown.py); TUI-only because only the live TUI view
 # transliterates — persisted transcripts keep raw LaTeX.
-tui = ["textual>=0.80", "flatlatex>=0.15"]
+# websockets feeds the attached TUI (phase 4a: `marim --session <id>` against a
+# daemon-owned session) — the REST side rides on core httpx.
+tui = ["textual>=0.80", "flatlatex>=0.15", "websockets>=13"]
 # The `marim serve` HTTP daemon (REST + SSE). Bare installs print an install
 # hint when starlette/uvicorn are absent. segno encodes the pairing QR
 # (`marim serve qr`) — pure Python, no runtime deps, and used only as an

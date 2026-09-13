@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.usage import RunUsage
 
 from marim_harness.interfaces.tui.commands import (
     COMMANDS,
@@ -44,7 +45,14 @@ class _FakeApp:
             ),
             checkpoints=SimpleNamespace(list=lambda: []),
             manual_compact=_default_manual_compact,
+            model_id=None,
+            model_label="test-model",
+            session=SimpleNamespace(usage=RunUsage()),
         )
+        # The link seam (phase 4a): commands read the session through
+        # ``link.info`` and switch mode/model through the app's async setters.
+        self.link = SimpleNamespace(info=_FakeInfo(self))
+        self.mode_calls: list = []
 
         self.undone = False
         self.rewound: list[int] = []
@@ -82,9 +90,44 @@ class _FakeApp:
         if tasks:
             await asyncio.gather(*tasks)
 
-    def start_system_turn(self, prompt: str) -> None:
+    async def start_system_turn(self, prompt: str) -> bool:
         self.stream.current_assistant = None
         self._turn_worker = self.run_worker(self._run_turn(prompt), exclusive=True)
+        return True
+
+    def require_local(self, what: str):
+        return self.harness
+
+    def note_remote_only(self, exc) -> None:
+        self.posted.append(str(exc))
+
+    async def action_cycle_mode(self) -> None:
+        self.mode_calls.append("cycle")
+
+    async def set_mode(self, mode) -> None:
+        self.mode_calls.append(mode)
+
+
+class _FakeInfo:
+    """The read model the commands consult: mirrors the fake harness live, the
+    way ``LocalLinkInfo`` mirrors the real one."""
+
+    def __init__(self, app: "_FakeApp") -> None:
+        self._app = app
+
+    @property
+    def usage(self):
+        return self._app.harness.session.usage
+
+    @property
+    def model_id(self):
+        return self._app.harness.model_id
+
+    @property
+    def model_label(self):
+        return self._app.harness.model_label
+
+    mode = "ask"
 
 
 def _infos() -> list:

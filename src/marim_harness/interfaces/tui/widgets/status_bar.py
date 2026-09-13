@@ -17,7 +17,6 @@ from textual.content import Content
 from textual.reactive import reactive
 from textual.widgets import Static
 
-from ....compaction import estimate_tokens
 from ....usage import resolve_cost
 from .format import _SPINNER, format_cost, format_duration, format_token_split, human_tokens
 
@@ -38,43 +37,35 @@ class StatusBar(Static):
     last_ttft: reactive[float | None] = reactive(None, init=False)
     model_name: reactive[str] = reactive("", init=False)
     mode: reactive[str] = reactive("", init=False)
+    # Where the session lives when it is not this process ("daemon",
+    # "daemon · reconnecting…", "daemon · lost"); empty for a local session.
+    link_label: reactive[str] = reactive("", init=False)
 
     def __init__(self) -> None:
         super().__init__(id="status-bar")
         self.spin = 0
         self.session_start = time.monotonic()
         self.turn_start = time.monotonic()
-        # Memoized context-size estimate (see _context_tokens). -1 forces a first
-        # compute; 0 is a legitimate cached value for an empty history.
-        self._ctx_tokens_key = -1
-        self._ctx_tokens = 0
         # Memoized committed-cost estimate (see _session_cost). A sentinel key no
         # real (total, model) pair can equal forces the first compute.
         self._cost_key: object = None
         self._cost: float | None = None
 
     def _context_tokens(self) -> int:
-        """The context-size estimate for the status bar, memoized on history length.
-
-        estimate_tokens() serializes every part of every message (O(total bytes)),
-        but the status bar repaints once a second while idle and ~12.5x/s while a
-        turn streams — recomputing it each time re-stringifies the whole transcript
-        for a number that only moves when a message is committed."""
+        """The context-size estimate for the status bar. The link's read
+        model memoizes it (the local one on history length — estimate_tokens
+        re-stringifies the whole transcript, and the bar repaints ~12.5x/s
+        while a turn streams; the remote one is a field of ``GET session``)."""
         app: HarnessApp = self.app  # type: ignore[assignment]
-        history = app.harness.session.history
-        key = len(history)
-        if key != self._ctx_tokens_key:
-            self._ctx_tokens_key = key
-            self._ctx_tokens = estimate_tokens(history)
-        return self._ctx_tokens
+        return app.link.info.history_tokens
 
     def _session_cost(self) -> float | None:
         """The committed session cost for the status bar, memoized on (token total,
         model). resolve_cost → estimate_cost is a genai-prices table lookup; the
         committed total moves only on commit, so it's an exact change key."""
         app: HarnessApp = self.app  # type: ignore[assignment]
-        usage = app.harness.session.usage
-        model_id = app.harness.model_id
+        usage = app.link.info.usage
+        model_id = app.link.info.model_id
         key = (usage.total_tokens, model_id)
         if key != self._cost_key:
             self._cost_key = key
@@ -85,21 +76,25 @@ class StatusBar(Static):
         """The current model's quota hint (``quota 37% (5h) · 12% (1w)``), or
         empty for providers that have none."""
         app: HarnessApp = self.app  # type: ignore[assignment]
-        hint = getattr(getattr(app.harness, "current_model", None), "quota_hint", None)
-        return hint.render() if hint is not None else ""
+        hint = app.link.info.quota_hint
+        if hint is None:
+            return ""
+        # The local read model hands over the live QuotaHint; the remote one
+        # the daemon's already-rendered string.
+        return hint.render() if hasattr(hint, "render") else str(hint)
 
     def render(self) -> Content:
         app: HarnessApp = self.app  # type: ignore[assignment]
-        cfg = getattr(app.harness, "model_label", "model")
+        cfg = app.link.info.model_label or "model"
         used = self._context_tokens()
         # Denominate against the resolved threshold (min(budget, 0.8×window)), not
         # the raw budget: 100% keeps meaning "compaction imminent" even when a
         # small discovered window, not the budget, is the binding limit.
-        max_ctx = getattr(app.harness.session, "compact_threshold", 0) or 0
+        max_ctx = app.link.info.compact_threshold or 0
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {human_tokens(used)}/{human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
-        tokens_text = format_token_split(app.harness.session.usage)
+        tokens_text = format_token_split(app.link.info.usage)
         if self.live_run_tokens:
             tokens_text += f" +{human_tokens(self.live_run_tokens)}"
         cost = self._session_cost()
@@ -123,6 +118,8 @@ class StatusBar(Static):
         quota = self._quota_text()
         if quota:
             fields.append(Content(quota))
+        if self.link_label:
+            fields.append(Content(self.link_label))
         if self.busy:
             elapsed = format_duration(time.monotonic() - self.turn_start)
             fields.append(Content(f"working… {elapsed}"))
@@ -134,8 +131,8 @@ class StatusBar(Static):
         pull the renderer's in-flight live-token/ttft tallies into the matching
         reactives so a caller that only touches ``app.stream`` still shows up."""
         app: HarnessApp = self.app  # type: ignore[assignment]
-        self.mode = app.harness.deps.workspace.mode.value
-        self.model_name = app.harness.model_label
+        self.mode = app.link.info.mode
+        self.model_name = app.link.info.model_label
         stream = getattr(app, "stream", None)
         if stream is not None:
             self.live_run_tokens = stream.live_run_tokens
@@ -160,7 +157,7 @@ class StatusBar(Static):
         idle/working mark + the session name."""
         app: HarnessApp = self.app  # type: ignore[assignment]
         mark = _SPINNER[self.spin] if self.busy else "●"
-        name = app.harness.session.session_name or "marim-harness"
+        name = app.link.info.session_name or "marim-harness"
         app.title = f"{mark} {name}"  # in-app Header
         if app._driver is not None:  # the actual terminal tab
             # Best-effort: refresh_title runs from set_busy, which fires in

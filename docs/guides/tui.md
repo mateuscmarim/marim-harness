@@ -212,7 +212,11 @@ press `esc` first. They also wait for an in-progress compaction.
 Sessions persist automatically (under `$XDG_DATA_HOME/marim-harness/sessions`)
 and reopen where you left off. `/sessions`, `/new`, `/switch`, and `/name`
 manage them. Untitled sessions are auto-titled in the background after some
-conversation.
+conversation. The picker tags a session another process has open
+(`daemon`, or `tui (pid N)`); one the `marim serve` daemon owns can be
+attached to with `marim --session <id>` — the status bar then reads
+`daemon`, and the few commands that need the session's own process
+(`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image) say so instead of running.
 
 Compaction runs automatically when context approaches the threshold shown in
 the status bar; `/compact` triggers it on demand, with optional instructions

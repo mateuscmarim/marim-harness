@@ -288,7 +288,7 @@ class PromptInput(TextArea):
         # externalize task) re-stores under the real session id regardless, so a
         # fallback bucket here only affects the transient paste-time cache path.
         try:
-            return self.app.harness.session.store.session_id  # type: ignore[attr-defined]
+            return self.app.link.info.session_id or "default"  # type: ignore[attr-defined]
         except Exception:
             return "default"
 

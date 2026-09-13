@@ -434,15 +434,32 @@ message endpoints see it before its first turn.
 {
   "session": {"id": "...", "name": "...", "updated": "...", "message_count": 0,
               "tokens": 0, "duration_seconds": null, "model": null,
-              "advisor_model": null, "thinking": null, "mode": null},
+              "advisor_model": null, "thinking": null, "mode": null,
+              "model_label": "anthropic/claude-sonnet-4-6"},
   "status": "idle",
   "queued": 0,
   "pending_asks": [],
-  "trust_prompt_pending": false
+  "trust_prompt_pending": false,
+  "workspace_path": "/home/me/proj",
+  "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500,
+            "cache_read_tokens": 0, "cost": 0.0042},
+  "compact_threshold": 160000
 }
 ```
 
 `queued` is the number of prompts waiting behind the running turn.
+
+The response is what an attaching client seeds its view from. When the
+session's live host is loaded, the `session` object's `mode`, `model`,
+`advisor_model` and `thinking` are the host's **live** values (a mode
+cycled in the TUI is never persisted, so the listing's value may lag) and
+gain `model_label` (the display form of the model, provider-aware).
+`workspace_path` is the workspace's root on disk (what an attached TUI
+shows as its subtitle and resolves relative paths against). `usage` is
+the session-cumulative token split with cost, and `compact_threshold`
+the token budget the context gauge is denominated against; both are
+`null` while no host is loaded (a cold session has nothing live to
+report — the listing's `tokens` is the persisted estimate).
 
 ### DELETE /v1/workspaces/{ws}/sessions/{sid}
 
@@ -496,11 +513,19 @@ Request body (`MessageIn`):
   "prompt": "run the tests and fix any failures",
   "attachments": [
     {"data_b64": "<base64 bytes>", "media_type": "image/png"}
-  ]
+  ],
+  "trigger": "user"
 }
 ```
 
 `attachments` is optional. Invalid base64 returns `400`.
+
+`trigger` (optional, default `user`) is who is speaking, and is echoed on
+the turn's `turn.started` event: `user` is a typed prompt; `system` is a
+client-side slash command's own prompt (`/remember`, `/skill`), which
+clients render without a user bubble — the same as the in-process TUI.
+`autonomous` is **not** accepted (`400`): the daemon's own wake driver is
+the only thing that may wake a session.
 
 `202`: `{"turn_id": "9f3ab1c2d4e5f607"}` — the turn is queued; follow
 progress on the WebSocket stream. Errors:
@@ -660,8 +685,10 @@ yet persisted. A session with no live bus reports `history_seq: 0`.
 ### GET /v1/workspaces/{ws}/sessions/{sid}/images/{sha}
 
 Serves bytes from the session's image cache (images the harness ingested,
-referenced internally as `marim-image-cache://` refs). `sha` must be 64
-lowercase hex chars (the content SHA-256); anything else is `404`.
+referenced internally as `marim-image-cache://` refs, and every image a
+tool returned during a turn — the `images` references on `tool.result`
+events point here). `sha` must be 64 lowercase hex chars (the content
+SHA-256); anything else is `404`.
 
 `200`: raw image bytes with the detected `Content-Type` (fallback
 `application/octet-stream`) and
@@ -719,7 +746,7 @@ surfaced):
 | `text.delta`     | `{"text": "<chunk>"}`                         |
 | `thinking.delta` | `{"text": "<chunk>"}`                         |
 | `tool.call`      | `{"name": "...", "args": {...}, "id": "..."}` |
-| `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied"}` |
+| `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied", "images": [{"sha": "...", "media_type": "image/png", "bytes": 4096}]}` — `images` lists any image the tool returned (a `read_file` on a PNG, an MCP image block); `content` carries a text placeholder in its place, and the bytes are served at `GET .../images/{sha}` the moment the event is published |
 
 Turn lifecycle:
 
@@ -802,6 +829,32 @@ persisted, so the session returns to its last clean baseline. Any asks left
 by the interrupted turn are cancelled (`ask.resolved` with
 `"cancelled": true`), and the stream sees `turn.finished` with
 `"interrupted": true`.
+
+**Attaching a local TUI.** `marim --session <id>` (or `marim --resume`
+when the latest session is the daemon's) does not take a daemon-owned
+session over: the launch reads the session's claim sidecar, and when the
+holder is a `marim serve` daemon whose endpoint answers, whose pid matches
+the daemon's runtime record, whose token is readable from the daemon's
+state directory (`$XDG_DATA_HOME/marim-harness/server/token`) and which
+lists this workspace, the TUI starts as a client of this API instead —
+`GET session` seeds its status bar, `GET history` replays the transcript,
+the WebSocket (from `history_seq`) streams the live tail, `GET asks`
+reconciles the panels, and every action (`POST messages` with the
+attachments base64-encoded, `interrupt`, `steer`, `asks/{aid}`, `mode`,
+`model`) goes through the routes above. Prompts sent from any other
+client (a phone, curl) show up in the attached TUI and vice versa, since
+they are the same session on the same host. The status bar shows `daemon`
+(`daemon · reconnecting…` while the socket is re-established with backoff;
+`daemon · lost` after 60 s or an auth/not-found rejection). On
+`stream.gap` the TUI re-renders from `GET history` and re-attaches at its
+boundary. Commands that need the session's own process (`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!` shell passthrough,
+steering with an image, switching sessions in place) are refused with a notice
+while attached. When any probe fails the launch prints why
+(`not attaching: …`) and falls back to the usual "already open" refusal;
+headless runs never attach. The daemon keeps the claim throughout — an
+attached TUI holds no claim of its own — so the session is still
+`409 claimed` for a second local process, and it stays alive on the
+daemon after the TUI quits.
 
 **Graceful shutdown.** On daemon shutdown, every live host is interrupted
 (resumable flush), parked asks are cancelled, and each session is persisted.

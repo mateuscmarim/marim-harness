@@ -17,6 +17,7 @@ from textual.widgets.option_list import Option
 
 from ...interfaces.durations import format_duration
 from ...session import SessionInfo, filter_sessions
+from ...session.claim import Holder
 from .widgets.format import human_tokens
 
 _NAME_WIDTH = 28
@@ -25,7 +26,15 @@ _NAME_WIDTH = 28
 _DELETE_CONFIRM_WINDOW = 2.0
 
 
-def _format_row(info: SessionInfo, active: str | None) -> str:
+def _holder_tag(holder: Holder | None) -> str:
+    """Who has the session open right now: `daemon`, `tui (pid N)`, or empty
+    when nobody does (and for the active row — that one is us)."""
+    if holder is None:
+        return ""
+    return "daemon" if holder.kind == "daemon" else f"{holder.kind} (pid {holder.pid})"
+
+
+def _format_row(info: SessionInfo, active: str | None, holder: Holder | None = None) -> str:
     name = info.name if len(info.name) <= _NAME_WIDTH else info.name[: _NAME_WIDTH - 1] + "…"
     when = info.updated[:16].replace("T", " ") if info.updated else "—"
     duration = format_duration(info.duration_seconds) if info.duration_seconds is not None else "—"
@@ -34,9 +43,11 @@ def _format_row(info: SessionInfo, active: str | None) -> str:
     # trailing "← active" gets clipped off entirely, making the active row
     # indistinguishable from the rest once you've navigated away from it.
     prefix = "▸ " if info.id == active else "  "
+    tag = _holder_tag(holder) if info.id != active else ""
     return (
         f"{prefix}{name:<{_NAME_WIDTH}}  {info.message_count:>3} msgs · "
         f"{human_tokens(info.tokens):>6} tok · {duration:>6} · {when}"
+        + (f" · {tag}" if tag else "")
     )
 
 
@@ -97,10 +108,18 @@ class SessionPickerModal(ModalScreen[str | None]):
 
     BINDINGS = [("escape", "cancel", "Cancel"), ("d", "delete", "Delete")]
 
-    def __init__(self, sessions: list[SessionInfo], active: str | None = None) -> None:
+    def __init__(
+        self,
+        sessions: list[SessionInfo],
+        active: str | None = None,
+        holders: dict[str, Holder] | None = None,
+    ) -> None:
         super().__init__()
         self.sessions = sessions
         self.active = active
+        # Per-row claim holders (session id → Holder), read from the sidecars
+        # by the caller; a row without one is free to switch to.
+        self.holders = holders or {}
         self._armed: tuple[str, float] | None = None  # (session_id, armed_at)
         # Lockout window right after a confirmed delete: without it, terminal
         # key auto-repeat on a held `d` can arm→confirm→arm→confirm several
@@ -128,7 +147,8 @@ class SessionPickerModal(ModalScreen[str | None]):
         options.clear_options()
         active_index = None
         for i, info in enumerate(sessions):
-            options.add_option(Option(_format_row(info, self.active), id=info.id))
+            row = _format_row(info, self.active, self.holders.get(info.id))
+            options.add_option(Option(row, id=info.id))
             if info.id == self.active:
                 active_index = i
         if sessions:

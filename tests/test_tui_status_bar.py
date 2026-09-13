@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic_ai.usage import RunUsage
 from textual.app import App, ComposeResult
@@ -31,8 +33,37 @@ class _StatusBarApp(App[None]):
             session = _Session()
             model_id = None
             model_label = "test-model"
+            current_model = None
 
-        self.harness = _Harness()
+        harness = _Harness()
+        self.harness = harness
+
+        class _Info:
+            """The bar reads through ``app.link.info`` (phase 4a); mirror the
+            stub harness live so a test that pokes ``app.harness`` still shows."""
+
+            mode = "ask"
+            model_id = None
+            session_name = None
+            history_tokens = 0
+
+            @property
+            def model_label(self):
+                return harness.model_label
+
+            @property
+            def usage(self):
+                return harness.session.usage
+
+            @property
+            def compact_threshold(self):
+                return harness.session.compact_threshold
+
+            @property
+            def quota_hint(self):
+                return getattr(harness.current_model, "quota_hint", None)
+
+        self.link = SimpleNamespace(info=_Info())
 
 
 @pytest.mark.anyio

@@ -21,6 +21,9 @@ class _App:
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)
 
+    def require_local(self, what: str):
+        return self.harness
+
     async def _open_thinking(self) -> None:
         self.picker_opened = True
 

@@ -118,7 +118,8 @@ class QueueController:
         # run) falls back to the front of the queue so it runs next — kept even
         # on a paused (cancel/error) finish, matching how the queue itself is
         # preserved on pause; the drain below stays gated so it waits for resume.
-        leftover = self._app.harness.take_buffered_steers()
+        harness = self._app.harness
+        leftover = harness.take_buffered_steers() if harness is not None else []
         if leftover:
             for text, atts in reversed(leftover):
                 self._queue.prepend(text, atts)

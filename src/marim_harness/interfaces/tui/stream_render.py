@@ -356,7 +356,7 @@ class _TopLevelSink(_StreamSink):
             widget = ToolCallWidget(
                 tool_name,
                 args,
-                workspace_root=self._r.app.harness.deps.workspace.root,
+                workspace_root=self._r.app.link.info.workspace_root,
             )
             self._r.tool_widgets[tool_call_id] = widget
             self.set_run(None, None)
@@ -764,7 +764,7 @@ class StreamRenderer:
             if usage is None or usage.total_tokens == card._priced_tokens:
                 continue
             card._priced_tokens = usage.total_tokens
-            cost, _ = resolve_cost(usage, self.app.harness.model_id)
+            cost, _ = resolve_cost(usage, self.app.link.info.model_id)
             cost_text = _format_cost(cost) if cost is not None else None
             card.set_usage(
                 usage.total_tokens,
@@ -839,7 +839,7 @@ class StreamRenderer:
         any other tool, or a wait on a non-sub-agent job."""
         if tool_name != "wait_for_job":
             return args
-        label = _wait_subagent_label(args, self.app.harness.deps.jobs)
+        label = _wait_subagent_label(args, self.app.jobs)
         return {**args, "_wait_label": label} if label else args
 
     def mount_spawn_widget(self, args: dict) -> SubAgentWidget:
@@ -847,7 +847,7 @@ class StreamRenderer:
         ordered ``subagents`` list (the viewer's navigation backing). The transcript
         streams into the card's hidden body; the full view reveals it on demand, so
         a fan-out stays legible as a stack of cards with no inline expansion."""
-        model_label = str(args.get("model") or self.app.harness.model_label or "")
+        model_label = str(args.get("model") or self.app.link.info.model_label or "")
         widget = SubAgentWidget(
             str(args.get("type", "")),
             str(args.get("task", "")),
@@ -868,7 +868,7 @@ class StreamRenderer:
         the run_workflow tool widget already represents the run there. An
         unmounted card is safe — its header/activity Statics exist from
         __init__ and updating an unmounted Static just stores content."""
-        widget = SubAgentWidget("workflow", title, str(self.app.harness.model_label or ""))
+        widget = SubAgentWidget("workflow", title, str(self.app.link.info.model_label or ""))
         widget.stream_id = tool_call_id
         self.subagents.append(widget)
         self.workflow_cards[tool_call_id] = widget
@@ -1195,7 +1195,7 @@ class StreamRenderer:
         widget = ToolCallWidget(
             tool_name,
             args,
-            workspace_root=self.app.harness.deps.workspace.root,
+            workspace_root=self.app.link.info.workspace_root,
         )
         self.tool_widgets[tool_call_id] = widget
         group, solo = sink.get_run()
@@ -1211,7 +1211,7 @@ class StreamRenderer:
         if widget is not None:
             content = tool_result_text(result)
             if isinstance(widget, SubAgentWidget) and self.note_detached_spawn(
-                content, widget, self.app.harness.deps.jobs
+                content, widget, self.app.jobs
             ):
                 pass  # detached: card stays pending, fills when its job settles
             else:

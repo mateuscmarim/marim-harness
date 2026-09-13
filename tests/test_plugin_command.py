@@ -25,6 +25,9 @@ class _FakeApp:
     async def post_system(self, text):
         self.messages.append(text)
 
+    def require_local(self, what: str):
+        return self.harness
+
 
 def _install(plugins_dir: Path, name: str, enabled=True):
     pdir = plugins_dir / name

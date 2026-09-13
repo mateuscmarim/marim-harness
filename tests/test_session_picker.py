@@ -456,3 +456,18 @@ async def test_note_deleted_for_unknown_session_is_noop():
         # Status is still empty (no change).
         status = str(modal.query_one("#session-status").render())
         assert status == ""
+
+
+def test_row_tags_the_holder_of_a_claimed_session():
+    """Phase 4a: a session owned by another process says so on its row —
+    ``daemon`` for the daemon (attachable), ``<kind> (pid N)`` otherwise —
+    and the active row never carries a tag (that holder is us)."""
+    from marim_harness.interfaces.tui.session_picker import _format_row
+    from marim_harness.session.claim import Holder
+
+    daemon = Holder(pid=4242, kind="daemon", endpoint="http://127.0.0.1:8642")
+    tui = Holder(pid=99, kind="tui", endpoint=None)
+    assert _format_row(_SESSIONS[0], active=None, holder=daemon).endswith(" · daemon")
+    assert _format_row(_SESSIONS[0], active=None, holder=tui).endswith(" · tui (pid 99)")
+    assert _format_row(_SESSIONS[0], active=None, holder=None).endswith("2026-07-03 10:00")
+    assert _format_row(_SESSIONS[0], active="s-alpha", holder=daemon).endswith("2026-07-03 10:00")

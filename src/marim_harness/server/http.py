@@ -32,6 +32,7 @@ from ..session import SessionManager, TranscriptStore
 from ..session.store import SessionLoadError
 from ..trust import record_decision, resolve_project_trust, stored_decision
 from ..trust_surface import ProjectSurface, scan_project_surface
+from ..usage import usage_summary
 from . import jobs_view
 from .auth import token_matches
 from .host import HostClosed, SessionHost, TurnQueueFull
@@ -424,6 +425,14 @@ async def get_session(request: Request) -> Response:
     host = _supervisor(request).peek(record.id, session_id)
     session_dict = asdict(info)
     session_dict["model"] = _effective_model(host, info.model)
+    if host is not None:
+        # A loaded host is authoritative for the live, possibly unpersisted
+        # state (the TUI's mode cycle never persists): what an attaching
+        # client needs to seed its own view of the session (phase 4a).
+        session_dict["mode"] = host.harness.deps.workspace.mode.value
+        session_dict["model_label"] = host.harness.model_label
+        session_dict["advisor_model"] = host.harness.advisor_model_id
+        session_dict["thinking"] = host.harness.thinking_level_id
     return _cached_json(
         {
             "session": session_dict,
@@ -431,9 +440,25 @@ async def get_session(request: Request) -> Response:
             "queued": host.queued if host else 0,
             "pending_asks": host.pending_asks() if host else [],
             "trust_prompt_pending": _trust_prompt_pending(host, Path(record.path)),
+            "workspace_path": record.path,
+            **_live_session_fields(host),
         },
         "no-cache",
     )
+
+
+def _live_session_fields(host) -> dict:
+    """The parts of ``GET session`` that only a loaded host can answer: the
+    session-cumulative usage split (with cost) and the compaction threshold the
+    context gauge is denominated against. ``None`` when no host is loaded —
+    a client reading them knows the session is cold, not empty."""
+    if host is None:
+        return {"usage": None, "compact_threshold": None}
+    session = host.harness.session
+    return {
+        "usage": usage_summary(session.usage, host.harness.model_id),
+        "compact_threshold": session.compact_threshold,
+    }
 
 
 async def delete_session(request: Request) -> Response:
@@ -507,7 +532,7 @@ async def post_message(request: Request) -> Response:
     if refusal is not None:
         return refusal
     try:
-        turn_id = host.submit(body.prompt, attachments)
+        turn_id = host.submit(body.prompt, attachments, trigger=body.trigger)
     except TurnQueueFull:
         return _error(429, "queue_full", "turn queue is full; wait for the running turn")
     except HostClosed:

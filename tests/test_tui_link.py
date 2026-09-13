@@ -1,0 +1,43 @@
+"""The in-process session link (phase 4a): ``LocalSessionLink`` exposes the
+host and harness behind the same surface the remote link has, and its
+``info`` is a live view over the harness (no snapshot to go stale)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from pydantic_ai.models.test import TestModel
+
+from marim_harness.interfaces.tui.link import LocalSessionLink
+from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
+from marim_harness.runtime.harness import Harness
+from marim_harness.runtime.permissions import Mode
+from marim_harness.server.bus import EventBus
+from marim_harness.server.host import SessionHost
+from marim_harness.tools.provider import BuiltinToolProvider
+
+
+def _harness(root: Path) -> Harness:
+    deps = Deps(workspace=WorkspaceConfig(root=root, mode=Mode.ask), ui=UIHooks())
+    return Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
+
+
+@pytest.mark.anyio
+async def test_local_link_reports_the_host_status_and_mirrors_the_harness(tmp_path):
+    harness = _harness(tmp_path)
+    host = SessionHost(harness, EventBus(), autonomous_wake=False)
+    link = LocalSessionLink(harness, host)
+    try:
+        assert link.kind == "local"
+        assert await link.load_session() == host.status == "idle"
+        info = link.info
+        assert info.workspace_root == tmp_path
+        assert info.mode == "ask" and info.model_label == harness.model_label
+        assert info.session_id is None  # no store: an anonymous session
+        await link.set_mode("plan")
+        assert harness.mode is Mode.plan and info.mode == "plan"  # live, not a snapshot
+        assert await link.pending_asks() == []
+        assert await link.interrupt() is False  # nothing running
+    finally:
+        await link.close()  # stops the host, as on_unmount does

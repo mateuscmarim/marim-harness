@@ -92,3 +92,30 @@ def test_finished_after_a_start_is_a_no_op():
     t.on_finished("t1")
     assert t.current == "t1" and t.busy is True  # still the status's call
     assert t.on_status("idle") is Transition.BECAME_IDLE
+
+
+def test_pending_latch_is_busy_until_the_submit_returns():
+    """Phase 4a: a remote submit is a round trip; the app is busy from the
+    moment it decides to submit, so a second Enter queues instead of
+    double-submitting."""
+    t = TurnTracker()
+    t.note_pending()
+    assert t.busy is True
+    t.note_submitted("t1")
+    assert t.pending is False and t.submitted == "t1"
+    assert t.busy is True
+
+
+def test_pending_latch_clears_when_the_submit_is_refused():
+    t = TurnTracker()
+    t.note_pending()
+    t.clear_pending()
+    assert t.busy is False
+
+
+def test_idle_status_while_pending_is_not_an_idle_edge():
+    t = TurnTracker()
+    t.on_status("running")
+    t.note_pending()
+    assert t.on_status("idle") is Transition.NONE
+    assert t.busy is True

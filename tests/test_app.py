@@ -945,7 +945,7 @@ async def test_cancel_turn_aborts_and_shows_message(tmp_path: Path):
         await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
         assert app.status.busy is True
 
-        app.action_cancel_turn()
+        await app.action_cancel_turn()
         await _settle(pilot, lambda: not app.status.busy, what="the cancelled turn to go idle")
 
         assert app.status.busy is False
@@ -961,7 +961,7 @@ async def test_cancel_when_idle_is_a_noop(tmp_path: Path):
     app = _app(tmp_path)
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.action_cancel_turn()  # nothing running
+        await app.action_cancel_turn()  # nothing running
         await pilot.pause()
         assert app.is_running is True
         assert list(app.query(ErrorMessage)) == []
@@ -1084,7 +1084,7 @@ async def test_cancelled_turn_settles_pending_tool_and_subagent_widgets(tmp_path
         await app.on_prompt_input_submitted(PromptInput.Submitted("do something slow"))
         await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
 
-        app.action_cancel_turn()
+        await app.action_cancel_turn()
         await _settle(pilot, lambda: not app.status.busy, what="the cancelled turn to go idle")
         assert app.status.busy is False
 
@@ -4122,7 +4122,7 @@ async def test_escape_after_turn_finished_but_before_idle_does_not_cancel_it(tmp
             what="the host to go idle with the pump stalled on turn.finished",
         )
         assert app.status.busy
-        app.action_cancel_turn()  # Esc, inside the window
+        await app.action_cancel_turn()  # Esc, inside the window
         await pilot.pause()
         release.set()
         await _settle(pilot, lambda: not app.status.busy, what="the idle edge")
@@ -4591,7 +4591,7 @@ async def test_start_system_turn_refused_while_busy(tmp_path: Path):
         await pilot.pause()
         _pretend_busy(app)
         submitted = _spy_submit(app)
-        started = app.start_system_turn("save this fact")
+        started = await app.start_system_turn("save this fact")
         assert started is False
         assert submitted == []  # the running turn was left alone
         await pilot.pause()
@@ -4607,7 +4607,7 @@ async def test_start_system_turn_runs_when_idle(tmp_path: Path):
         await pilot.pause()
         submitted = _spy_submit(app)
         assert app.turn_busy is False
-        started = app.start_system_turn("save this fact")
+        started = await app.start_system_turn("save this fact")
         assert started is True
         assert app.turn_busy is True  # latched until the host reports back
         await asyncio.wait_for(app.turns_idle.wait(), 10)
