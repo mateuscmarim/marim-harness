@@ -243,20 +243,30 @@ class CostMeter:
     A total that went DOWN on a live process means the CLI reset it (the
     documented mid-session ``/clear``); then the new total IS everything
     spent since the reset, so it is billed whole and becomes the baseline —
-    never a negative charge."""
+    never a negative charge.
+
+    The meter keeps its baseline in the ledger's own unit — micro-USD,
+    rounded the way ``charge_cost`` rounds — and bills integer differences.
+    Rounding each USD delta on its own would let the ledger's sum drift from
+    the CLI's total by a micro-dollar per turn (the live 0.0108757 →
+    0.0136693 → 0.0161742 sums to 16,175 that way against a 16,174 total);
+    differences of already-rounded totals telescope exactly."""
 
     def __init__(self) -> None:
-        self._billed = 0.0
+        self._billed_micro = 0
 
     def reset(self) -> None:
-        self._billed = 0.0
+        self._billed_micro = 0
 
     def charge(self, cumulative_usd: float | None) -> float | None:
+        """The USD to bill for the result reporting ``cumulative_usd``, or
+        None when the result carried no cost."""
         if cumulative_usd is None:
             return None
-        delta = cumulative_usd - self._billed if cumulative_usd >= self._billed else cumulative_usd
-        self._billed = cumulative_usd
-        return delta
+        total = round(cumulative_usd * 1_000_000)
+        delta = total - self._billed_micro if total >= self._billed_micro else total
+        self._billed_micro = total
+        return delta / 1_000_000
 
 
 # Claude tool_use -> the single arg worth showing on the activity line. Tools not

@@ -1135,10 +1135,12 @@ def test_cost_meter_bills_the_delta_since_the_previous_result():
     from marim_harness.config.claude_cli_model import CostMeter
 
     meter = CostMeter()
-    # The live 2.1.270 numbers: cumulative 0.0109 → 0.0137 → 0.0162.
-    assert meter.charge(0.0108757) == pytest.approx(0.0108757)
-    assert meter.charge(0.0136693) == pytest.approx(0.0027936)
-    assert meter.charge(0.0161742) == pytest.approx(0.0025049)
+    # The live 2.1.270 numbers: cumulative 0.0109 → 0.0137 → 0.0162. Each
+    # charge is a difference of micro-USD-rounded totals (so 0.0108757
+    # bills as 0.010876), never the raw float difference.
+    assert meter.charge(0.0108757) == pytest.approx(0.010876)
+    assert meter.charge(0.0136693) == pytest.approx(0.002793)
+    assert meter.charge(0.0161742) == pytest.approx(0.002505)
     assert meter.charge(None) is None
     # A total that went DOWN (the CLI documents that a mid-session /clear
     # resets it) is never a negative charge: the new total is what was spent
@@ -1147,6 +1149,19 @@ def test_cost_meter_bills_the_delta_since_the_previous_result():
     assert meter.charge(0.002) == pytest.approx(0.001)
     meter.reset()
     assert meter.charge(0.0005) == pytest.approx(0.0005)
+
+
+def test_cost_meter_deltas_sum_exactly_to_the_cli_total_in_micro_usd():
+    """The ledger stores each turn's charge as rounded micro-USD; the meter
+    bills differences of rounded TOTALS so those integers telescope to the
+    CLI's own total instead of drifting a micro-dollar per turn."""
+    from marim_harness.config.claude_cli_model import CostMeter
+
+    meter = CostMeter()
+    totals = [0.0108757, 0.0136693, 0.0161742]
+    billed = [round(meter.charge(t) * 1_000_000) for t in totals]  # type: ignore[operator]
+    assert billed == [10_876, 2_793, 2_505]
+    assert sum(billed) == round(totals[-1] * 1_000_000) == 16_174
 
 
 def test_charge_cost_sets_only_the_cost_detail():
