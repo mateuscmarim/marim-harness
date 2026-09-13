@@ -216,7 +216,7 @@ conversation. The picker tags a session another process has open
 (`daemon`, or `tui (pid N)`); one the `marim serve` daemon owns can be
 attached to with `marim --session <id>` — the status bar then reads
 `daemon`, and the few commands that need the session's own process
-(`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image) say so instead of running.
+(`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image, resuming a sub-agent) say so instead of running. An attached TUI also never flags a spawn as interrupted from its transcript alone: the daemon may still be running it, so such a card stays pending.
 
 Compaction runs automatically when context approaches the threshold shown in
 the status bar; `/compact` triggers it on demand, with optional instructions

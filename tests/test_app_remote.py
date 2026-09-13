@@ -431,3 +431,93 @@ async def test_session_switch_in_place_is_refused_when_attached(remote):
         assert any(
             "marim --session 20260101-000000-other" in n for n in _texts(app, AssistantMessage)
         )
+
+
+def _running_sidecars(root: Path, *stream_ids: str) -> None:
+    """Sidecars checkpointed mid-run ("running", never finalized) for the
+    attached session, written where the daemon would write them: beside the
+    session file the app's own ``session_manager()`` resolves."""
+    from marim_harness.session import SessionManager, TranscriptStore
+
+    manager = SessionManager(root)
+    manager.dir.mkdir(parents=True, exist_ok=True)
+    ts = TranscriptStore(manager.session_path(SID), SID)
+    for sid in stream_ids:
+        meta = {"stream_id": sid, "type": "general", "task": f"task {sid}", "status": "running"}
+        ts.write(sid, [ModelRequest(parts=[])], 2000, meta=meta)
+
+
+@pytest.mark.anyio
+async def test_attached_replay_leaves_the_daemons_running_spawns_alone(tmp_path, monkeypatch):
+    """In process, a "running" sidecar means the spawn died with the process
+    that owned it. Attached, the owner is the daemon and it may still be
+    driving that spawn (its jobs never reach this process), so the settle
+    must not flag a card interrupted, synthesize an orphan card, or dangle a
+    resume this process cannot perform."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    _running_sidecars(tmp_path, "sg-bg", "sg-fg", "sg-ghost")
+    repair_stub = (
+        "Tool call was interrupted before completion and did not run (the turn "
+        "was aborted). Re-issue it if you still need the result."
+    )
+    messages = [
+        ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "general", "task": "task sg-bg", "background": True},
+                    tool_call_id="sg-bg",
+                ),
+                ToolCallPart(
+                    tool_name="spawn_agent",
+                    args={"type": "general", "task": "task sg-fg"},
+                    tool_call_id="sg-fg",
+                ),
+            ]
+        ),
+        ModelRequest(
+            parts=[
+                ToolReturnPart(
+                    tool_name="spawn_agent",
+                    content="Started job-1 (agent) — general: task sg-bg",
+                    tool_call_id="sg-bg",
+                ),
+                ToolReturnPart(tool_name="spawn_agent", content=repair_stub, tool_call_id="sg-fg"),
+            ]
+        ),
+    ]
+
+    def factory(target, root, *, on_state=None):
+        link = _Link(target, root, on_state=on_state)
+        link.messages = messages  # what GET history returns at attach
+        return link
+
+    monkeypatch.setattr(app_mod, "RemoteSessionHost", factory)
+    app = HarnessApp(None, remote=_target(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        cards = {w.stream_id: w for w in app.stream.subagents}
+        assert cards["sg-bg"].status == "pending"  # still the daemon's to finish
+        assert cards["sg-fg"].status == "done"  # not flipped by the sidecar
+        assert "sg-ghost" not in cards  # no orphan synthesized
+        assert not any(w.status == "interrupted" for w in app.stream.subagents)
+
+
+@pytest.mark.anyio
+async def test_resume_key_when_attached_posts_the_remote_only_notice(remote):
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+
+    app, _links = remote
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        card = SubAgentWidget("general", "task", "test:remote")
+        card.stream_id = "sg-int"
+        card.finish("", status="interrupted")
+        await app.subagents._resume(card)
+        await pilot.pause()
+        assert card.status == "interrupted"
+        assert any(
+            "sub-agent resume needs the session's own process" in n
+            for n in _texts(app, NoticeMessage)
+        )

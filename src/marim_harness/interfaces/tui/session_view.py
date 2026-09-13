@@ -452,6 +452,13 @@ class SessionView:
             # was cut down while working. It has a resumable transcript, so
             # surface it as interrupted (▸ press r on the ctrl+x screen).
             card.finish("", status="interrupted")
+        elif meta_status == "unknown":
+            # Attached to the daemon: that same "running" sidecar may belong
+            # to a spawn the daemon is still driving (see
+            # ``_unknown_running``). Leave the card pending — it reads as
+            # in-progress, which is the honest answer — rather than dangle
+            # an interrupted/resume affordance this process cannot act on.
+            return
         elif transcripts.has_transcript(card.stream_id):
             # A sidecar with no meta is a legacy v1 (pre-envelope) file:
             # the old write-once scheme saved it only at completion, so
@@ -537,17 +544,35 @@ class SessionView:
             return None
         return TranscriptStore(manager.session_path(sid), sid)
 
+    @staticmethod
+    def _unknown_running(metas: dict[str, dict]) -> dict[str, dict]:
+        """The sidecar scan as an attached TUI may read it. A "running" meta
+        means "checkpointed, never finalized" — in process that is proof the
+        spawn died with the process that owned it, but attached, the owner is
+        the daemon and it may well still be driving that spawn (its live jobs
+        never reach this process: ``app.jobs`` is an empty, process-local
+        registry here, and jobs rendering over the wire is a later phase). So
+        the status is demoted to "unknown": no card is flagged interrupted,
+        none is synthesized, and the resume affordance stays off."""
+        return {
+            sid: {**meta, "status": "unknown"} if meta.get("status") == "running" else meta
+            for sid, meta in metas.items()
+        }
+
     async def finish_replayed_cards(self) -> None:
         """Settle every replayed card's final state from the persisted record:
         the jobs history supplies a background spawn's status/report (its
         ToolReturnPart is only a job-id handoff), and the sidecar meta scan flags
         spawns that died mid-run as interrupted — including ones whose owning
         turn never persisted, which get a card synthesized from meta alone so no
-        work silently vanishes."""
+        work silently vanishes. Attached to the daemon, the mid-run flagging is
+        withheld (``_unknown_running``): the daemon may still be running them."""
         transcripts = self.transcripts()
         if transcripts is None:
             return
         metas = transcripts.scan_meta()
+        if self.app.attached:
+            metas = self._unknown_running(metas)
         jobs = self.app.jobs
         settled = {j.stream_id: j for j in jobs.history if j.stream_id}
         # A background job survives a session switch/rebuild (jobs are process-
