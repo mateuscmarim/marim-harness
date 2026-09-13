@@ -61,15 +61,29 @@ Rules that apply to every phase:
 
 ## Phase 1 — Context and quota reporting
 
+**Status: shipped** (unreleased at the time of writing). Each CLI adapter
+keeps a `ContextReport(used, window)` (`config/context_report.py`) that
+the status bar, the TUI link and `GET session` (`context` / `quota`) read;
+it is persisted on the turn's `provider_details` so a resumed session shows
+the backend's last reading cold. Claude polls `get_usage` once per turn for
+a quota hint, and the cost double-count below is fixed by a `CostMeter`
+that bills each turn the increase in `total_cost_usd` since the previous
+result. Not done from the list below: feeding the window into
+`ContextLimits` (marim's compaction of the mirror still gates on its own
+estimate; under claude-cli `last_input_tokens` is the turn's summed input,
+an overcount on multi-request turns) and `get_context_usage` (answers on
+the headless transport — verified — but the passive per-request `usage` was
+enough for the gauge).
+
 **Goal.** The status bar's `ctx used/max` and the quota hint mean the same
 thing under a CLI backend as under a native provider.
 
-**Today.** `ctx` is `estimate_tokens(history)` over marim's mirrored
+**Before.** `ctx` was `estimate_tokens(history)` over marim's mirrored
 history, divided by `compact_threshold`. Neither CLI provider has window
-discovery in `build_context_limits`, so the denominator is the default
-budget. The numerator misses the CLI's system prompt, `CLAUDE.md` or
+discovery in `build_context_limits`, so the denominator was the default
+budget. The numerator missed the CLI's system prompt, `CLAUDE.md` or
 `AGENTS.md`, MCP tool schemas and the CLI's own compaction. The codex quota
-hint exists; Claude has none.
+hint existed; Claude had none.
 
 **Wire.**
 
@@ -98,15 +112,17 @@ hint exists; Claude has none.
 - Claude gets a quota hint via a once-per-turn `get_usage`, mirroring the
   codex poll (and replaced by the push in phase 4 where one exists).
 
-**Side finding to settle first.** The Claude binary's schema text says
+**Side finding, confirmed and fixed.** The Claude binary's schema text says
 `total_cost_usd` and `modelUsage` are cumulative across turns on the
 streaming-input transport ("each result carries the running total so far,
 so read the latest result rather than summing"), while `usage` is per-turn.
-`request_usage_from_cli` feeds `total_cost_usd` into each turn's cost
-detail, so the session ledger likely double-counts cost under the
-bidirectional claude-cli provider. One multi-turn live session confirms it;
-the fix is a per-turn delta against the previous result, the same trick
-`codex/turn.py` already uses for token totals.
+A three-turn live session on 2.1.270 showed `total_cost_usd` climbing
+0.0109 → 0.0137 → 0.0162 while `usage` stayed per-turn, and
+`request_usage_from_cli` fed every result's total into that turn's cost
+detail — the ledger double-counted under the bidirectional claude-cli
+provider. The fix is a per-turn delta against the previous result, the
+same trick `codex/turn.py` already uses for token totals, reset whenever a
+new process is launched.
 
 **Acceptance.** Under both backends the gauge moves with the backend's own
 numbers, drops after the backend compacts, and shows the real window. The

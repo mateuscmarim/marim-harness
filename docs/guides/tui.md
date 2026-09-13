@@ -41,7 +41,13 @@ Fields are separated by `·`, left to right:
 - **ctx N/M (P%)** — estimated context size versus the compaction threshold
   (the smaller of your context budget and 80% of the model's window). The
   field turns yellow at 75% and red at 90%; 100% means compaction is
-  imminent.
+  imminent. Under `claude-cli` and `codex-cli` the field shows the backend's
+  own numbers instead: the prompt size of its most recent model request
+  (what the CLI's `/context` counts, system prompt and tool schemas
+  included) over the model's context window, so it moves with the CLI's
+  own compaction. The window reads `0` until the backend has reported it
+  (the first Claude turn learns it at the end of the turn); a resumed
+  session shows the backend's last known reading until its first new turn.
 - **token split** — `1k↑ 55k⚡ 2k↓`: uncached input, cached input
   (read + write), and output tokens for the session. While a turn streams, a
   live `+N` delta shows the in-flight run's tokens before they are folded in.
@@ -52,10 +58,12 @@ Fields are separated by `·`, left to right:
 - **ttft N.Ns** — time-to-first-token of the latest model request: how snappy
   the provider feels right now. It lingers while idle (it describes the last
   request) and clears on a session reset.
-- **quota 37% (5h) · 12% (1w)** — `codex-cli` only: the subscription's
-  primary and secondary rate-limit windows (percent used, window length),
-  refreshed once per turn from `account/rateLimits/read`. Absent for other
-  providers or when the read fails.
+- **quota 37% (5h) · 12% (1w)** — `codex-cli` and `claude-cli`: the
+  subscription's rate-limit windows (percent used, window length),
+  refreshed once per turn — Codex's primary and secondary windows from
+  `account/rateLimits/read`, Claude's five-hour and seven-day windows from
+  the CLI's `get_usage` control request. Absent for other providers or when
+  the read fails.
 - **working… Nm** — appears only while a turn runs, with the turn's elapsed
   time and an animated spinner in the header/tab title.
 

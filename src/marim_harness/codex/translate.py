@@ -45,10 +45,13 @@ class UsageUpdate:
     """``thread/tokenUsage/updated``: ``total`` is the thread's cumulative
     usage, ``last`` the most recent model response's own usage. Both are
     required on the wire; ``last`` is what lets a resumed thread seed its
-    usage baseline (see ``turn.finish_turn``)."""
+    usage baseline (see ``turn.finish_turn``) and what the context report
+    reads its prompt size from. ``model_context_window`` is the model's
+    window when the server knows it (nullable on the wire)."""
 
     total: dict
     last: dict = field(default_factory=dict)
+    model_context_window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -262,7 +265,14 @@ class ItemTranslator:
     # --- turn level ---------------------------------------------------------
     def _usage(self, params: dict) -> list[object]:
         usage = params.get("tokenUsage") or {}
-        return [UsageUpdate(dict(usage.get("total") or {}), dict(usage.get("last") or {}))]
+        window = usage.get("modelContextWindow")
+        return [
+            UsageUpdate(
+                dict(usage.get("total") or {}),
+                dict(usage.get("last") or {}),
+                window if isinstance(window, int) and window > 0 else None,
+            )
+        ]
 
     def _turn_completed(self, params: dict) -> list[object]:
         turn = params.get("turn") or {}

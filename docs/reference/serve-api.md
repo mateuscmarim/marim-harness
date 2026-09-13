@@ -447,7 +447,9 @@ message endpoints see it before its first turn.
   "workspace_path": "/home/me/proj",
   "usage": {"input_tokens": 1200, "output_tokens": 300, "total_tokens": 1500,
             "cache_read_tokens": 0, "cost": 0.0042},
-  "compact_threshold": 160000
+  "compact_threshold": 160000,
+  "context": {"used": 27516, "window": 200000},
+  "quota": "quota 11% (5h) · 59% (1w)"
 }
 ```
 
@@ -464,6 +466,19 @@ the session-cumulative token split with cost, and `compact_threshold`
 the token budget the context gauge is denominated against; both are
 `null` while no host is loaded (a cold session has nothing live to
 report — the listing's `tokens` is the persisted estimate).
+
+`context` and `quota` exist for the CLI backends. Under `claude-cli` or
+`codex-cli` the conversation lives inside the CLI and marim's history is a
+mirror of it, so `context` is the backend's own reading: `used` is the
+prompt size of its most recent model request (cache-inclusive input tokens,
+what the CLI's own `/context` counts) and `window` the model's context
+window, or `null` until the backend has said (the first Claude turn learns
+it at its `result`). A client that shows a context gauge should prefer
+this pair over `compact_threshold` and the estimate whenever it is
+present. `quota` is the rendered subscription rate-limit hint the status
+bar shows (`quota 11% (5h) · 59% (1w)`), refreshed once per turn. Both are
+`null` under marim's own providers, while no host is loaded, and — for
+`context` — on a session whose backend has not reported yet.
 
 ### DELETE /v1/workspaces/{ws}/sessions/{sid}
 

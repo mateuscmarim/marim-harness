@@ -212,6 +212,14 @@ def test_turn_level_notifications():
     assert t.translate("thread/tokenUsage/updated", usage) == [
         UsageUpdate({"inputTokens": 10}, {"inputTokens": 4})
     ]
+    # The model's context window (0.154's `modelContextWindow`) rides along;
+    # junk or absent leaves it None.
+    usage = {"tokenUsage": {"total": {}, "last": {"inputTokens": 4}, "modelContextWindow": 272_000}}
+    assert t.translate("thread/tokenUsage/updated", usage) == [
+        UsageUpdate({}, {"inputTokens": 4}, 272_000)
+    ]
+    usage = {"tokenUsage": {"total": {}, "last": {}, "modelContextWindow": "wide"}}
+    assert t.translate("thread/tokenUsage/updated", usage) == [UsageUpdate({}, {}, None)]
     assert t.translate(
         "turn/completed", {"turn": {"id": "t", "status": "completed", "error": None}}
     ) == [TurnDone("completed", None)]

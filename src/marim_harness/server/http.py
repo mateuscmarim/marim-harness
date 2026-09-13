@@ -26,6 +26,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..config import MultiModelSource, detect_active_providers
+from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
 from ..jobs import history_rows
 from ..runtime.permissions import Mode
@@ -467,15 +468,23 @@ async def get_session(request: Request) -> Response:
 
 def _live_session_fields(host) -> dict:
     """The parts of ``GET session`` that only a loaded host can answer: the
-    session-cumulative usage split (with cost) and the compaction threshold the
-    context gauge is denominated against. ``None`` when no host is loaded —
-    a client reading them knows the session is cold, not empty."""
+    session-cumulative usage split (with cost), the compaction threshold the
+    context gauge is denominated against, and — under a CLI backend — the
+    backend's own context reading (``{"used", "window"}``) and rendered
+    quota hint, both ``null`` under marim's own providers. ``None`` when no
+    host is loaded — a client reading them knows the session is cold, not
+    empty."""
     if host is None:
-        return {"usage": None, "compact_threshold": None}
-    session = host.harness.session
+        return {"usage": None, "compact_threshold": None, "context": None, "quota": None}
+    harness = host.harness
+    session = harness.session
+    report = current_context_report(harness.current_model, session.history)
+    hint = getattr(harness.current_model, "quota_hint", None)
     return {
-        "usage": usage_summary(session.usage, host.harness.model_id),
+        "usage": usage_summary(session.usage, harness.model_id),
         "compact_threshold": session.compact_threshold,
+        "context": report.to_payload() if report is not None else None,
+        "quota": (hint.render() or None) if hint is not None else None,
     }
 
 

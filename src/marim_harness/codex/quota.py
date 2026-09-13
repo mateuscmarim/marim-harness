@@ -5,50 +5,19 @@ Codex reports subscription usage as up to two rolling windows (a short
 "primary" one — typically 5 hours — and a longer "secondary" one, typically a
 week), each with the percentage consumed. marim polls the snapshot once per
 turn (spec §Usage: "polled at most once per turn for the status line;
-failures are ignored") and renders it as ``quota 37% (5h) · 12% (1w)``. Pure
-parse/format helpers live here so the model and the status bar share one
-reading of the wire shape; the RPC itself is on ``CodexServer``.
+failures are ignored") and renders it as ``quota 37% (5h) · 12% (1w)``. The
+parser of the wire shape lives here (the value objects are the
+provider-neutral ones in ``config/quota.py``); the RPC itself is on
+``CodexServer``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from ..config.quota import QuotaHint, QuotaWindow, format_window
 
-
-@dataclass(frozen=True)
-class QuotaWindow:
-    """One rate-limit window: percent used and the window length in minutes
-    (None when the server did not say)."""
-
-    used_percent: int
-    window_mins: int | None
-
-    def render(self) -> str:
-        span = format_window(self.window_mins)
-        return f"{self.used_percent}%" + (f" ({span})" if span else "")
-
-
-@dataclass(frozen=True)
-class QuotaHint:
-    primary: QuotaWindow | None
-    secondary: QuotaWindow | None
-
-    def render(self) -> str:
-        parts = [w.render() for w in (self.primary, self.secondary) if w is not None]
-        return "quota " + " · ".join(parts) if parts else ""
-
-
-def format_window(mins: int | None) -> str:
-    """``300`` → ``5h``, ``10080`` → ``1w``, ``90`` → ``90m``; empty for unknown."""
-    if not mins or mins <= 0:
-        return ""
-    if mins % 10080 == 0:
-        return f"{mins // 10080}w"
-    if mins % 1440 == 0:
-        return f"{mins // 1440}d"
-    if mins % 60 == 0:
-        return f"{mins // 60}h"
-    return f"{mins}m"
+# Re-exported: the value objects moved to config/quota.py once claude-cli grew
+# a quota hint of its own; existing importers keep working.
+__all__ = ["QuotaHint", "QuotaWindow", "format_window", "quota_from"]
 
 
 def _window(raw: object) -> QuotaWindow | None:

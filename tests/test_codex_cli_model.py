@@ -852,6 +852,38 @@ async def test_quota_hint_is_refreshed_once_per_turn(tmp_path):
     assert m.quota_hint.primary.used_percent == 37
 
 
+async def test_context_report_follows_the_last_usage_and_persists(tmp_path):
+    """The adapter's ``context_report`` is the newest ``last`` usage with the
+    thread's ``modelContextWindow``, and each response persists it under
+    ``provider_details`` so a resumed session can show it cold."""
+    from marim_harness.config.context_report import CONTEXT_REPORT_KEY, ContextReport
+
+    def turn(text: str, used: int, window: int | None) -> list[dict]:
+        usage: dict = {"total": {"inputTokens": used}, "last": {"inputTokens": used}}
+        if window is not None:
+            usage["modelContextWindow"] = window
+        return [
+            {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": text}},
+            {"notify": "thread/tokenUsage/updated", "params": {"tokenUsage": usage}},
+        ]
+
+    m = _model(tmp_path, {"turns": [turn("a", 8_000, 272_000), turn("b", 9_500, None)]})
+    assert m.context_report is None
+    try:
+        r1 = await m.request(_msgs("one"), None, PARAMS)
+        assert m.context_report == ContextReport(8_000, 272_000)
+        async with m.request_stream(_msgs("two"), None, PARAMS) as stream:
+            async for _ in stream:
+                pass
+            r2 = stream.get()
+    finally:
+        await m.aclose()
+    assert r1.provider_details == {CONTEXT_REPORT_KEY: {"used": 8_000, "window": 272_000}}
+    # The second turn's update carried no window: the known one is kept.
+    assert m.context_report == ContextReport(9_500, 272_000)
+    assert r2.provider_details == {CONTEXT_REPORT_KEY: {"used": 9_500, "window": 272_000}}
+
+
 async def test_quota_read_failure_is_ignored(tmp_path):
     """The fake answers `account/rateLimits/read` with an error unless the
     scenario carries `rateLimits` — the turn still completes and the hint

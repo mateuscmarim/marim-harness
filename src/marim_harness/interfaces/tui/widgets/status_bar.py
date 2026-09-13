@@ -59,6 +59,19 @@ class StatusBar(Static):
         app: HarnessApp = self.app  # type: ignore[assignment]
         return app.link.info.history_tokens
 
+    def _context_gauge(self) -> tuple[int, int]:
+        """``(used, capacity)`` for the ctx field. A CLI backend's own report
+        wins (the real prompt size against the model's window — marim's
+        history is only a mirror of that context); otherwise the estimate,
+        denominated against the resolved threshold (min(budget, 0.8×window)),
+        not the raw budget, so 100% keeps meaning "compaction imminent" even
+        when a small discovered window, not the budget, is the binding limit."""
+        app: HarnessApp = self.app  # type: ignore[assignment]
+        report = app.link.info.context_report
+        if report is not None:
+            return report.used, report.window or 0
+        return self._context_tokens(), app.link.info.compact_threshold or 0
+
     def _session_cost(self) -> float | None:
         """The committed session cost for the status bar, memoized on (token total,
         model). resolve_cost → estimate_cost is a genai-prices table lookup; the
@@ -86,11 +99,7 @@ class StatusBar(Static):
     def render(self) -> Content:
         app: HarnessApp = self.app  # type: ignore[assignment]
         cfg = app.link.info.model_label or "model"
-        used = self._context_tokens()
-        # Denominate against the resolved threshold (min(budget, 0.8×window)), not
-        # the raw budget: 100% keeps meaning "compaction imminent" even when a
-        # small discovered window, not the budget, is the binding limit.
-        max_ctx = app.link.info.compact_threshold or 0
+        used, max_ctx = self._context_gauge()
         pct = round(used / max_ctx * 100) if max_ctx else 0
         ctx_text = f"ctx {human_tokens(used)}/{human_tokens(max_ctx)} ({pct}%)"
         ctx_style = "red" if pct >= 90 else "yellow" if pct >= 75 else ""
@@ -112,9 +121,10 @@ class StatusBar(Static):
         # (it describes the last request, still true).
         if self.last_ttft is not None:
             fields.append(Content(f"ttft {self.last_ttft:.1f}s"))
-        # Subscription quota (codex-cli only): the model keeps its latest
-        # `account/rateLimits/read` reading, refreshed once per turn; read
-        # straight off the live model like the other harness-state fields.
+        # Subscription quota (the CLI backends): the model keeps its latest
+        # reading (codex `account/rateLimits/read`, claude `get_usage`),
+        # refreshed once per turn; read straight off the live model like the
+        # other harness-state fields.
         quota = self._quota_text()
         if quota:
             fields.append(Content(quota))
