@@ -171,6 +171,12 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
     than reporting that it's gone."""
     if target is None:
         return None, True
+    if not _is_session_id(target):
+        # ``--session`` is user text that becomes a file name under the
+        # sessions dir; a path-like value ("../other-workspace/<id>") would
+        # claim — and then load — a session that is not this workspace's.
+        print(f"session {target!r} is not a session id (ids are bare names).", file=err)
+        return None, False
     from ...session.claim import try_acquire
     from ...session.store import SessionManager
 
@@ -186,6 +192,19 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
             return None, False
         return claim, True
     return _refuse_or_attach(workspace, target, session_path, kind=kind, err=err)
+
+
+def _is_session_id(target: str) -> bool:
+    """A bare file-name component: no separators (either flavor), not a
+    dot-name. ``--resume`` and the picker only ever hand over ids the manager
+    listed, so this guards the one path that takes the id from the command
+    line."""
+    return (
+        target not in ("", ".", "..")
+        and "/" not in target
+        and "\\" not in target
+        and Path(target).name == target
+    )
 
 
 def _refuse_or_attach(workspace: Path, target: str, session_path: Path, *, kind: str, err):
@@ -284,8 +303,8 @@ def _enter_worktree(workspace, branch, err):
 def _launch_target(args, workspace: Path) -> str | None:
     """The session id this launch opens: an explicit ``--session`` wins,
     ``--resume`` means the workspace's latest, neither means a fresh one."""
-    if args.session:
-        return str(args.session)
+    if args.session is not None:
+        return str(args.session)  # "" included: refused by _claim_target, not a fresh session
     return _resolve_target_session(workspace, args.resume)
 
 

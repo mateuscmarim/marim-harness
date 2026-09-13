@@ -192,6 +192,33 @@ def test_session_flag_with_an_unknown_id_is_refused(tmp_path, monkeypatch):
     assert "session nope no longer exists" in err.getvalue()
 
 
+@pytest.mark.parametrize("bad", ["../elsewhere/x", "sub/x", "..", ".", "", "a\\b"])
+def test_session_flag_rejects_a_path_like_id(tmp_path, monkeypatch, bad):
+    """``--session`` becomes a file name under the sessions dir: a value
+    with a separator would claim and load a session outside this workspace."""
+    from marim_harness.interfaces.cli import default_cmd, router
+    from marim_harness.runtime import bootstrap
+    from marim_harness.session.claim import try_acquire as real_acquire
+
+    monkeypatch.setattr(bootstrap, "build_harness", lambda *a, **kw: pytest.fail("built"))
+    monkeypatch.setattr(default_cmd, "_tui_available", lambda: True)
+    monkeypatch.setattr(router, "route_logging_to_file", lambda *a, **kw: None)
+    claimed: list = []
+    monkeypatch.setattr(
+        "marim_harness.session.claim.try_acquire",
+        lambda path, **kw: claimed.append(path) or real_acquire(path, **kw),
+    )
+    from marim_harness.interfaces.cli.default_cmd import run_default
+
+    err = io.StringIO()
+    code = run_default(
+        [str(tmp_path), "--session", bad], stdin=_TtyStdin(), out=io.StringIO(), err=err
+    )
+    assert code == 2
+    assert "is not a session id" in err.getvalue()
+    assert claimed == []  # refused before any sidecar is written anywhere
+
+
 def test_launch_target_precedence():
     from types import SimpleNamespace
 
