@@ -61,6 +61,10 @@ def test_prompt_tokens_folds_both_cache_buckets():
         )
         == 27_503
     )
+    # Best-effort: junk buckets count as zero, never raise.
+    assert prompt_tokens({"input_tokens": "lots", "cache_read_input_tokens": None}) == 0
+    assert prompt_tokens({"input_tokens": True, "cache_read_input_tokens": 5.0}) == 5
+    assert prompt_tokens("not a dict") == 0  # type: ignore[arg-type]
 
 
 # --- history fallback ---------------------------------------------------------------

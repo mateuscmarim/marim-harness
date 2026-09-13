@@ -1235,6 +1235,15 @@ async def test_consume_without_model_usage_leaves_the_window_unknown():
     assert done.context_window is None and done.cumulative_cost_usd is None
 
 
+def test_context_windows_ignore_a_malformed_model_usage():
+    from marim_harness.config.claude_cli_model import _context_window, _context_windows
+
+    for junk in (["not", "a", "mapping"], "string", 7, None):
+        assert _context_windows({"modelUsage": junk}) == {}
+        assert _context_window({"modelUsage": junk}) is None
+    assert _context_windows({"modelUsage": {"m": {"contextWindow": "big"}, "n": 3}}) == {}
+
+
 _USAGE_REPORT = {
     "subscription_type": "max",
     "rate_limits_available": True,

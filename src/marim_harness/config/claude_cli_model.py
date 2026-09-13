@@ -514,9 +514,11 @@ def _cumulative_cost(obj: dict) -> float | None:
 def _context_windows(obj: dict) -> dict[str, int]:
     """``model id -> contextWindow`` from the result's ``modelUsage`` (one
     entry per model the process has used); entries without a usable window
-    are left out."""
+    are left out, and a ``modelUsage`` that is not a mapping at all reads as
+    empty (the window is a nicety; a malformed one must not fail the turn)."""
     out: dict[str, int] = {}
-    for model, entry in (obj.get("modelUsage") or {}).items():
+    usage = obj.get("modelUsage")
+    for model, entry in usage.items() if isinstance(usage, dict) else ():
         if not isinstance(entry, dict):
             continue
         window = entry.get("contextWindow")
@@ -534,14 +536,23 @@ def _context_window(obj: dict) -> int | None:
     when the result carries no usable window. Only a fallback: the adapter
     prefers the window of the model its last request named."""
     best: tuple[int, int] | None = None
-    windows = _context_windows(obj)
-    for model, entry in (obj.get("modelUsage") or {}).items():
-        if str(model) not in windows or not isinstance(entry, dict):
-            continue
-        weight = int(entry.get("inputTokens") or 0) + int(entry.get("cacheReadInputTokens") or 0)
+    windows = _context_windows(obj)  # only models with a usable window qualify
+    for model, window in windows.items():
+        weight = _input_weight(obj["modelUsage"][model])
         if best is None or weight > best[0]:
-            best = (weight, windows[str(model)])
+            best = (weight, window)
     return best[1] if best else None
+
+
+def _input_weight(entry: dict) -> int:
+    """How much input a ``modelUsage`` entry has done (uncached + cache
+    reads); junk buckets weigh nothing."""
+    total = 0
+    for k in ("inputTokens", "cacheReadInputTokens"):
+        v = entry.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            total += int(v)
+    return total
 
 
 def _closed_detail(obj: dict) -> str:

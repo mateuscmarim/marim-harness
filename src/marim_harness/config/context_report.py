@@ -71,12 +71,16 @@ class ContextReport:
 def prompt_tokens(usage: dict | None) -> int:
     """The prompt size of one Anthropic-shaped ``usage`` block: the uncached
     input plus both cache buckets (Anthropic reports ``input_tokens`` as the
-    uncached bucket only, so the three together are the request's size)."""
-    u = usage or {}
-    return sum(
-        int(u.get(k, 0) or 0)
-        for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-    )
+    uncached bucket only, so the three together are the request's size).
+    Best-effort: a bucket that is not a number (a protocol drift) counts as
+    zero rather than failing the turn over a gauge."""
+    u = usage if isinstance(usage, dict) else {}
+    total = 0
+    for k in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        v = u.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            total += int(v)
+    return total
 
 
 def last_context_report(
