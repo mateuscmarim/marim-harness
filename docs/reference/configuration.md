@@ -132,6 +132,15 @@ Code 2.1 or newer (older versions log a warning). The thinking level (`/think`)
 is a no-op under this provider.
 
 No API key is read for this provider — the CLI owns its own subscription auth.
+The model picker's `claude-cli` catalog is the CLI's own `/model` menu, read
+from its stream-json handshake: it lists whatever aliases and models the
+installed Claude Code offers *your* account (plan and org allowlist applied),
+each row naming the concrete model an alias resolves to today, so it stays
+current with every CLI release. A session already running on claude-cli
+refreshes it for free; otherwise marim launches one throwaway `claude` for the
+handshake alone (no session file, about a second) and caches the answer for
+ten minutes. If the CLI cannot be launched the picker falls back to the family
+aliases `opus`, `sonnet`, `haiku` and `fable`.
 `MARIM_CLAUDE_CLI_MODEL` applies only to sub-agent specs with
 `backend: claude-cli` (precedence: per-spawn override, then the spec's
 frontmatter model, then this variable, then the CLI's default); the main-loop

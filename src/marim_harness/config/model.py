@@ -685,11 +685,9 @@ class ModelSource:
         )
 
     async def _list_claude_cli(self, *, strict: bool) -> list[ModelEntry]:
-        return [
-            ModelEntry(id="sonnet", name="sonnet", provider="claude-cli"),
-            ModelEntry(id="opus", name="opus", provider="claude-cli"),
-            ModelEntry(id="haiku", name="haiku", provider="claude-cli"),
-        ]
+        from ..claude import catalog as claude_catalog
+
+        return await claude_catalog.list_claude_models(strict=strict)
 
     async def _list_codex_cli(self, *, strict: bool) -> list[ModelEntry]:
         from ..codex import catalog as codex_catalog

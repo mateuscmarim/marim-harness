@@ -72,6 +72,12 @@ class Fake:
             }
         )
 
+    def _init_body(self, msg: dict) -> dict:
+        subtype = (msg.get("request") or {}).get("subtype")
+        if subtype == "initialize" and "models" in self.scenario:
+            return {"models": self.scenario["models"]}
+        return {}
+
     def _assistant(self, content: list[dict]) -> dict:
         return {
             "type": "assistant",
@@ -139,7 +145,9 @@ class Fake:
             if kind == "control_request":
                 # Between turns every control request (initialize, set_model,
                 # a late interrupt) gets an empty success — nothing to abort.
-                self.respond(msg["request_id"], {})
+                # `initialize` alone carries the scenario's model menu when
+                # one is given, the way the real CLI's handshake does.
+                self.respond(msg["request_id"], self._init_body(msg))
             elif kind == "user" and not msg.get("isReplay"):
                 self.run_turn(msg)
 

@@ -8,6 +8,18 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **`claude-cli` model catalog is live.** The picker (and `GET /v1/models`,
+  `marim models list`) used a hard-coded `sonnet`/`opus`/`haiku` list for the
+  `claude-cli` provider, which had already fallen behind the CLI (no `fable`,
+  no 1M-context variants). The catalog is now the CLI's own `/model` menu read
+  from its stream-json `initialize` handshake — filtered by your plan and org
+  allowlist, each row naming the concrete model an alias resolves to — cached
+  from any running claude-cli session or fetched by a one-off handshake-only
+  probe (no session file, ~1 s). The old aliases (plus `fable`) remain the
+  fallback when the CLI cannot be launched.
+
 ## [0.7.1] - 2026-09-13
 
 ### Fixed
