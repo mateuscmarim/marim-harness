@@ -412,6 +412,8 @@ async def test_unreadable_history_and_asks_degrade_predictably():
 
 async def test_answer_ask_and_steer_status_mapping():
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/asks/broken"):
+            return _error(500, "boom", "it broke")
         if "/asks/" in request.url.path:
             return httpx.Response(200 if request.url.path.endswith("/live") else 404, json={})
         return _error(409, "idle", "no turn to steer")
@@ -419,6 +421,10 @@ async def test_answer_ask_and_steer_status_mapping():
     host = _mock_host(handler)
     assert await host.answer_ask("live", {"approve": True}) is True
     assert await host.answer_ask("gone", {"approve": True}) is False
+    # Only "unknown/already answered" is a False; a failure the daemon did
+    # not take the verdict through is raised, not swallowed.
+    with pytest.raises(RemoteUnavailable, match="answer not delivered: it broke"):
+        await host.answer_ask("broken", {"approve": True})
     await host.steer("x")  # logged, not raised
 
 

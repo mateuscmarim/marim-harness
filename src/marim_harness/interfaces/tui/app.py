@@ -1535,7 +1535,24 @@ class HarnessApp(App):
             # The ask was resolved elsewhere before the user answered (an
             # interrupt's cancel, or another client). Nothing to send.
             return
-        await self.link.answer_ask(ask_id, _ask_payload(panel, result))
+        try:
+            await self.link.answer_ask(ask_id, _ask_payload(panel, result))
+        except HostClosed as exc:
+            await self._answer_undelivered(ask_id, exc)
+
+    async def _answer_undelivered(self, ask_id: str, exc: HostClosed) -> None:
+        """A verdict the host did not take (attached: a transport failure or
+        a refusal other than "already answered"; see RemoteSessionHost.answer_ask).
+        The ask is still parked on the daemon, so: say so, drop the panel
+        whose verdict is spent, and re-read ``GET asks`` so the ask comes back
+        as a fresh panel the user can answer again. When even that read fails
+        the resync after the link recovers reconciles the panels."""
+        self.append_log(ErrorMessage(f"answer not delivered: {exc}"))
+        self._dismiss_ask(AskResolved(type="ask.resolved", id=ask_id, cancelled=True))
+        try:
+            await self._reconcile_asks()
+        except HostClosed as again:
+            logger.info("asks not re-read after an undelivered answer: %s", again)
 
     def _dismiss_ask(self, wire: AskResolved) -> None:
         entry = self._ask_panels.pop(wire.id, None)

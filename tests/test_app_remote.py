@@ -30,7 +30,7 @@ from marim_harness.interfaces.tui.widgets import (
     UserMessage,
 )
 from marim_harness.server.attach import RemoteTarget
-from marim_harness.server.client import HistorySnapshot, RemoteInfo
+from marim_harness.server.client import HistorySnapshot, RemoteInfo, RemoteUnavailable
 from marim_harness.server.host import HostClosed
 from marim_harness.server.schema import Event
 from tests.conftest import _settle
@@ -98,6 +98,7 @@ class _Link:
         self.calls: list = []
         self.feeds: list[_Feed] = []
         self.fail_load: Exception | None = None
+        self.answer_error: Exception | None = None
 
     async def load_session(self) -> str:
         self.calls.append("load_session")
@@ -133,6 +134,9 @@ class _Link:
 
     async def answer_ask(self, ask_id, answer) -> bool:
         self.calls.append(("answer", ask_id, answer))
+        if self.answer_error is not None:
+            error, self.answer_error = self.answer_error, None  # fail once
+            raise error
         return True
 
     async def set_mode(self, mode: str) -> None:
@@ -370,6 +374,51 @@ async def test_pending_asks_are_reconciled_on_attach_and_on_resync(tmp_path, mon
         link.feed.push("stream.gap", resync="history")
         await _settle(pilot, lambda: not app.query(ApprovalPanel), what="the stale panel to go")
         assert "a1" not in app._ask_panels
+
+
+@pytest.mark.anyio
+async def test_undelivered_answer_is_reported_and_the_ask_comes_back(tmp_path, monkeypatch):
+    """The daemon did not take the verdict (answer_ask raised): the user
+    sees why, the spent panel goes, and — the ask still being parked on the
+    daemon — a fresh panel is mounted from GET asks to answer again."""
+    payload = {"tool_name": "bash", "args": {"command": "ls"}, "tool_call_id": "c1"}
+    ask = {"id": "a1", "kind": "approval", "payload": payload, "created": "now"}
+
+    def factory(target, root, *, on_state=None):
+        link = _Link(target, root, on_state=on_state)
+        link.asks = [ask]
+        link.answer_error = RemoteUnavailable("answer not delivered: it broke")
+        return link
+
+    monkeypatch.setattr(app_mod, "RemoteSessionHost", factory)
+    app = HarnessApp(None, remote=_target(tmp_path))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _settle(pilot, lambda: bool(app.query(ApprovalPanel)), what="the parked approval")
+        first = app.query_one(ApprovalPanel)
+        first.resolve(True)
+        await _settle(
+            pilot,
+            lambda: any("answer not delivered" in t for t in _texts(app, ErrorMessage)),
+            what="the undelivered-answer error",
+        )
+        await _settle(
+            pilot,
+            lambda: bool(app.query(ApprovalPanel)) and app.query_one(ApprovalPanel) is not first,
+            what="a fresh panel for the still-parked ask",
+        )
+        assert "a1" in app._ask_panels
+        answers = [c for c in app.link.calls if isinstance(c, tuple) and c[0] == "answer"]
+        assert answers == [("answer", "a1", {"approve": True})]
+        # The retry goes through.
+        app.query_one(ApprovalPanel).resolve(False)
+        await _settle(
+            pilot,
+            lambda: (
+                len([c for c in app.link.calls if c[0] == "answer" if isinstance(c, tuple)]) == 2
+            ),
+            what="the second answer",
+        )
 
 
 @pytest.mark.anyio

@@ -251,9 +251,17 @@ class RemoteSessionHost:
 
     async def answer_ask(self, ask_id: str, answer: dict) -> bool:
         response = await self._request("POST", f"/asks/{ask_id}", json=answer)
-        # 404 = unknown or already answered: the same False the local host
-        # returns when another client won the race.
-        return response.status_code == 200
+        if response.status_code == 200:
+            return True
+        if response.status_code == 404:
+            # Unknown or already answered: the same False the local host
+            # returns when another client won the race.
+            return False
+        # Anything else (a refused token, a daemon-side failure) means the
+        # verdict was NOT taken and the ask is still parked: raise, as
+        # set_mode/set_model do, so the app can say so instead of leaving
+        # the user with a panel that looks answered.
+        raise RemoteUnavailable(f"answer not delivered: {_error_message(response)}")
 
     async def pending_asks(self) -> list[dict]:
         response = await self._request("GET", "/asks")
