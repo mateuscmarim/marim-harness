@@ -39,7 +39,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -334,9 +334,12 @@ class PromptUsageChunk:
     """One ``assistant`` object's ``message.usage``: the size of the request
     Claude just made (cache-inclusive input tokens). The CLI repeats the same
     usage on every ``assistant`` object of one response (one per content
-    block), so consumers treat it as a level, not a delta."""
+    block), so consumers treat it as a level, not a delta. ``model`` is the
+    ``message.model`` that answered — the key under which the result's
+    ``modelUsage`` reports its window."""
 
     prompt_tokens: int
+    model: str | None = None
 
 
 @dataclass
@@ -367,8 +370,13 @@ class DoneChunk:
     # see ``CostMeter``); the usage above carries NO cost until the model
     # bills the per-turn delta.
     cumulative_cost_usd: float | None = None
-    # ``modelUsage[<model>].contextWindow`` for the model that did the turn.
+    # ``modelUsage[<model>].contextWindow`` for the model that did the most
+    # input work over the process (the fallback when no request named its
+    # model), and the per-model map so the model behind the LAST request
+    # can be looked up directly — after a fallback to a smaller-window
+    # model the old model's cumulative total keeps it heaviest for a while.
     context_window: int | None = None
+    context_windows: dict[str, int] = field(default_factory=dict)
 
 
 def _flatten_result_content(content) -> str:
@@ -477,6 +485,7 @@ def _result_chunk(obj: dict, *, produced_text: bool) -> DoneChunk:
         "usage": usage,
         "cumulative_cost_usd": _cumulative_cost(obj),
         "context_window": _context_window(obj),
+        "context_windows": _context_windows(obj),
     }
     error = _result_error_subtype(obj)
     if error is None:
@@ -492,22 +501,36 @@ def _cumulative_cost(obj: dict) -> float | None:
     return float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None
 
 
-def _context_window(obj: dict) -> int | None:
-    """The context window of the model that did the turn, from the result's
-    ``modelUsage`` (one entry per model the process has used, cumulative).
-    A turn can involve several models (a haiku sub-task under a sonnet
-    main loop), so the entry with the most input tokens is taken as the
-    main loop's; None when the result carries no usable window."""
-    best: tuple[int, int] | None = None
-    for entry in (obj.get("modelUsage") or {}).values():
+def _context_windows(obj: dict) -> dict[str, int]:
+    """``model id -> contextWindow`` from the result's ``modelUsage`` (one
+    entry per model the process has used); entries without a usable window
+    are left out."""
+    out: dict[str, int] = {}
+    for model, entry in (obj.get("modelUsage") or {}).items():
         if not isinstance(entry, dict):
             continue
         window = entry.get("contextWindow")
         if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
             continue
+        out[str(model)] = window
+    return out
+
+
+def _context_window(obj: dict) -> int | None:
+    """The context window of the model that did the turn, from the result's
+    ``modelUsage`` (cumulative per model over the process). A turn can
+    involve several models (a haiku sub-task under a sonnet main loop), so
+    the entry with the most input tokens is taken as the main loop's; None
+    when the result carries no usable window. Only a fallback: the adapter
+    prefers the window of the model its last request named."""
+    best: tuple[int, int] | None = None
+    windows = _context_windows(obj)
+    for model, entry in (obj.get("modelUsage") or {}).items():
+        if str(model) not in windows or not isinstance(entry, dict):
+            continue
         weight = int(entry.get("inputTokens") or 0) + int(entry.get("cacheReadInputTokens") or 0)
         if best is None or weight > best[0]:
-            best = (weight, window)
+            best = (weight, windows[str(model)])
     return best[1] if best else None
 
 
@@ -540,9 +563,10 @@ def _event_chunks(obj: dict) -> Iterator:
         if chunk is not None:
             yield chunk
     elif kind == "assistant":
-        usage = (obj.get("message") or {}).get("usage")
+        message = obj.get("message") or {}
+        usage = message.get("usage")
         if isinstance(usage, dict):
-            yield PromptUsageChunk(prompt_tokens(usage))
+            yield PromptUsageChunk(prompt_tokens(usage), str(message.get("model") or "") or None)
         yield from _tool_use_chunks(obj)
     elif kind == "user" and not obj.get("isReplay"):
         # `isReplay` is the CLI echoing back a message marim itself sent (the
@@ -776,8 +800,11 @@ class ClaudeCliModel(ExternalCliModel):
         self.quota_hint: QuotaHint | None = None
         # The window is a per-model constant learned at each result; kept
         # apart so the next turn's first reading carries it before its own
-        # result arrives.
+        # result arrives. ``_prompt_model`` is the model the last request
+        # named, so the result's per-model windows can be read for IT rather
+        # than for whichever model has done the most work over the process.
         self._context_window: int | None = None
+        self._prompt_model: str | None = None
         self._cost = CostMeter()
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
@@ -932,6 +959,10 @@ class ClaudeCliModel(ExternalCliModel):
         session id / version, and each request's prompt size (the live
         context report, window carried over from the last result)."""
         if isinstance(chunk, PromptUsageChunk):
+            if chunk.model and chunk.model != self._prompt_model:
+                # A model change (a fallback, a /model switch) invalidates
+                # the carried window until the result names the new one.
+                self._prompt_model, self._context_window = chunk.model, None
             self.context_report = ContextReport(chunk.prompt_tokens, self._context_window)
             return
         note_old_version_once(chunk.version)
@@ -949,10 +980,11 @@ class ClaudeCliModel(ExternalCliModel):
         successful turn carry the failed one's cost — attributed late, but
         the session total stays equal to the CLI's own running total, which
         is the number the ledger is meant to reproduce."""
-        if done.context_window:
-            self._context_window = done.context_window
+        window = done.context_windows.get(self._prompt_model or "") or done.context_window
+        if window:
+            self._context_window = window
             if self.context_report is not None:
-                self.context_report = self.context_report.with_window(done.context_window)
+                self.context_report = self.context_report.with_window(window)
         return charge_cost(done.usage, self._cost.charge(done.cumulative_cost_usd))
 
     def _response_details(self) -> dict | None:

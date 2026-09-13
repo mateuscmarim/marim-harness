@@ -79,14 +79,21 @@ def prompt_tokens(usage: dict | None) -> int:
     )
 
 
-def last_context_report(history: list[ModelMessage]) -> ContextReport | None:
+def last_context_report(
+    history: list[ModelMessage], provider: str | None = None
+) -> ContextReport | None:
     """The report persisted on the NEWEST ``ModelResponse``, or None.
 
     Only the newest response is consulted: an older one's report describes
-    a context that has moved on (and after a provider switch it would
-    describe another backend's context altogether)."""
+    a context that has moved on. With ``provider`` given, the response must
+    also come from that provider — after a backend switch (claude-cli →
+    codex-cli) the newest response's report describes the OTHER backend's
+    context, and showing it for the new one would be a lie until its first
+    turn replaces it."""
     for msg in reversed(history):
         if isinstance(msg, ModelResponse):
+            if provider is not None and msg.provider_name != provider:
+                return None
             return ContextReport.from_payload((msg.provider_details or {}).get(CONTEXT_REPORT_KEY))
     return None
 
@@ -97,11 +104,11 @@ _NOT_A_BACKEND = object()
 def current_context_report(model: object, history: list[ModelMessage]) -> ContextReport | None:
     """The report to show for ``model``: its live reading when it has one,
     else (a resumed session before its first turn) the one persisted on the
-    newest response; None for a model that never reports (marim's own
-    providers), so the estimate stays in charge there."""
+    newest response BY THE SAME PROVIDER; None for a model that never
+    reports (marim's own providers), so the estimate stays in charge there."""
     live = getattr(model, "context_report", _NOT_A_BACKEND)
     if live is _NOT_A_BACKEND:
         return None
     if isinstance(live, ContextReport):
         return live
-    return last_context_report(history)
+    return last_context_report(history, getattr(model, "provider_name", None))

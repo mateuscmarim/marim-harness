@@ -66,13 +66,15 @@ def test_prompt_tokens_folds_both_cache_buckets():
 # --- history fallback ---------------------------------------------------------------
 
 
-def _history(*details):
+def _history(*details, provider: str = "claude-cli"):
     """A request/response pair per entry; each response carries ``details``
-    as its provider_details (None for none)."""
+    as its provider_details (None for none) and names ``provider``."""
     out: list = []
     for d in details:
         out.append(ModelRequest(parts=[UserPromptPart(content="q")]))
-        out.append(ModelResponse(parts=[TextPart(content="a")], provider_details=d))
+        out.append(
+            ModelResponse(parts=[TextPart(content="a")], provider_details=d, provider_name=provider)
+        )
     return out
 
 
@@ -85,6 +87,12 @@ def test_last_context_report_reads_only_the_newest_response():
     assert last_context_report(_history(payload, {"other": 1})) is None
     assert last_context_report([]) is None
     assert last_context_report([ModelRequest(parts=[UserPromptPart(content="q")])]) is None
+    # With a provider named, a newest response from another one is not a
+    # reading of THIS backend's context (an older same-provider one is not
+    # consulted either — it is stale).
+    assert last_context_report(_history(payload), "claude-cli") == ContextReport(40_000, 200_000)
+    assert last_context_report(_history(payload), "codex-cli") is None
+    assert last_context_report(_history(payload, None, provider="codex-cli"), "codex-cli") is None
 
 
 def test_current_context_report_prefers_live_then_persisted_then_nothing():
@@ -100,6 +108,12 @@ def test_current_context_report_prefers_live_then_persisted_then_nothing():
     # A live reading wins.
     live = SimpleNamespace(context_report=ContextReport(41_000, 200_000))
     assert current_context_report(live, history) == ContextReport(41_000, 200_000)
+    # After a backend switch the persisted report belongs to the OTHER
+    # backend: a cold codex model shows nothing until its own first turn.
+    cold_codex = SimpleNamespace(context_report=None, provider_name="codex-cli")
+    assert current_context_report(cold_codex, history) is None
+    cold_claude = SimpleNamespace(context_report=None, provider_name="claude-cli")
+    assert current_context_report(cold_claude, history) == ContextReport(40_000, 200_000)
 
 
 # --- quota --------------------------------------------------------------------------

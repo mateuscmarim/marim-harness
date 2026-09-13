@@ -1199,12 +1199,16 @@ async def test_consume_reports_prompt_usage_and_result_facts():
             ),
         ]
     )
-    assert chunks[1] == PromptUsageChunk(27_503)
+    assert chunks[1] == PromptUsageChunk(27_503)  # no message.model on this one
     assert isinstance(chunks[2], ToolUseChunk)
     done = chunks[-1]
     assert isinstance(done, DoneChunk) and done.complete
     assert done.cumulative_cost_usd == pytest.approx(0.0136693)
     assert done.context_window == 1_000_000  # the model that did the most input work
+    assert done.context_windows == {
+        "claude-haiku-4-5-20251001": 200_000,
+        "claude-opus-4-1": 1_000_000,
+    }
     assert COST_DETAIL_KEY not in done.usage.details
 
 
@@ -1345,6 +1349,55 @@ async def test_respawn_resets_the_cost_baseline(tmp_path, monkeypatch):
     assert r1.usage.details[COST_DETAIL_KEY] == 5000
     assert r2.usage.details[COST_DETAIL_KEY] == 5000
     assert len(read_claude_argvs(tmp_path)) > 1  # a new process served turn two
+
+
+@pytest.mark.anyio
+async def test_context_window_follows_the_model_behind_the_last_request(tmp_path, monkeypatch):
+    """After a fallback from a 1M-window model to a 200k one, the old model's
+    cumulative input keeps it the heaviest ``modelUsage`` entry — the window
+    must come from the model the last ``assistant`` event named, and the
+    carried window is dropped the moment a request names a new model."""
+    from marim_harness.config.context_report import ContextReport
+
+    usage = {
+        "claude-opus-4-1": {"inputTokens": 900_000, "contextWindow": 1_000_000},
+        "claude-sonnet-4-6": {"inputTokens": 50_000, "contextWindow": 200_000},
+    }
+
+    def turn(model: str, prompt: int) -> list:
+        return [
+            {
+                "raw": {
+                    "type": "assistant",
+                    "message": {
+                        "model": model,
+                        "usage": {"input_tokens": prompt, "output_tokens": 1},
+                        "content": [{"type": "text", "text": "x"}],
+                    },
+                    "session_id": "S1",
+                }
+            },
+            {"text": "x"},
+            {"result": {"modelUsage": usage}},
+        ]
+
+    scenario = {"turns": [turn("claude-opus-4-1", 800_000), turn("claude-sonnet-4-6", 40_000)]}
+    model = _model(tmp_path, monkeypatch, scenario)
+    seen: list = []
+    history = _user("first")
+    try:
+        r1 = await model.request(history, None, ModelRequestParameters())
+        assert model.context_report == ContextReport(800_000, 1_000_000)
+        history = history + [r1, ModelRequest(parts=[UserPromptPart(content="second")])]
+        async with model.request_stream(history, None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                seen.append(model.context_report)
+    finally:
+        await model.aclose()
+    # Mid-turn the reading named the new model's size with NO window (the
+    # 1M one no longer applies); the result then filled in sonnet's.
+    assert ContextReport(40_000, None) in seen
+    assert model.context_report == ContextReport(40_000, 200_000)
 
 
 @pytest.mark.anyio
