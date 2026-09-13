@@ -473,6 +473,9 @@ class CodexCliModel(ExternalCliModel):
             self.quota_hint = quota_from(await server.read_rate_limits())
         except Exception as exc:  # noqa: BLE001 - best-effort status-line hint
             logger.debug("codex account/rateLimits/read failed: %s", exc)
+            # Clear rather than keep the previous reading: the status bar
+            # renders any hint it has, and a stale number is a false claim.
+            self.quota_hint = None
 
     # --- live controls ---------------------------------------------------------------
     def steer(self, text: str) -> bool:

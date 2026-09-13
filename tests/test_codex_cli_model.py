@@ -834,6 +834,21 @@ RATE_LIMITS = {
 }
 
 
+async def test_a_failed_rate_limit_read_clears_the_previous_hint(tmp_path):
+    from types import SimpleNamespace
+
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
+
+    m = _model(tmp_path, {})
+    m.quota_hint = QuotaHint(QuotaWindow(37, 300), None)
+
+    async def failing_read():
+        raise TimeoutError("no answer")
+
+    await m._refresh_quota(SimpleNamespace(read_rate_limits=failing_read))  # type: ignore[arg-type]
+    assert m.quota_hint is None
+
+
 async def test_quota_hint_is_refreshed_once_per_turn(tmp_path):
     m = _model(tmp_path, {"rateLimits": RATE_LIMITS, "turns": [_hello_turn(), _hello_turn()]})
     assert m.quota_hint is None

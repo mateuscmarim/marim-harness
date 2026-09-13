@@ -1021,13 +1021,17 @@ class ClaudeCliModel(ExternalCliModel):
         task's normal await path, never inside a cancellation-time
         ``finally``), and keep the reading for the status bar. Best-effort:
         the hint is informational, and an aux clone (whose process is about
-        to close) is skipped outright."""
+        to close) is skipped outright. A failed poll CLEARS the hint rather
+        than leaving the previous reading up: the status bar renders any
+        hint it has, and a number nobody refreshed is a stale claim about a
+        quota that keeps moving."""
         if self.ephemeral or not process.alive:
             return
         try:
             self.quota_hint = quota_from_usage(await process.read_usage())
         except Exception as exc:  # noqa: BLE001 - best-effort status-line hint
             logger.debug("claude get_usage failed: %s", exc)
+            self.quota_hint = None
 
     # --- pydantic-ai entry points --------------------------------------------------
     async def request(

@@ -1473,3 +1473,21 @@ async def test_quota_poll_failure_is_ignored_and_ephemeral_clones_skip_it(tmp_pa
         if (m.get("request") or {}).get("subtype") == "get_usage"
     ]
     assert len(polls) == 1  # the main model only; the clone never asks
+
+
+@pytest.mark.anyio
+async def test_a_failed_quota_poll_clears_the_previous_hint(tmp_path, monkeypatch):
+    """The status bar renders any hint the adapter holds, so a poll that
+    fails must drop the previous reading instead of leaving it up stale."""
+    from types import SimpleNamespace
+
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
+
+    model = _model(tmp_path, monkeypatch, {})
+    model.quota_hint = QuotaHint(QuotaWindow(11, 300), None)
+
+    async def failing_read_usage():
+        raise TimeoutError("no answer")
+
+    await model._refresh_quota(SimpleNamespace(alive=True, read_usage=failing_read_usage))  # type: ignore[arg-type]
+    assert model.quota_hint is None
