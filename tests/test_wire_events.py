@@ -90,13 +90,6 @@ def test_parse_every_known_type():
         ),
         (
             {
-                "type": "subagent.cli_activity",
-                "events": [{"type": "tool_use", "id": "tc1"}],
-            },
-            "subagent.cli_activity",
-        ),
-        (
-            {
                 "type": "workflow.spawned",
                 "stream_id": "w1",
                 "spawn_type": "agent",

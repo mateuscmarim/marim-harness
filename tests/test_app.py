@@ -4149,10 +4149,10 @@ async def test_turn_usage_on_the_wire_feeds_the_live_counter(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path):
-    """subagent.model / .thinking / .notice / .usage and subagent.cli_activity
-    used to reach the renderer as direct bind_ui callbacks; on this branch the
-    host publishes them and the pump routes each to its renderer method. One
-    spawn card, every side channel, plus the unknown-stream no-op for each."""
+    """subagent.model / .thinking / .notice / .usage used to reach the renderer
+    as direct bind_ui callbacks; on this branch the host publishes them and the
+    pump routes each to its renderer method. One spawn card, every side
+    channel, plus the unknown-stream no-op for each."""
     from marim_harness.interfaces.tui.subagents import SubAgentWidget
     from marim_harness.interfaces.tui.widgets import ToolCallWidget
 
@@ -4182,18 +4182,11 @@ async def test_subagent_side_channels_on_the_wire_reach_the_card(tmp_path: Path)
         assert card.pane is not None  # relabeled too; its subtitle is a Content
         assert card._pending_usage is not None and card._pending_usage.total_tokens == 15
 
-        # A claude-cli main-loop model's own tool activity renders as native
-        # cards in the MAIN transcript through the same pump.
-        bus.publish(
-            "subagent.cli_activity",
-            {
-                "events": [
-                    {"type": "tool.call", "id": "cli-1", "name": "Bash", "args": {"c": "ls"}},
-                    {"type": "tool.result", "id": "cli-1", "content": "ok"},
-                    {"type": "bogus.type"},  # dropped by the handler's parse, not fatal
-                ]
-            },
-        )
+        # An external CLI model's own tool activity is published as plain
+        # top-level tool.call / tool.result frames and renders as native cards
+        # in the MAIN transcript through the same pump as any tool.
+        bus.publish("tool.call", {"id": "cli-1", "name": "Bash", "args": {"c": "ls"}})
+        bus.publish("tool.result", {"id": "cli-1", "content": "ok"})
         assert await _pump_until(pilot, lambda: "cli-1" in app.stream.tool_widgets)
         assert isinstance(app.stream.tool_widgets["cli-1"], ToolCallWidget)
 

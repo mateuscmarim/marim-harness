@@ -8,6 +8,16 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CLI providers' tool calls missing from API clients.** Under `claude-cli`
+  and `codex-cli` the CLI runs its own tools, and the daemon published those
+  calls inside a TUI-only `subagent.cli_activity` envelope that other clients
+  (marim-mobile) dropped, so their transcripts showed no tool calls at all.
+  The daemon now publishes them as the same top-level `tool.call` /
+  `tool.result` events a native tool produces; `subagent.cli_activity` is
+  gone from the wire vocabulary.
+
 ## [0.7.0] - 2026-09-13
 
 ### Added

@@ -4,7 +4,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from marim_harness.interfaces.tui.stream_render import _SubAgentSink
+from marim_harness.interfaces.tui.stream_render import _SubAgentSink, wire_from_event
 from marim_harness.interfaces.tui.subagents.list import SubAgentList
 from marim_harness.interfaces.tui.subagents.pane import SubAgentDetailHost
 from marim_harness.interfaces.tui.subagents.stats import aggregate
@@ -684,7 +684,7 @@ async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
                 tool_call_id="tsub",
             )
         )
-        await app.stream.on_cli_activity([call])
+        await app.stream.on_wire(wire_from_event(call))
         await pilot.pause()
         assert len(app.stream.subagents) == 1
         card = app.stream.subagents[0]
@@ -707,7 +707,7 @@ async def test_claude_cli_spawn_events_drive_a_native_card(tmp_path):
                 outcome="success",
             )
         )
-        await app.stream.on_cli_activity([ret])
+        await app.stream.on_wire(wire_from_event(ret))
         await pilot.pause()
         assert card.status == "done"
 

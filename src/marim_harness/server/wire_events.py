@@ -157,11 +157,6 @@ class SubagentUsage(BaseModel):
     usage: dict
 
 
-class SubagentCliActivity(BaseModel):
-    type: Literal["subagent.cli_activity"]
-    events: list[dict]  # wire stream events (claude-cli tool_use/tool_result)
-
-
 class WorkflowSpawned(BaseModel):
     type: Literal["workflow.spawned"]
     stream_id: str
@@ -247,7 +242,6 @@ WireEvent = Annotated[
         | SubagentModel
         | SubagentThinking
         | SubagentUsage
-        | SubagentCliActivity
         | WorkflowSpawned
         | WorkflowStarted
         | WorkflowLogged
