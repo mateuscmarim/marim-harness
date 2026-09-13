@@ -174,6 +174,9 @@ class ClaudeProcess:
         self._prompt_epoch = 0
         self.session_id: str | None = options.resume_id
         self.init_info: dict = {}
+        # The `initialize` control response (commands, models, account, ...);
+        # {} until the handshake answers or when it never does.
+        self.init_result: dict = {}
         self.closed = asyncio.Event()
         # True while the idle reaper is inside aclose(). A close in flight is
         # NOT a usable process — see `alive` and `wait_closing`.
@@ -279,8 +282,19 @@ class ClaudeProcess:
             await asyncio.wait(
                 {init, closing}, timeout=_INIT_TIMEOUT, return_when=asyncio.FIRST_COMPLETED
             )
+            if init.done() and not init.cancelled() and init.exception() is None:
+                self._record_init(init.result())
         finally:
             await _drain(init, closing)
+
+    def _record_init(self, response: dict) -> None:
+        # The handshake carries the CLI's model menu; publishing it to the
+        # catalog cache means a picker opened during this session lists the
+        # current models without launching a probe process of its own.
+        from .catalog import remember
+
+        self.init_result = response if isinstance(response, dict) else {}
+        remember(self.init_result, binary=self._opts.binary)
 
     async def _run_reader(self, client: StreamJsonClient) -> None:
         try:
