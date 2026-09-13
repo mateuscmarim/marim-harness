@@ -993,3 +993,51 @@ def test_delete_session_409s_when_another_process_claims_it(client):
         assert session_path.exists()  # nothing deleted while claimed
     finally:
         outsider.release()
+
+
+def test_post_message_trigger_is_user_or_system_only(client):
+    """Phase 4a: a client-side slash command's own prompt is posted with
+    ``trigger: system`` (no user bubble on the transcript); ``autonomous`` is
+    the daemon's own WakeDriver's and is refused at the schema."""
+    test_client, tmp_path = client
+    ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path, mode="auto")
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    refused = test_client.post(
+        f"{base}/messages", headers=AUTH, json={"prompt": "wake", "trigger": "autonomous"}
+    )
+    assert refused.status_code == 400
+    accepted = test_client.post(
+        f"{base}/messages", headers=AUTH, json={"prompt": "remember this", "trigger": "system"}
+    )
+    assert accepted.status_code == 202
+    _poll(test_client, base, lambda d: d["status"] == "idle")
+    history = test_client.get(f"{base}/history", headers=AUTH).json()
+    assert history["message_count"] >= 1  # the system-triggered turn ran
+
+
+def test_get_session_seeds_an_attaching_client(client):
+    """Phase 4a: ``GET session`` carries what a TUI needs to seed its view
+    before the first event. Cold (no host loaded) the live-only fields are
+    absent or None; once the host is loaded they are authoritative."""
+    test_client, tmp_path = client
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path, mode="auto")
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    cold = test_client.get(base, headers=AUTH).json()
+    assert cold["workspace_path"] == str(project)
+    assert cold["usage"] is None and cold["compact_threshold"] is None
+    assert cold["session"]["mode"] == "auto"  # the persisted value, from the listing
+    assert "model_label" not in cold["session"]  # only a loaded host knows the label
+
+    assert (
+        test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "hi"}).status_code == 202
+    )
+    warm = _poll(test_client, base, lambda d: d["status"] == "idle" and d["usage"] is not None)
+    live = warm["session"]
+    assert live["mode"] == "auto"
+    assert isinstance(live["model_label"], str) and live["model_label"]
+    assert "advisor_model" in live and "thinking" in live
+    assert warm["compact_threshold"] > 0
+    assert {"input_tokens", "output_tokens"} <= set(warm["usage"])
+    # The mode reported is the host's live one, not the persisted value.
+    assert test_client.post(f"{base}/mode", headers=AUTH, json={"mode": "plan"}).status_code == 200
+    assert test_client.get(base, headers=AUTH).json()["session"]["mode"] == "plan"

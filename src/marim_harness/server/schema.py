@@ -6,6 +6,7 @@ this module knows about HTTP or WebSocket; ``Event.as_dict()`` is the sole
 wire serializer."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -57,6 +58,11 @@ class Attachment(BaseModel):
 class MessageIn(BaseModel):
     prompt: str
     attachments: list[Attachment] | None = None
+    # Who is speaking. "system" is a client-side slash command's own prompt
+    # (/remember, /skill) — the transcript mounts no user bubble for it, the
+    # same as the in-process TUI. "autonomous" is deliberately NOT accepted:
+    # the daemon's own WakeDriver is the only thing that may wake a session.
+    trigger: Literal["user", "system"] = "user"
 
 
 class SteerIn(BaseModel):

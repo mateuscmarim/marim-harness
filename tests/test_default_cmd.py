@@ -234,9 +234,8 @@ def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_p
     # Resolved target: pinned via session_id, resume stays False.
     target = "20260101-000000-tttttt"
     _write_session(tmp_path, target)
-    monkeypatch.setattr(default_cmd, "_resolve_target_session", lambda ws, r: target)
     harness, claim = default_cmd._claim_and_build(
-        tmp_path, resume=True, mode=None, kind="headless", err=err
+        tmp_path, target=target, mode=None, kind="headless", err=err
     )
     assert harness is not None and err.getvalue() == ""
     assert seen == {"session_id": target, "resume": False}
@@ -245,9 +244,8 @@ def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_p
 
     # No target (fresh or mid-race deleted): a fresh build, never a second
     # unclaimed lookup.
-    monkeypatch.setattr(default_cmd, "_resolve_target_session", lambda ws, r: None)
     harness, claim = default_cmd._claim_and_build(
-        tmp_path, resume=True, mode=None, kind="headless", err=err
+        tmp_path, target=None, mode=None, kind="headless", err=err
     )
     assert harness is not None
     assert seen == {"session_id": None, "resume": False}

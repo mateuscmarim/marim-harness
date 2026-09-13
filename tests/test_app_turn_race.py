@@ -260,7 +260,7 @@ async def test_escape_before_turn_started_still_releases_the_latch(tmp_path: Pat
         # first step is queued behind us, so the cancel lands before turn.started.
         await asyncio.sleep(0)
         assert app.host._turn_task is not None
-        app.action_cancel_turn()
+        await app.action_cancel_turn()
         await asyncio.wait_for(app.turns_idle.wait(), 10)
         assert app.turn_busy is False
         assert app.turns.submitted is None

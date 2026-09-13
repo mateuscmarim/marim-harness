@@ -41,6 +41,16 @@ checkpoints pinned. `marim sessions delete <id>` removes all of them.
   auto-titling kicks in).
 - `marim --resume` reattaches to the **most recently updated** session for the
   current workspace and replays its history.
+- `marim --session <id>` opens one specific saved session by id (the ids
+  `marim sessions list` prints). When a running `marim serve` daemon owns
+  that session, the TUI **attaches** to the daemon instead of taking the
+  session over: the transcript replays from the daemon, the live turn
+  streams in, and prompts typed here or sent from any other client (a
+  phone, `curl`) show up on both sides. The status bar reads `daemon`
+  while attached; see [the serve API's lifecycle
+  notes](../reference/serve-api.md#lifecycle-semantics) for what is
+  checked before attaching and which commands need the session's own
+  process.
 - `marim sessions list [--json]` and `marim sessions delete <id>` manage
   sessions from the shell.
 

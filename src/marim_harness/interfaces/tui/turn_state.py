@@ -9,6 +9,10 @@ folded into one answer:
   ``waiting_ask``). Authoritative, but it lags a ``submit()`` by however long
   the worker takes to pick the turn up and the pump takes to deliver
   ``turn.started``.
+- the *pending latch* — set the moment the app decides to submit, before the
+  (possibly remote, phase 4a) ``submit()`` round trip returns a turn id. In
+  process the await never yields, so it is set and cleared in one step; over
+  HTTP a second Enter during the round trip must queue, not double-submit.
 - the *submitted latch* — the turn id ``submit()`` handed back, held until its
   ``turn.started`` arrives. This closes the lag: a second Enter landing in that
   window must queue, not submit a duplicate, and a system command must refuse.
@@ -43,16 +47,31 @@ class Transition(Enum):
 
 @dataclass
 class TurnTracker:
+    pending: bool = False
     submitted: str | None = None
     current: str | None = None
     status: str = "idle"
 
     @property
     def busy(self) -> bool:
-        return self.submitted is not None or self.current is not None or self.status != "idle"
+        return (
+            self.pending
+            or self.submitted is not None
+            or self.current is not None
+            or self.status != "idle"
+        )
+
+    def note_pending(self) -> None:
+        """A submit is about to be awaited; busy from here until it returns."""
+        self.pending = True
+
+    def clear_pending(self) -> None:
+        """The submit did not produce a turn (refused, or the host is gone)."""
+        self.pending = False
 
     def note_submitted(self, turn_id: str) -> None:
         """``submit()`` returned ``turn_id``; hold it until its turn.started."""
+        self.pending = False
         self.submitted = turn_id
 
     def on_started(self, turn_id: str) -> None:

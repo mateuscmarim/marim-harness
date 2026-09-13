@@ -31,7 +31,7 @@ from ..runtime.outcome import TurnOutcome
 from ..runtime.wake import WakeController
 from ..runtime.wake_driver import WakeDriver
 from ..session.claim import SessionClaim
-from ..stream_events import event_to_dict
+from ..stream_events import event_to_dict, image_refs
 from ..usage import usage_summary
 from .bus import EventBus
 from .schema import STREAM_EVENT_TYPES
@@ -465,9 +465,16 @@ class SessionHost:
                 if obj is None:
                     continue
                 wire_type = STREAM_EVENT_TYPES.get(obj.pop("type"))
+                if wire_type == "tool.result":
+                    # Image returns ride as cache references (see image_refs):
+                    # the dict form already carries the text placeholder.
+                    part = getattr(event, "part", None)
+                    obj["images"] = image_refs(getattr(part, "content", None), session_id)
                 if wire_type is not None:
                     self.bus.publish(wire_type, obj)
 
+        store = self.harness.session.store
+        session_id = store.session_id if store is not None else None
         return await self.harness.run_turn(
             prompt, event_stream_handler=handler, attachments=attachments
         )

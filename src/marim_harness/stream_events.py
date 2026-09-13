@@ -8,6 +8,7 @@ WebSocket stream see the same event vocabulary."""
 import json
 
 from pydantic_ai.messages import (
+    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -19,6 +20,7 @@ from pydantic_ai.messages import (
 )
 
 from .binary_safe import has_binary_content, render_binary_safe
+from .images import store_image
 
 
 def _jsonify_tool_content(content) -> str:
@@ -39,6 +41,28 @@ def _jsonify_tool_content(content) -> str:
         return json.dumps(content, default=str)
     except (TypeError, ValueError):
         return str(content)
+
+
+def image_refs(content, session_id: str | None) -> list[dict]:
+    """Image returns in a tool result as wire references (phase 4a): every
+    ``BinaryContent`` image in ``content`` (scalar or inside a list) is stored
+    in the content-addressed image cache under ``session_id`` and reported as
+    ``{"sha", "media_type", "bytes"}``, resolvable at ``GET .../images/{sha}``
+    the moment the event is published — persist-time externalization would
+    store the same bytes under the same sha later, but a remote client renders
+    the event now. ``store_image`` is idempotent, so the two never conflict.
+    No session id (an anonymous, never-persisted session) means nothing can be
+    served back, so no reference is made."""
+    if session_id is None:
+        return []
+    items = content if isinstance(content, (list, tuple)) else [content]
+    refs: list[dict] = []
+    for item in items:
+        if not isinstance(item, BinaryContent) or not item.is_image:
+            continue
+        cached = store_image(session_id, item.data, item.media_type)
+        refs.append({"sha": cached.sha, "media_type": cached.media_type, "bytes": len(item.data)})
+    return refs
 
 
 def status_from_part(part) -> str:

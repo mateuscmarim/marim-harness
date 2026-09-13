@@ -14,6 +14,7 @@ from textual.widgets import Static
 
 from ...compaction import summary_text
 from ...runtime.harness import strip_turn_context
+from ...session import TranscriptStore
 from ...stream_events import status_from_part
 from ..branding import BANNER
 from .stream_render import subagent_failed, tool_result_text
@@ -187,7 +188,7 @@ class SessionView:
             widget = ToolCallWidget(
                 part.tool_name,
                 args,
-                workspace_root=self.app.harness.deps.workspace.root,
+                workspace_root=self.app.link.info.workspace_root,
             )
             tool_widgets[part.tool_call_id] = widget
             group, solo = await self.app.stream.add_tool_to_run(
@@ -298,7 +299,7 @@ class SessionView:
         widget = ToolCallWidget(
             part.tool_name,
             args,
-            workspace_root=self.app.harness.deps.workspace.root,
+            workspace_root=self.app.link.info.workspace_root,
         )
         tool_widgets[part.tool_call_id] = widget
         await log.mount(widget)
@@ -310,7 +311,7 @@ class SessionView:
         load on resume, and falls back to harness.model_label when the spawn
         didn't specify a model explicitly."""
         args = part.args_as_dict()
-        model_label = str(args.get("model") or self.app.harness.model_label or "")
+        model_label = str(args.get("model") or self.app.link.info.model_label or "")
         widget = tool_widgets.get(part.tool_call_id)
         if isinstance(widget, SubAgentWidget):
             widget.model_label = model_label
@@ -343,7 +344,7 @@ class SessionView:
         # stays bare, a burst folds into a group.
         group: ToolGroupWidget | None = None
         solo: ToolCallWidget | None = None
-        for message in self.app.harness.session.history:
+        for message in self.app.history_messages:
             if not isinstance(message, (ModelRequest, ModelResponse)):
                 continue
             # Replay reasoning above the reply it produced, matching the live path
@@ -451,6 +452,13 @@ class SessionView:
             # was cut down while working. It has a resumable transcript, so
             # surface it as interrupted (▸ press r on the ctrl+x screen).
             card.finish("", status="interrupted")
+        elif meta_status == "unknown":
+            # Attached to the daemon: that same "running" sidecar may belong
+            # to a spawn the daemon is still driving (see
+            # ``_unknown_running``). Leave the card pending — it reads as
+            # in-progress, which is the honest answer — rather than dangle
+            # an interrupted/resume affordance this process cannot act on.
+            return
         elif transcripts.has_transcript(card.stream_id):
             # A sidecar with no meta is a legacy v1 (pre-envelope) file:
             # the old write-once scheme saved it only at completion, so
@@ -502,7 +510,7 @@ class SessionView:
             widget = SubAgentWidget(
                 str(meta.get("type", "")),
                 str(meta.get("task", "")),
-                str(meta.get("model") or self.app.harness.model_label or ""),
+                str(meta.get("model") or self.app.link.info.model_label or ""),
             )
             widget.stream_id = sid
             self.app.stream.subagents.append(widget)
@@ -518,21 +526,54 @@ class SessionView:
             widget.pane = pane  # transcript_loaded stays False → lazy sidecar load
             widget.finish("", status="interrupted")
 
+    def transcripts(self) -> TranscriptStore | None:
+        """The session's sub-agent transcript sidecars. In process they hang
+        off the store's own file; attached, the same file resolved through the
+        workspace's session manager — the sidecars live beside the session on
+        disk, which both processes share, so a resumed spawn's transcript loads
+        the same way either side."""
+        harness = self.app.harness
+        if harness is not None:
+            store = harness.session.store
+            if store is None:
+                return None
+            return TranscriptStore(store.path, store.session_id)
+        sid = self.app.link.info.session_id
+        manager = self.app.session_manager()
+        if sid is None or manager is None:
+            return None
+        return TranscriptStore(manager.session_path(sid), sid)
+
+    @staticmethod
+    def _unknown_running(metas: dict[str, dict]) -> dict[str, dict]:
+        """The sidecar scan as an attached TUI may read it. A "running" meta
+        means "checkpointed, never finalized" — in process that is proof the
+        spawn died with the process that owned it, but attached, the owner is
+        the daemon and it may well still be driving that spawn (its live jobs
+        never reach this process: ``app.jobs`` is an empty, process-local
+        registry here, and jobs rendering over the wire is a later phase). So
+        the status is demoted to "unknown": no card is flagged interrupted,
+        none is synthesized, and the resume affordance stays off."""
+        return {
+            sid: {**meta, "status": "unknown"} if meta.get("status") == "running" else meta
+            for sid, meta in metas.items()
+        }
+
     async def finish_replayed_cards(self) -> None:
         """Settle every replayed card's final state from the persisted record:
         the jobs history supplies a background spawn's status/report (its
         ToolReturnPart is only a job-id handoff), and the sidecar meta scan flags
         spawns that died mid-run as interrupted — including ones whose owning
         turn never persisted, which get a card synthesized from meta alone so no
-        work silently vanishes."""
-        store = self.app.harness.session.store
-        if store is None:
+        work silently vanishes. Attached to the daemon, the mid-run flagging is
+        withheld (``_unknown_running``): the daemon may still be running them."""
+        transcripts = self.transcripts()
+        if transcripts is None:
             return
-        from ...session import TranscriptStore
-
-        transcripts = TranscriptStore(store.path, store.session_id)
         metas = transcripts.scan_meta()
-        jobs = self.app.harness.deps.jobs
+        if self.app.attached:
+            metas = self._unknown_running(metas)
+        jobs = self.app.jobs
         settled = {j.stream_id: j for j in jobs.history if j.stream_id}
         # A background job survives a session switch/rebuild (jobs are process-
         # scoped), so a spawn that is STILL running has a live registry job while
@@ -561,7 +602,7 @@ class SessionView:
         ``finish_replayed_cards`` must run even with NO history: a crash can leave a
         sidecar checkpointed mid-run with its owning turn never persisted, and the
         synthesized-card branch is the only thing that surfaces that work."""
-        if self.app.harness.session.history:
+        if self.app.history_messages:
             await self.replay_history(log)
         await self.finish_replayed_cards()
 
@@ -624,7 +665,7 @@ class SessionView:
     def _latest_summary(self) -> str | None:
         """The body of the most recent compaction summary in history, or None."""
         found = None
-        for message in self.app.harness.session.history:
+        for message in self.app.history_messages:
             for part in getattr(message, "parts", []):
                 body = summary_text(getattr(part, "content", None))
                 if body is not None:
@@ -659,7 +700,7 @@ class SessionView:
             self.app.stream.rebuilding = False
         # A restored session opens at the bottom; a fresh/cleared one stays top-
         # aligned (header pinned) until a turn's output overflows the viewport.
-        restored = bool(self.app.harness.session.history)
+        restored = bool(self.app.history_messages)
         log.anchor(restored)
         # Seed the overflow latch to match: a restored view is already anchored, so
         # a later flush must not re-anchor; a fresh/cleared one anchors on its first
@@ -674,20 +715,23 @@ class SessionView:
         """Wipe the conversation and re-show the welcome screen (the /clear cmd)."""
         from .app import _WELCOME
 
-        self.app.harness.reset()
-        await self.app.harness.session_start("clear")
+        harness = self.app.require_local("/clear")
+        harness.reset()
+        await harness.session_start("clear")
         await self.render_session(_WELCOME)
 
     async def start_new_session(self, name: str | None = None) -> None:
         """Begin a fresh named session, leaving existing ones on disk."""
-        self.app.harness.new_session(name)
-        await self.app.harness.session_start("startup")
-        label = self.app.harness.session.session_name or "new session"
+        harness = self.app.require_local("/new")
+        harness.new_session(name)
+        await harness.session_start("startup")
+        label = harness.session.session_name or "new session"
         await self.render_session(f"**New session** — `{label}`.")
 
     async def switch_to_session_id(self, session_id: str) -> None:
         """Load an existing session and show where it left off."""
-        n = self.app.harness.switch_session(session_id)
-        await self.app.harness.session_start("resume")
-        label = self.app.harness.session.session_name or session_id
+        harness = self.app.require_local("switching sessions")
+        n = harness.switch_session(session_id)
+        await harness.session_start("resume")
+        label = harness.session.session_name or session_id
         await self.render_session(f"**Switched to** `{label}` — {n} messages restored.")

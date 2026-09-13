@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 
+from ..link import RemoteOnly
 from ..widgets import NoticeMessage, PromptInput
 from .stats import tree_order
 from .view import SubAgentsView
@@ -121,7 +122,16 @@ class SubAgentsScreen:
         self._app.run_worker(self._resume(card), group="subagent-resume", exit_on_error=False)
 
     async def _resume(self, card) -> None:
-        resume = self._app.harness.deps.services.resume_subagent
+        try:
+            harness = self._app.require_local("sub-agent resume")
+        except RemoteOnly as exc:
+            # Attached to the daemon: the spawn's transcript is on disk but
+            # the runner that could resume it lives in the daemon's process.
+            # Say so (the same notice every process-local command posts)
+            # rather than swallow the keypress.
+            self._app.note_remote_only(exc)
+            return
+        resume = harness.deps.services.resume_subagent
         if resume is None:
             return
         job_id, message = await resume(card.stream_id)
@@ -221,12 +231,10 @@ class SubAgentsScreen:
         Runs as a worker off the sync repaint path (``_repaint_list`` already set
         ``pane.transcript_loaded``). A missing store or sidecar just renders a
         fallback note — the guard is already set, so it isn't retried."""
-        store = self._app.harness.session.store
-        if store is None:
+        transcripts = self._app.session.transcripts()
+        if transcripts is None:
             return
-        from ....session import TranscriptStore
-
-        msgs = TranscriptStore(store.path, store.session_id).read(stream_id)
+        msgs = transcripts.read(stream_id)
         if msgs is not None:
             await self._app.session.replay_messages_into(pane, msgs, parent_id=stream_id)
             # A nested background spawn buried in this transcript replays as a

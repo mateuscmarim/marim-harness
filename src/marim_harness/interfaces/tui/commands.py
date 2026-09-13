@@ -15,8 +15,10 @@ from typing import TYPE_CHECKING
 
 from ...mcp.manager import McpStatus
 from ...runtime.permissions import Mode
+from ...server.host import HostClosed
 from ...thinking import THINKING_LEVELS, parse_thinking_level
 from ...workspace import discover_skills
+from .link import RemoteOnly
 from .themes import THEME_NAMES
 from .trust_flow import apply_trust_and_confirm
 from .widgets.compact_notice import CompactNotice
@@ -68,6 +70,7 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
     wrapper as the auto path — otherwise a later /rewind could slice a stale
     checkpoint index mid-pair. ``app.compact_busy`` is latched for the worker's
     lifetime so turn submits and session teardown refuse rather than race it."""
+    harness = app.require_local("/compact")
     if app.turn_busy:
         await app.post_system("Can't compact while a turn is running. Press Esc first.")
         return
@@ -77,7 +80,7 @@ async def _cmd_compact(app: HarnessApp, arg: str) -> None:
 
     async def run() -> None:
         try:
-            did = await app.harness.manual_compact(instructions=arg or None)
+            did = await harness.manual_compact(instructions=arg or None)
             if not did:
                 await app.post_system("Nothing to compact.")
         except Exception as exc:  # noqa: BLE001 — surface, don't strand the notice
@@ -132,7 +135,8 @@ async def _cmd_new(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_name(app: HarnessApp, arg: str) -> None:
-    new = await app.harness.rename_session(arg.strip() or None)
+    harness = app.require_local("/name")
+    new = await harness.rename_session(arg.strip() or None)
     if new is None:
         await app.post_system(
             "Couldn't name the session — give a title (`/name <title>`) or have a "
@@ -145,11 +149,12 @@ async def _cmd_name(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_switch(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/switch")
     ref = arg.strip()
     if not ref:
         await app.post_system("Usage: `/switch <number|name>`. See `/sessions`.")
         return
-    info = resolve_ref(app.harness.session.sessions(), ref)
+    info = resolve_ref(harness.session.sessions(), ref)
     if info is None:
         await app.post_system(f"No session matches `{ref}`. Try `/sessions`.")
         return
@@ -157,11 +162,12 @@ async def _cmd_switch(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/rewind")
     arg = arg.strip()
     if arg.lower() == "undo":
         await app.undo_rewind()
         return
-    cps = app.harness.checkpoints.list()
+    cps = harness.checkpoints.list()
     if not arg:
         if not cps:
             await app.post_system(
@@ -186,15 +192,15 @@ async def _cmd_rewind(app: HarnessApp, arg: str) -> None:
 async def _cmd_mode(app: HarnessApp, arg: str) -> None:
     arg = arg.strip().lower()
     if not arg:
-        app.harness.cycle_mode()
+        await app.action_cycle_mode()
     else:
         try:
-            app.harness.set_mode(Mode(arg))
+            mode = Mode(arg)
         except ValueError:
             await app.post_system(f"Unknown mode: `{arg}`. Use ask, auto, or plan.")
             return
-    app._refresh_mode_display()
-    await app.post_system(f"Mode: **{app.harness.mode.value}**")
+        await app.set_mode(mode)
+    await app.post_system(f"Mode: **{app.link.info.mode}**")
 
 
 async def _cmd_model(app: HarnessApp, arg: str) -> None:
@@ -206,29 +212,37 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
         return
     arg = arg.strip()
     if arg:
-        app.harness.set_model(arg)
+        try:
+            await app.link.set_model(arg)
+        except HostClosed as exc:
+            # The daemon refused (409 busy — a turn started between our
+            # check and its), or is gone.
+            await app.post_system(f"Model not switched: {exc}")
+            return
         app.status.refresh_status()
-        await app.post_system(f"Model: `{app.harness.model_label}`")
+        await app.post_system(f"Model: `{app.link.info.model_label}`")
         return
     await app.pickers.open_model()
 
 
 async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/advisor")
     # Unlike /model, no mid-turn refusal: the advisor model is resolved per
     # consultation, so a switch simply applies to the next advisor call.
     arg = arg.strip()
     if arg.lower() == "off":
-        app.harness.set_advisor_model(None)
+        harness.set_advisor_model(None)
         await app.post_system("Advisor: **off** (persisted for this session)")
         return
     if arg:
-        app.harness.set_advisor_model(arg)
+        harness.set_advisor_model(arg)
         await app.post_system(f"Advisor: `{arg}` — applies to the next consultation.")
         return
     await app.pickers.open_advisor()
 
 
 async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/think")
     # Like /advisor, no mid-turn refusal: the level is read per round, so a
     # switch simply applies to the next turn/spawn.
     arg = arg.strip()
@@ -241,7 +255,7 @@ async def _cmd_thinking(app: HarnessApp, arg: str) -> None:
             f"Unknown thinking level {arg!r}. Choose one of: {', '.join(THINKING_LEVELS)}."
         )
         return
-    app.harness.set_thinking_level(level)
+    harness.set_thinking_level(level)
     await app.post_system(f"Thinking: **{level}** (persisted for this session)")
 
 
@@ -276,16 +290,17 @@ async def _cmd_remember(app: HarnessApp, arg: str) -> None:
         "Pick an appropriate scope (project vs global), type, and a concise title "
         f"and one-line description.\n\nFact: {arg}"
     )
-    app.start_system_turn(prompt)
+    await app.start_system_turn(prompt)
 
 
 async def _cmd_skill(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/skill")
     arg = arg.strip()
     if not arg:
         skills = discover_skills(
-            app.harness.deps.workspace.root,
-            trust_project=app.harness.deps.trust.project,
-            dirs=app.harness.deps.workspace.skill_dirs,
+            harness.deps.workspace.root,
+            trust_project=harness.deps.trust.project,
+            dirs=harness.deps.workspace.skill_dirs,
         )
         if not skills:
             await app.post_system(
@@ -308,7 +323,7 @@ async def _cmd_skill(app: HarnessApp, arg: str) -> None:
     )
     if extra:
         prompt += f"\n\nAdditional context for this run: {extra}"
-    app.start_system_turn(prompt)
+    await app.start_system_turn(prompt)
 
 
 _MCP_USAGE = "Usage: `/mcp`, `/mcp enable <name|all>`, `/mcp disable <name|all>`."
@@ -327,17 +342,18 @@ async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
 
 
 async def _mcp_list(app: HarnessApp) -> None:
-    servers = getattr(app.harness.mcp, "mcp_servers", [])
+    harness = app.require_local("/mcp")
+    servers = getattr(harness.mcp, "mcp_servers", [])
     if not servers:
         await app.post_system(
             "No MCP servers configured. Add them to `.marim/mcp.json` (project) "
             "or `~/.config/marim/mcp.json` (global)."
         )
         return
-    status = getattr(app.harness.mcp, "mcp_status", None) or McpStatus()
+    status = getattr(harness.mcp, "mcp_status", None) or McpStatus()
     connected = set(status.connected)
     failed = dict(status.failed)
-    disabled = set(getattr(app.harness.mcp, "disabled", set()) or set())
+    disabled = set(getattr(harness.mcp, "disabled", set()) or set())
     lines = ["**MCP servers**", ""]
     for s in servers:
         name = str(getattr(s, "id", None) or getattr(s, "tool_prefix", "?"))
@@ -355,7 +371,8 @@ async def _mcp_list(app: HarnessApp) -> None:
 
 
 async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
-    names = app.harness.mcp.configured_names()
+    harness = app.require_local("/mcp")
+    names = harness.mcp.configured_names()
     if not names:
         await app.post_system("No MCP servers configured.")
         return
@@ -373,10 +390,10 @@ async def _mcp_toggle(app: HarnessApp, action: str, target: str) -> None:
     results = []
     for name in targets:
         if action == "disable":
-            await app.harness.disable_server(name)
+            await harness.disable_server(name)
             results.append(f"- `{name}` — disabled ⏸")
         else:
-            err = await app.harness.enable_server(name)
+            err = await harness.enable_server(name)
             if err:
                 results.append(f"- `{name}` — enable failed ✗ — {err}")
             else:
@@ -389,7 +406,7 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
     from ...usage import resolve_cost, split_tokens
     from .widgets import format_cost, human_tokens
 
-    usage = app.harness.session.usage
+    usage = app.link.info.usage
     s = split_tokens(usage)
     lines = [
         "**Token usage**",
@@ -400,7 +417,7 @@ async def _cmd_usage(app: HarnessApp, arg: str) -> None:
         f"- Output: {human_tokens(s.output)}",
         f"- Total: {human_tokens(s.total)}",
     ]
-    cost, is_exact = resolve_cost(usage, app.harness.model_id)
+    cost, is_exact = resolve_cost(usage, app.link.info.model_id)
     if cost is not None:
         label = "Cost (billed)" if is_exact else "Estimated cost"
         lines.append(f"- {label}: {format_cost(cost)}")
@@ -457,9 +474,10 @@ async def _worktree_remove(app: HarnessApp, root, rest: str) -> None:
 
 
 async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/worktree")
     from ...workspace.worktree import repo_root
 
-    ws = app.harness.deps.workspace.root
+    ws = harness.deps.workspace.root
     root = repo_root(ws)
     if root is None:
         await app.post_system("Not a git repository.")
@@ -478,9 +496,10 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/jobs")
     from ...jobs import render_jobs
 
-    jobs = app.harness.deps.jobs
+    jobs = harness.deps.jobs
     sub, _, rest = arg.strip().partition(" ")
     rest = rest.strip()
     if sub in ("", "list"):
@@ -512,9 +531,10 @@ async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_plugin(app: HarnessApp, arg: str) -> None:
+    harness = app.require_local("/plugin")
     from ...plugins import discover_plugins, set_enabled
 
-    ws = app.harness.deps.workspace.root
+    ws = harness.deps.workspace.root
     sub, _, rest = arg.partition(" ")
     sub = sub.strip().lower()
     name = rest.strip()
@@ -556,24 +576,25 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
     """Project trust: `/trust` shows the decision and the gated surface;
     `/trust on` grants (persist + hot-apply); `/trust off` revokes (persist;
     running MCP/LSP processes stop only on restart)."""
+    harness = app.require_local("/trust")
     from datetime import datetime, timezone
 
     from ...trust import record_decision
     from ...trust_surface import scan_project_surface
 
-    root = app.harness.deps.workspace.root
+    root = harness.deps.workspace.root
     arg = arg.strip().lower()
     if arg not in ("", "on", "off"):
         await app.post_system("Usage: `/trust [on|off]`")
         return
     if not arg:
-        trust = app.harness.deps.trust
-        surface = app.harness.project_surface
+        trust = harness.deps.trust
+        surface = harness.project_surface
         if surface is None:
             # Embedder-built harnesses skip bootstrap and never cache a surface;
             # scan once and cache it so this status line, the settings row, and
             # a later /trust all report the same snapshot.
-            surface = app.harness.project_surface = scan_project_surface(root)
+            surface = harness.project_surface = scan_project_surface(root)
         state = "trusted" if trust.project else "untrusted"
         await app.post_system(
             f"Project **{state}** (source: {trust.source}).\n\n"
@@ -605,7 +626,7 @@ async def _cmd_trust(app: HarnessApp, arg: str) -> None:
         # above, and posts the confirmation itself — don't duplicate it here.
         await apply_trust_and_confirm(app)
     else:
-        app.harness.revoke_project_trust()
+        harness.revoke_project_trust()
         await app.post_system(
             "Project trust revoked. Skills/agents/hooks drop now; already-running "
             "MCP servers and language servers stop on restart."
@@ -687,4 +708,9 @@ async def dispatch(app: HarnessApp, text: str) -> None:
     if cmd is None:
         await app.post_system(f"Unknown command: `/{name}`. Try `/help`.")
         return
-    await cmd.handler(app, arg.strip())
+    try:
+        await cmd.handler(app, arg.strip())
+    except RemoteOnly as exc:
+        # The command needs the session's own process (this TUI is attached
+        # to the daemon): one notice, the app stays up.
+        app.note_remote_only(exc)

@@ -9,12 +9,14 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from ...thinking import THINKING_LEVELS
 from ..history import PromptHistory, default_history_path
 
 if TYPE_CHECKING:
+    from ...runtime.harness import Harness
+    from ...server.attach import RemoteTarget
     from ...session.claim import SessionClaim
 
 
@@ -43,6 +45,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help="resume the saved conversation for this workspace",
+    )
+    p.add_argument(
+        "--session",
+        default=None,
+        metavar="SESSION_ID",
+        help=(
+            "open a specific saved session by id; when a running `marim serve` "
+            "daemon owns it, the TUI attaches to the daemon instead of taking over"
+        ),
     )
     p.add_argument(
         "-p",
@@ -160,7 +171,13 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
     than reporting that it's gone."""
     if target is None:
         return None, True
-    from ...session.claim import read_holder, try_acquire
+    if not _is_session_id(target):
+        # ``--session`` is user text that becomes a file name under the
+        # sessions dir; a path-like value ("../other-workspace/<id>") would
+        # claim — and then load — a session that is not this workspace's.
+        print(f"session {target!r} is not a session id (ids are bare names).", file=err)
+        return None, False
+    from ...session.claim import try_acquire
     from ...session.store import SessionManager
 
     session_path = SessionManager(workspace).session_path(target)
@@ -169,16 +186,52 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
         if not session_path.exists():
             claim.release()
             print(
-                f"session {target} no longer exists (deleted after it was listed).",
+                f"session {target} no longer exists (nothing saved at {session_path}).",
                 file=err,
             )
             return None, False
         return claim, True
+    return _refuse_or_attach(workspace, target, session_path, kind=kind, err=err)
+
+
+def _is_session_id(target: str) -> bool:
+    """A bare file-name component: no separators (either flavor), not a
+    dot-name. ``--resume`` and the picker only ever hand over ids the manager
+    listed, so this guards the one path that takes the id from the command
+    line."""
+    return (
+        target not in ("", ".", "..")
+        and "/" not in target
+        and "\\" not in target
+        and Path(target).name == target
+    )
+
+
+def _refuse_or_attach(workspace: Path, target: str, session_path: Path, *, kind: str, err):
+    """The claim on ``target`` is held elsewhere. An interactive launch can
+    still open the session when the holder is a reachable ``marim serve``
+    daemon: the TUI then attaches over the daemon's API (phase 4a) instead of
+    taking the session over. Returns ``(RemoteTarget, True)`` in that case —
+    the caller launches the remote TUI and never builds a Harness. Headless
+    never attaches: ``marim -p`` runs the turn in its own process or not at
+    all. Any other holder (a TUI, a daemon that failed a probe) is the usual
+    refusal, with the probe's reason printed first so the user knows why the
+    attach was skipped."""
+    from ...server.attach import discover
+    from ...session.claim import read_holder
+    from .serve import _default_state_dir
+
+    if kind == "tui":
+        decision = discover(workspace, target, session_path, state_dir=_default_state_dir())
+        if decision.target is not None:
+            return decision.target, True
+        if decision.reason is not None:
+            print(f"not attaching: {decision.reason}.", file=err)
     holder = read_holder(session_path)
     who = holder.describe() if holder is not None else "another process"
     print(
         f"session {target} is already open in {who}.\n"
-        "Close it there first, or start a new session (drop --resume).",
+        "Close it there first, or start a new session (drop --resume/--session).",
         file=err,
     )
     return None, False
@@ -218,6 +271,15 @@ def _launch_tui(harness) -> int:
     return 0
 
 
+def _launch_remote_tui(target: "RemoteTarget") -> int:
+    """Run the TUI attached to a daemon-owned session: no Harness, no claim —
+    the daemon keeps both, and the app talks to it over REST + WebSocket."""
+    from ..tui.app import HarnessApp
+
+    HarnessApp(None, history=PromptHistory(default_history_path()), remote=target).run()
+    return 0
+
+
 def _enter_worktree(workspace, branch, err):
     """Resolve `workspace` to a git worktree for `branch`. Returns the worktree
     path, or None after printing an error to `err`."""
@@ -238,19 +300,37 @@ def _enter_worktree(workspace, branch, err):
         return None
 
 
-def _claim_and_build(workspace: Path, *, resume: bool, mode, kind: str, err):
-    """Resolve and claim the target session, then build the Harness onto it.
+def _launch_target(args, workspace: Path) -> str | None:
+    """The session id this launch opens: an explicit ``--session`` wins,
+    ``--resume`` means the workspace's latest, neither means a fresh one."""
+    if args.session is not None:
+        return str(args.session)  # "" included: refused by _claim_target, not a fresh session
+    return _resolve_target_session(workspace, args.resume)
+
+
+_Built: TypeAlias = "tuple[Harness, SessionClaim | None] | tuple[None, RemoteTarget] | None"
+
+
+def _claim_and_build(workspace: Path, *, target: str | None, mode, kind: str, err) -> _Built:
+    """Claim the target session, then build the Harness onto it.
 
     Returns ``(harness, claim) | None`` — ``None`` means the refusal was
     already printed and the caller should return 2. A build failure releases
-    the pre-build claim (nothing else will) before re-raising.
+    the pre-build claim (nothing else will) before re-raising. When the claim
+    step decided to *attach* instead (a daemon owns the target and this is an
+    interactive launch), the result is ``(None, RemoteTarget)``: no Harness is
+    built in this process at all. Callers tell the two shapes apart on the
+    first slot (``built[0] is None``), which is how pyright narrows a tuple
+    union — an unpacked ``harness is None`` would not narrow ``claim``.
     """
     from ...runtime.bootstrap import build_harness
+    from ...server.attach import RemoteTarget
 
-    target = _resolve_target_session(workspace, resume)
     claim, may_proceed = _claim_target(workspace, target, kind=kind, err=err)
     if not may_proceed:
         return None
+    if isinstance(claim, RemoteTarget):
+        return None, claim
     try:
         harness = build_harness(
             workspace,
@@ -283,9 +363,13 @@ def _start_headless(args, workspace: Path, stdin, out, err) -> int:
     from .headless import run_headless
 
     mode = Mode(args.mode) if args.mode else Mode.auto
-    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="headless", err=err)
+    target = _launch_target(args, workspace)
+    built = _claim_and_build(workspace, target=target, mode=mode, kind="headless", err=err)
     if built is None:
         return 2
+    # Only an interactive launch attaches (_refuse_or_attach): a headless
+    # build always carries a Harness.
+    assert built[0] is not None
     harness, claim = built
     return _run_claimed(
         harness,
@@ -314,9 +398,14 @@ def _start_tui(args, workspace: Path, err) -> int:
     # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
     # build_harness.
     mode = Mode(args.mode) if args.mode else None
-    built = _claim_and_build(workspace, resume=args.resume, mode=mode, kind="tui", err=err)
+    target = _launch_target(args, workspace)
+    built = _claim_and_build(workspace, target=target, mode=mode, kind="tui", err=err)
     if built is None:
         return 2
+    if built[0] is None:
+        # The daemon owns the session: attach instead of taking it over. The
+        # claim stays with the daemon, so there is nothing to adopt or release.
+        return _launch_remote_tui(built[1])
     harness, claim = built
     return _run_claimed(harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness))
 

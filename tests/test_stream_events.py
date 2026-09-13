@@ -112,3 +112,28 @@ def test_unmapped_event_returns_none():
         pass
 
     assert event_to_dict(Unknown()) is None
+
+
+def test_image_refs_store_under_the_session_and_report_the_cache_sha(tmp_path, monkeypatch):
+    """Phase 4a: an image return rides the wire as a content-addressed
+    reference, stored the moment the event is published under the same sha
+    persist-time externalization will use (store_image is idempotent)."""
+    from pydantic_ai.messages import BinaryContent
+
+    from marim_harness.images import store_image
+    from marim_harness.stream_events import image_refs
+
+    monkeypatch.setenv("MARIM_IMAGE_CACHE_DIR", str(tmp_path / "cache"))
+    png = BinaryContent(data=b"\x89PNG\r\n\x1a\n" + b"p" * 100, media_type="image/png")
+    jpg = BinaryContent(data=b"\xff\xd8" + b"j" * 50, media_type="image/jpeg")
+    refs = image_refs(["caption", png, jpg, 3], "sess-1")
+    assert [r["media_type"] for r in refs] == ["image/png", "image/jpeg"]
+    assert refs[0]["bytes"] == len(png.data) and refs[1]["bytes"] == len(jpg.data)
+    assert refs[0]["sha"] == store_image("sess-1", png.data, "image/png").sha
+    assert (tmp_path / "cache" / "sess-1" / f"{refs[1]['sha']}.jpg").exists()
+    # A scalar return works the same; a non-image binary and no session id
+    # make no reference at all.
+    assert image_refs(png, "sess-1") == refs[:1]
+    pdf = BinaryContent(data=b"%PDF", media_type="application/pdf")
+    assert image_refs([pdf], "sess-1") == []
+    assert image_refs(png, None) == []

@@ -25,13 +25,14 @@ async def prompt_project_trust(app: HarnessApp) -> None:
     """First-open trust dialog. Failure to persist must not strand the
     decision: the session still applies it (the user consented), the error
     is surfaced as a system line."""
-    surface = app.harness.trust_prompt
-    if surface is None:  # pragma: no cover - guarded by the on_mount check
+    harness = app.harness
+    surface = harness.trust_prompt if harness is not None else None
+    if harness is None or surface is None:  # pragma: no cover - guarded by the on_mount check
         return
     trusted = bool(await run_panel(app, TrustPanel(surface)))
     try:
         record_decision(
-            app.harness.deps.workspace.root,
+            harness.deps.workspace.root,
             trusted=trusted,
             fingerprint=surface.fingerprint,
             now=datetime.now(timezone.utc).isoformat(),
@@ -55,7 +56,7 @@ async def apply_trust_and_confirm(app: HarnessApp) -> None:
     otherwise vanish silently (same belt-and-suspenders as
     the shell passthrough)."""
     try:
-        await app.harness.apply_project_trust()
+        await app.require_local("/trust").apply_project_trust()
     except Exception as exc:  # keep the session alive on any hot-apply failure
         await app.post_system(
             "Project trusted and saved, but applying it live failed: "

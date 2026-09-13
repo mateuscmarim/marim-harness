@@ -190,7 +190,7 @@ async def test_cancel_pauses_queue(tmp_path):
         app.queue.enqueue("a")
         await app.start_turn("x")
         await _settle(pilot, lambda: started.is_set() and app.status.busy, what="the turn to start")
-        app.action_cancel_turn()  # Esc -> interrupted turn.finished pauses the queue
+        await app.action_cancel_turn()  # Esc -> interrupted turn.finished pauses the queue
         await asyncio.wait_for(app.turns_idle.wait(), 10)
         assert app.queue.paused is True
         assert [m.text for m in app.queue.items] == ["a"]

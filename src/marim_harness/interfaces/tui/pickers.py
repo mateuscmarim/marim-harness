@@ -44,14 +44,15 @@ class ModelPickers:
         when called straight from the command-dispatch path, which is not a
         worker — push_screen_wait would raise NoActiveWorker there.
         """
-        source = self._app.harness.model_source
+        harness = self._app.require_local("the model picker")
+        source = harness.model_source
         if source is None:
             await self._app.post_system("Model switching isn't available here.")
             return
         self._app.run_worker(self.refresh_vision_caps(source.list_models), exclusive=False)
         self._app.push_screen(
             ModelPickerModal(
-                current=self._app.harness.model_id,
+                current=harness.model_id,
                 fetch=source.list_models,
                 is_local=source.is_local,
             ),
@@ -63,20 +64,21 @@ class ModelPickers:
         modal is dismissed; a None result (cancelled) is a no-op."""
         if not chosen:
             return
-        self._app.harness.set_model(chosen)
-        self._app.status.model_name = self._app.harness.model_label
-        self._app.append_log(NoticeMessage(f"model: {self._app.harness.model_label}"))
+        self._app.require_local("the model picker").set_model(chosen)
+        self._app.status.model_name = self._app.link.info.model_label
+        self._app.append_log(NoticeMessage(f"model: {self._app.link.info.model_label}"))
 
     async def open_advisor(self) -> None:
         """Model picker for the advisor. Mirrors open_model, but the choice lands
         on the advisor seam (session-persisted) rather than the live turn model."""
-        source = self._app.harness.model_source
+        harness = self._app.require_local("the advisor picker")
+        source = harness.model_source
         if source is None:
             await self._app.post_system("Model switching isn't available here.")
             return
         self._app.push_screen(
             ModelPickerModal(
-                current=self._app.harness.advisor_model_id,
+                current=harness.advisor_model_id,
                 fetch=source.list_models,
                 is_local=source.is_local,
             ),
@@ -91,24 +93,26 @@ class ModelPickers:
         # off state), never persist the literal "off" as a model id (which
         # would leave the seam active and every consult failing to build it).
         if chosen.strip().lower() == "off":
-            self._app.harness.set_advisor_model(None)
+            self._app.require_local("the advisor picker").set_advisor_model(None)
             self._app.append_log(NoticeMessage("advisor: off"))
             return
-        self._app.harness.set_advisor_model(chosen)
+        self._app.require_local("the advisor picker").set_advisor_model(chosen)
         self._app.append_log(NoticeMessage(f"advisor: {chosen}"))
 
     async def open_thinking(self) -> None:
         """Fixed-list picker for the session thinking level. The choice lands
         on Harness.set_thinking_level (session-persisted, live)."""
         self._app.push_screen(
-            ThinkingPickerModal(current=self._app.harness.thinking_level_id),
+            ThinkingPickerModal(
+                current=self._app.require_local("the thinking picker").thinking_level_id
+            ),
             self.on_thinking_chosen,
         )
 
     def on_thinking_chosen(self, chosen: str | None) -> None:
         if not chosen:
             return
-        self._app.harness.set_thinking_level(chosen)
+        self._app.require_local("the thinking picker").set_thinking_level(chosen)
         self._app.append_log(NoticeMessage(f"thinking: {chosen}"))
 
     async def refresh_vision_caps(self, fetch) -> None:
@@ -124,7 +128,7 @@ class ModelPickers:
         positive text-only capability blocks; unknown always proceeds."""
         if not attachments:
             return None
-        model_id = self._app.harness.model_id
+        model_id = self._app.link.info.model_id
         if model_id is not None and self.vision_caps.get(model_id) is False:
             return (
                 f"{model_id} can't read images — "

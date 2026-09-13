@@ -33,7 +33,8 @@ class ActivityMonitor:
         # Bounds the wake→spawn→wake chain and owns the should-wake decision; the
         # App keeps the public autonomous_wake toggle and the wake's side effects.
         self.wake = WakeDriver(
-            WakeController(app.harness.wake_depth_cap),
+            # Attached: depth 0 — the daemon's host drives the wake chain.
+            WakeController(app.harness.wake_depth_cap if app.harness is not None else 0),
             is_enabled=lambda: app.autonomous_wake,
             turn_busy=lambda: app.turn_busy,
             has_finished_pending=app.jobs.has_finished_pending,
@@ -51,9 +52,15 @@ class ActivityMonitor:
             panel = self._app.query_one(TaskPanel)
         except NoMatches:
             return  # tearing down; nothing to paint
-        plan = self._app.harness.deps.plan
+        harness = self._app.harness
+        if harness is None:
+            # The checklist lives in the daemon's process; 4a does not ship
+            # it over the wire (tasks.changed carries no payload).
+            panel.show_tasks([], plan_title=None)
+            return
+        plan = harness.deps.plan
         panel.show_tasks(
-            self._app.harness.deps.tasks.items,
+            harness.deps.tasks.items,
             plan_title=plan.summary if plan is not None else None,
         )
 
@@ -98,7 +105,8 @@ class ActivityMonitor:
         callbacks — would freeze the whole UI. We schedule the async send path,
         which spawns the subprocess via asyncio and awaits it without blocking
         other tasks. Failures stay swallowed inside the notifier."""
-        notifier = self._app.harness.deps.ui.notifier
+        harness = self._app.harness
+        notifier = harness.deps.ui.notifier if harness is not None else None
         if notifier is not None:
             self._app.run_worker(
                 notifier.send_async(title, body, event_type),

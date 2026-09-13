@@ -29,6 +29,27 @@ pre-1.0, minor versions may contain breaking changes.
   (haiku/sonnet/opus and gpt-5.6-luna/terra/sol) with a "Tiered CLI workers"
   section in the sub-agents guide; parsed in CI.
 
+- **Attach the TUI to a daemon-owned session.** `marim --session <id>` opens
+  a specific saved session; when a running `marim serve` daemon owns it (a
+  reachable endpoint, a matching daemon pid, a readable token, a registered
+  workspace), the TUI attaches over the daemon's REST + WebSocket API
+  instead of refusing: `GET session` seeds the status bar, `GET history`
+  replays the transcript, the socket streams the live tail from the
+  persisted boundary, and submit/interrupt/steer/asks/mode/model go
+  through the routes. Reconnects with backoff (`daemon · reconnecting…`),
+  gives up after 60 s or an auth/not-found rejection (`daemon · lost`),
+  and resyncs from history on `stream.gap`. Commands that need the
+  session's own process (`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, image steers, in-place session switch) are refused
+  with a notice. The session picker tags sessions other processes hold. Phase 4a
+  of the cross-process session-event design; the `[tui]` extra now pulls
+  `websockets`.
+- `POST .../messages` accepts `trigger: "user" | "system"` (a slash
+  command's own prompt renders without a user bubble; `autonomous` is
+  refused), `tool.result` events carry `images` references resolvable at
+  `GET .../images/{sha}` the moment they are published, and `GET session`
+  reports the loaded host's live `mode`/`model_label`/`advisor_model`/
+  `thinking` plus `workspace_path`, cumulative `usage` and
+  `compact_threshold` (both `null` while cold).
 - `turn.started` carries a `trigger` (`user` | `system` | `autonomous`) so a
   client can tell a typed prompt from a slash command's own prompt or an
   autonomous wake, and `steer.accepted` carries the attachment count.

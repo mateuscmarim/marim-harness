@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,10 +37,12 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
     streams. estimate_tokens() serializes the *whole* history (O(total bytes)), so
     it must be cached and recomputed only when the history actually changes —
     re-stringifying the transcript on every repaint is pure waste that grows with
-    session length."""
+    session length. The memo lives on the local link's read model (phase 4a),
+    which the bar reads through ``app.link.info``."""
     from textual._context import active_app
 
-    import marim_harness.interfaces.tui.widgets.status_bar as status_bar_mod
+    import marim_harness.interfaces.tui.link as link_mod
+    from marim_harness.interfaces.tui.link import LocalLinkInfo
 
     calls = {"n": 0}
 
@@ -47,16 +50,22 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
         calls["n"] += 1
         return len(history) * 10
 
-    monkeypatch.setattr(status_bar_mod, "estimate_tokens", fake_estimate)
+    monkeypatch.setattr(link_mod, "estimate_tokens", fake_estimate)
 
     history = [object(), object()]
 
-    class _App:
-        class harness:
-            class session:
-                pass
+    class _Session:
+        history_version = 0
 
-    _App.harness.session.history = history
+    _Session.history = history  # type: ignore[attr-defined]
+
+    class _Harness:
+        session = _Session()
+
+    info = LocalLinkInfo(_Harness())  # type: ignore[arg-type]
+
+    class _App:
+        link = SimpleNamespace(info=info)
 
     # A bare StatusBar() (never mounted) needs an app to resolve `self.app`
     # against — set it via Textual's active_app context var rather than
@@ -64,8 +73,6 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
     token = active_app.set(_App())  # type: ignore[arg-type]
     try:
         presenter = StatusBar()
-        presenter._ctx_tokens_key = -1
-        presenter._ctx_tokens = 0
 
         # Repeated reads (every repaint) recompute the estimate exactly once.
         assert presenter._context_tokens() == 20
@@ -76,6 +83,11 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
         history.append(object())
         assert presenter._context_tokens() == 30
         assert calls["n"] == 2
+
+        # An in-place edit (compaction, rewind) bumps the version → recompute.
+        _Session.history_version = 1
+        assert presenter._context_tokens() == 30
+        assert calls["n"] == 3
     finally:
         active_app.reset(token)
 
@@ -93,15 +105,9 @@ def test_refresh_title_swallows_driver_errors_during_teardown():
         def flush(self):
             raise BrokenPipeError("driver tearing down")
 
-    class _Session:
-        session_name = "s"
-
-    class _Harness:
-        session = _Session()
-
     class _App:
         title = ""
-        harness = _Harness()
+        link = SimpleNamespace(info=SimpleNamespace(session_name="s"))
         _driver = _BrokenDriver()
 
     fake_app = _App()

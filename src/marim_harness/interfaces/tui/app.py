@@ -2,7 +2,7 @@ import json
 import logging
 import time
 from asyncio import CancelledError, Event, Task, create_task
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from typing import Any
 
@@ -16,7 +16,10 @@ from textual.widgets import Footer, Header
 from ...ask_user import Choice, Question
 from ...jobs import JobRegistry
 from ...runtime.harness import Harness
-from ...server.bus import EventBus, Subscription
+from ...runtime.permissions import Mode
+from ...server.attach import RemoteTarget
+from ...server.bus import EventBus
+from ...server.client import RemoteSessionHost
 from ...server.host import HostClosed, SessionHost, TurnQueueFull
 from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
@@ -31,6 +34,7 @@ from ...server.wire_events import (
     SessionStatus,
     SessionTtft,
     SteerAccepted,
+    StreamGap,
     SubagentCliActivity,
     SubagentEvent,
     SubagentModel,
@@ -54,6 +58,8 @@ from ...server.wire_events import (
     WorkflowStarted,
     parse_wire_event,
 )
+from ...session import SessionManager
+from ...session.claim import read_holder
 from ...usage import resolve_cost, usage_from_dump
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
@@ -67,6 +73,7 @@ from .interactions import (
     mount_panel,
     unmount_panel,
 )
+from .link import Feed, LocalSessionLink, RemoteOnly, SessionLink
 from .pickers import ModelPickers
 from .queue_control import QueueController
 from .session_picker import SessionPickerModal
@@ -312,6 +319,10 @@ async def _handle_ask_resolved(app: "HarnessApp", wire: AskResolved) -> None:
     app._dismiss_ask(wire)
 
 
+async def _handle_stream_gap(app: "HarnessApp", wire: StreamGap) -> None:
+    await app._on_stream_gap(wire)
+
+
 def _answered_elsewhere(panel: InteractionPanel, answer: dict | None) -> str:
     """The notice for an ask this client was showing that another client
     answered first (phase 4 — or a second local subscriber). Approval wording
@@ -324,11 +335,11 @@ def _answered_elsewhere(panel: InteractionPanel, answer: dict | None) -> str:
     return "Plan decided from another client"
 
 
-# stream.gap is the one wire type deliberately unhandled: a synthetic resume
-# marker that cannot occur for the in-process subscriber (it never falls
-# behind the ring). turn.finished's output/usage payload is not rendered —
-# the transcript already streamed the text, and the status bar reads usage
-# from the session; the event's job here is the turn-end effects.
+# turn.finished's output/usage payload is not rendered — the transcript
+# already streamed the text, and the status bar reads usage from the link's
+# read model; the event's job here is the turn-end effects. stream.gap is a
+# remote-only resync marker (see _on_stream_gap); the in-process subscriber
+# never falls behind the ring, so locally it is a logged no-op.
 _WIRE_HANDLERS: dict[type, _WireHandler] = {
     TextDelta: _handle_stream_wire,
     ThinkingDelta: _handle_stream_wire,
@@ -361,6 +372,7 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     SteerAccepted: _handle_steer_accepted,
     AskPending: _handle_ask_pending,
     AskResolved: _handle_ask_resolved,
+    StreamGap: _handle_stream_gap,
 }
 
 
@@ -378,6 +390,12 @@ class HarnessApp(App):
     - ``activity`` owns the panels, notifications and wake (activity.py)
     - ``pickers`` opens the live model/advisor/thinking pickers (pickers.py)
     - ``subagents`` drives the ctrl+x screen (subagents/screen.py)
+
+    Since phase 4a the app drives its session through ``link`` (link.py): the
+    in-process ``SessionHost`` when it was launched with a ``Harness``, or a
+    daemon-owned session over HTTP when launched with a ``RemoteTarget``. The
+    widgets read ``link.info``; the turn path awaits ``link.*``; anything that
+    needs the ``Harness`` object itself goes through ``require_local``.
     """
 
     CSS_PATH = "styles.tcss"
@@ -397,9 +415,33 @@ class HarnessApp(App):
         ("ctrl+c", "quit", "Quit"),
     ]
 
-    def __init__(self, harness: Harness, history: PromptHistory | None = None) -> None:
+    def __init__(
+        self,
+        harness: Harness | None,
+        history: PromptHistory | None = None,
+        *,
+        remote: RemoteTarget | None = None,
+    ) -> None:
         super().__init__()
+        if (harness is None) == (remote is None):
+            raise ValueError("HarnessApp takes exactly one of a harness or a remote target")
+        # The process-local harness, or None when this TUI is attached to a
+        # daemon-owned session. Nothing reads it directly for a value the
+        # widgets need (that is ``link.info``); the reaches that remain are
+        # the process-local features, each behind ``require_local``.
         self.harness = harness
+        self._remote = remote
+        # The session seam. Bound in on_mount with the host (both loop-bound).
+        self.link: SessionLink
+        # The feed the pump reads. Swapped in place by a stream.gap resync,
+        # which is why the pump reads the attribute rather than a local.
+        self._feed: Feed | None = None
+        # Remote only: the replay source (the last transcript snapshot fetched
+        # from the daemon) and the empty, process-scoped jobs registry the
+        # panels render from. See ``history_messages`` / ``jobs``.
+        self._remote_history: list[Any] = []
+        self._remote_jobs = JobRegistry()
+        self._remote_manager: SessionManager | None = None
         self.status = StatusBar()
         self.stream = StreamRenderer(self)
         self.session = SessionView(self)
@@ -433,7 +475,9 @@ class HarnessApp(App):
         # toggled at runtime by `/jobs wake on|off` and from the settings screen,
         # which is why it stays a plain App attribute rather than moving into the
         # ActivityMonitor that reads it.
-        self.autonomous_wake = harness.autonomous_wake
+        # Attached: False, and not a toggle — the daemon's own host wakes the
+        # session; a second driver here would race it for the same digests.
+        self.autonomous_wake = harness.autonomous_wake if harness is not None else False
         self.activity = ActivityMonitor(self)
         self.queue = QueueController(self)
         self.pickers = ModelPickers(self)
@@ -453,7 +497,8 @@ class HarnessApp(App):
         # __init__ spawns the worker task and reads the loop clock, and the real
         # launch path constructs HarnessApp synchronously before .run() starts
         # the loop (tests build it inside an anyio loop, which is why they never
-        # noticed). Bare annotation — reading it before mount is a bug.
+        # noticed). Bare annotation — reading it before mount is a bug. Local
+        # only: an attached app has no host in this process.
         self.host: SessionHost
         self._autocomplete: CommandAutocomplete | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
@@ -478,29 +523,78 @@ class HarnessApp(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        # Attach the pump before anything else touches the harness: an event
-        # published before a subscriber attaches (no after_seq backlog replay
-        # for a fresh subscription — see EventBus.attach) is gone for good.
-        self._bind_host()
-        # attach() runs here, synchronously, rather than inside the pump task:
-        # create_task only schedules the body, so attaching there would leave a
-        # window (until the loop next yields) where a published event has no
-        # subscriber yet and is gone for good.
-        self._pump_task = create_task(self._event_pump(self.host.bus.attach()))
+        if self.harness is not None:
+            # Attach the pump before anything else touches the harness: an
+            # event published before a subscriber attaches (no after_seq
+            # backlog replay for a fresh subscription — see EventBus.attach)
+            # is gone for good. attach() runs here, synchronously, rather than
+            # inside the pump task: create_task only schedules the body, so
+            # attaching there would leave a window (until the loop next
+            # yields) where a published event has no subscriber yet.
+            self._bind_host()
+            self.link = LocalSessionLink(self.harness, self.host)
+            self._start_pump(self.link.attach())
+        else:
+            assert self._remote is not None
+            self.link = RemoteSessionHost(
+                self._remote, self._remote.workspace_root, on_state=self._on_link_state
+            )
         for theme in MARIM_THEMES:
             self.register_theme(theme)
         self.theme = load_theme()
-        self.sub_title = str(self.harness.deps.workspace.root)
-        self.status.mode = self.harness.deps.workspace.mode.value
+        self.sub_title = str(self.link.info.workspace_root)
+        self.status.mode = self.link.info.mode
         self.status.refresh_title()
         log = self.query_one("#log", VerticalScroll)
         # Hand the renderer the persistent transcript host so spawns create their
         # panes there.
         self.stream.detail_host = self.query_one(SubAgentsView).host
+        if self.harness is None:
+            self.status.link_label = "daemon"
+            try:
+                await self._attach_remote(log)
+            except HostClosed as exc:
+                # The daemon answered the launch probe but not this: gone
+                # between the two, or refusing us now. Say so and stay up so
+                # the message is readable; every command from here reports
+                # the same way.
+                self.append_log(ErrorMessage(f"attach failed: {exc}"))
+                self._on_link_state("lost")
+        else:
+            await self._mount_transcript(log)
+        self.activity.render_tasks()  # reflect any checklist restored with the session
+        self.activity.render_jobs()  # process-scoped jobs survive session switches
+        self.queue.render()
+        self._announce_session_defaults()
+        # Coalesce streaming text deltas: render buffered AssistantMessages on a
+        # shared interval instead of re-parsing the markdown on every token.
+        self.set_interval(_STREAM_FLUSH_INTERVAL, self.stream.flush_streams)
+        # Anchor the session timer at mount and tick the status bar while idle so
+        # the session duration advances even with no turn running.
+        self.status.session_start = time.monotonic()
+        self.set_interval(_CLOCK_TICK_INTERVAL, self.status.refresh_status)
+        # Animate the working indicator while a turn runs (no-op when idle).
+        self.set_interval(_SPINNER_TICK_INTERVAL, self.status.tick_spinner)
+        # Land focus on the prompt so the user can type immediately.
+        self.query_one(PromptInput).focus()
+        if self.harness is not None:
+            await self._start_local_session(self.harness, log)
+
+    async def _mount_transcript(self, log: VerticalScroll) -> None:
+        """The intro header (welcome, or the resumed/attached summary) and
+        the replay of whatever history the link reports."""
         intro = await self.session.mount_header(log)
-        if self.harness.session.history:
-            n = len(self.harness.session.history)
-            tokens = self.harness.session.total_tokens
+        history = self.history_messages
+        if self.harness is None:
+            name = self.link.info.session_name or self.link.info.session_id
+            self.stream.append_stream(
+                intro,
+                f"**Attached** to `{name}` on the daemon — {len(history)} messages, "
+                f"{self.link.info.usage.total_tokens} tokens.",
+            )
+        elif history:
+            n = len(history)
+            tokens = self.link.info.usage.total_tokens
             self.stream.append_stream(
                 intro,
                 f"**Resumed session** — {n} messages, {tokens} tokens restored.",
@@ -517,42 +611,119 @@ class HarnessApp(App):
         # A resumed session opens at the bottom (where you left off); a fresh one
         # starts top-aligned with the header pinned at the top and only anchors
         # once a turn's output overflows the viewport (see _anchor_on_overflow).
-        if self.harness.session.history:
+        if history:
             log.anchor()
             # Already anchored at the bottom — latch so a later flush won't re-anchor
             # and yank the user back down after they scroll up.
             self.stream._anchored_on_overflow = True
-        self.activity.render_tasks()  # reflect any checklist restored with the session
-        self.activity.render_jobs()  # process-scoped jobs survive session switches
-        self.queue.render()
-        self._announce_session_defaults()
+
+    async def _start_local_session(self, harness: Harness, log: VerticalScroll) -> None:
+        """The in-process session's own start-up: catalog, active-time clock,
+        MCP, lifecycle hooks, first-open trust. None of it exists for an
+        attached TUI — the daemon did all of this when it opened the session."""
         # Seed vision capabilities in the background so the text-only-model
         # warning can fire even before the user opens the model picker.
-        source = self.harness.model_source
+        source = harness.model_source
         if source is not None:
             self.run_worker(self.pickers.refresh_vision_caps(source.list_models), exclusive=False)
-        # Coalesce streaming text deltas: render buffered AssistantMessages on a
-        # shared interval instead of re-parsing the markdown on every token.
-        self.set_interval(_STREAM_FLUSH_INTERVAL, self.stream.flush_streams)
-        # Anchor the session timer at mount and tick the status bar while idle so
-        # the session duration advances even with no turn running.
-        self.status.session_start = time.monotonic()
         # Start the active-time clock on a fresh session (resume()/new_session
         # already do it for resumed/new ones).
-        self.harness.session.ensure_segment_started()
-        self.set_interval(_CLOCK_TICK_INTERVAL, self.status.refresh_status)
-        # Animate the working indicator while a turn runs (no-op when idle).
-        self.set_interval(_SPINNER_TICK_INTERVAL, self.status.tick_spinner)
-        # Land focus on the prompt so the user can type immediately.
-        self.query_one(PromptInput).focus()
-        await self._connect_mcp(log)
-        await self.harness.session_start("resume" if self.harness.session.history else "startup")
+        harness.session.ensure_segment_started()
+        await self._connect_mcp(harness, log)
+        await harness.session_start("resume" if harness.session.history else "startup")
         # First-open trust prompt: bootstrap only sets trust_prompt when the
         # project ships a gated surface AND no decision (env/store) already
         # resolved it. Kicked off as its own worker (not awaited inline) so
         # on_mount itself isn't held hostage to the user answering the panel.
-        if getattr(self.harness, "trust_prompt", None) is not None:
+        if getattr(harness, "trust_prompt", None) is not None:
             self.run_worker(prompt_project_trust(self), group="trust", exit_on_error=False)
+
+    async def _attach_remote(self, log: VerticalScroll) -> None:
+        """Attach-time reconciliation, in the 4a spec's order: ``GET session``
+        seeds the read model and the busy tracker so the status bar is right
+        before the first event; the persisted transcript is replayed; the feed
+        starts at the persisted boundary, so a running turn's ``turn.started``
+        and deltas (all above it) catch the transcript up through the normal
+        handlers; then ``GET asks`` mounts any panel the tail did not (an ask
+        can outlive its ``ask.pending`` in the ring — the route is the
+        authority, the tail is merely faster)."""
+        link = self.link
+        status = await link.load_session()
+        self.turns.on_status(status)
+        self.status.mode = link.info.mode
+        self.status.refresh_title()
+        snapshot = await link.history()
+        self._remote_history = snapshot.messages
+        await self._mount_transcript(log)
+        self._start_pump(link.attach(after_seq=snapshot.history_seq))
+        if status != "idle":
+            self.status.set_busy(True)
+            self.turns_idle.clear()
+        await self._reconcile_asks()
+
+    async def _reconcile_asks(self) -> None:
+        """Make the mounted panels match ``GET asks``: mount what is parked
+        and not shown (idempotent by id — the tail may have mounted it
+        already), and drop a panel whose ask is no longer parked (its
+        ``ask.resolved`` was lost in a gap)."""
+        pending = await self.link.pending_asks()
+        live = {str(raw.get("id")) for raw in pending}
+        for stale in [aid for aid in self._ask_panels if aid not in live]:
+            self._dismiss_ask(AskResolved(type="ask.resolved", id=stale, cancelled=True))
+        for raw in pending:
+            wire = parse_wire_event({"type": "ask.pending", **raw})
+            if isinstance(wire, AskPending):
+                await self._mount_ask(wire)
+
+    def _start_pump(self, feed: Feed) -> None:
+        self._feed = feed
+        self._pump_task = create_task(self._event_pump(feed))
+
+    def _on_link_state(self, state: str) -> None:
+        """The remote feed's connection state (see RemoteSubscription): shown
+        in the status bar, and a notice when the daemon is given up on."""
+        labels = {"connected": "daemon", "reconnecting": "daemon · reconnecting…"}
+        self.status.link_label = labels.get(state, "daemon · lost")
+        if state == "lost":
+            sid = self.link.info.session_id
+            self.append_log(
+                ErrorMessage(
+                    f"daemon unreachable — `marim --session {sid}` will take the "
+                    "session over locally once the daemon's pid is gone."
+                )
+            )
+
+    async def _on_stream_gap(self, wire: StreamGap) -> None:
+        """The feed fell behind the daemon's ring (a reconnect longer than the
+        ring, or a seq regression): the events in between are gone. Re-render
+        from the persisted transcript and re-attach at its boundary; whatever
+        the running turn streamed before the gap is not in history yet and is
+        not shown. The pump reads ``self._feed`` each iteration, so swapping it
+        here (inside a dispatch) is enough — ``link.attach`` closes the old
+        feed."""
+        if self.harness is not None:
+            logger.debug("stream.gap on the in-process feed (ignored)")
+            return
+        logger.info("stream gap (%s): resyncing from history", wire.resync)
+        try:
+            status = await self.link.load_session()
+            snapshot = await self.link.history()
+        except HostClosed as exc:
+            self.append_log(ErrorMessage(f"resync failed: {exc}"))
+            return
+        self._remote_history = snapshot.messages
+        self.turns.on_status(status)
+        self.status.set_busy(status != "idle")
+        await self.session.render_session(
+            "resynced from history; the running turn's earlier output is not shown."
+        )
+        self._feed = self.link.attach(after_seq=snapshot.history_seq)
+        try:
+            await self._reconcile_asks()
+        except HostClosed as exc:
+            # The panels stay as they are: pending_asks raises rather than
+            # reading as "no asks", so a failed read never dismisses them.
+            self.append_log(ErrorMessage(f"asks not resynced: {exc}"))
 
     def _bind_host(self) -> None:
         """Build the in-process SessionHost (loop-bound, so on_mount not
@@ -563,7 +734,8 @@ class HarnessApp(App):
         ActivityMonitor owns wake in-process (the host's own driver is the
         daemon's; two live drivers would race for the same job-finished digests
         — see SessionHost.__init__)."""
-        self.host = SessionHost(self.harness, self._bus, autonomous_wake=False)
+        harness = self.require_local("the in-process host")
+        self.host = SessionHost(harness, self._bus, autonomous_wake=False)
         # The wake's job-settle trigger must run synchronously inside the jobs
         # registry's on_change callback: jobs.wait() marks a completion
         # wake-consumed the instant it returns, so a wake delivered one bus hop
@@ -571,7 +743,7 @@ class HarnessApp(App):
         # has_finished_pending() False and never fires. Wrap the host's callback
         # (bound in SessionHost.__init__) so the wake check stays in the
         # callback; the pump still delivers jobs.changed for the panel repaint.
-        jobs = self.harness.deps.jobs
+        jobs = harness.deps.jobs
         host_jobs_changed = jobs.on_change
 
         def _jobs_changed() -> None:
@@ -581,20 +753,22 @@ class HarnessApp(App):
 
         jobs.on_change = _jobs_changed
 
-    async def _event_pump(self, sub: Subscription) -> None:
-        """Render from the bus: the sole path from harness events (bind_ui, now
-        exclusively wired to ``self.host``) to the widgets. One Subscription for
-        the app's whole lifetime — the same shape a phase-4 remote client would
-        get. Dies with the app; see on_unmount for the host worker's own
-        teardown (``host.stop()``), which this pump does NOT own.
+    async def _event_pump(self, feed: Feed) -> None:
+        """Render from the feed: the sole path from session events to the
+        widgets — the in-process bus subscription, or the daemon's WebSocket
+        behind the same ``next_event``/``close`` surface. One feed for the
+        app's whole lifetime, except a remote resync (``_on_stream_gap``),
+        which swaps ``self._feed`` under this loop. Dies with the app; see
+        on_unmount for the link's own teardown, which this pump does NOT own.
 
         Ordering is the bus's: every turn-end effect (duration stamp, error
         card, queue drain) is a handler on the turn's own events, so it lands
         after the rendering it follows by construction — there is no barrier
         to drain and nothing to race."""
+        self._feed = feed
         try:
             while True:
-                event = await sub.next_event()
+                event = await self._feed.next_event()
                 if event is None:
                     continue
                 wire = parse_wire_event({"type": event.type, **event.data})
@@ -610,7 +784,7 @@ class HarnessApp(App):
                     except Exception:  # noqa: BLE001 - one bad event must not blind the app
                         logger.exception("event pump: dispatch failed for %s", type(wire).__name__)
         finally:
-            sub.close()
+            self._feed.close()
 
     async def _dispatch_wire(self, wire: WireEvent) -> None:
         handler = _WIRE_HANDLERS.get(type(wire))
@@ -621,9 +795,10 @@ class HarnessApp(App):
         """One-line advisor/thinking status at session start, so a setting
         inherited from .env or restored with the session is visible without
         opening settings. An off/unset level stays silent — that's the default."""
-        if self.harness.advisor_model_id is not None:
-            self.append_log(NoticeMessage(f"Advisor: {self.harness.advisor_model_id} · /advisor"))
-        level = self.harness.thinking_level_id
+        advisor = self.link.info.advisor_model_id
+        if advisor is not None:
+            self.append_log(NoticeMessage(f"Advisor: {advisor} · /advisor"))
+        level = self.link.info.thinking_level_id
         if level is not None and level != "off":
             self.append_log(NoticeMessage(f"Thinking: {level} · /think"))
 
@@ -649,13 +824,13 @@ class HarnessApp(App):
         if event.widget is not prompt:
             prompt.focus()
 
-    async def _connect_mcp(self, log: VerticalScroll) -> None:
+    async def _connect_mcp(self, harness: Harness, log: VerticalScroll) -> None:
         """Open the configured MCP servers and note the outcome. Connection
         failures are surfaced as a notice, never fatal — the app runs fine with
         the servers that did come up (or none at all)."""
-        if not self.harness.mcp.mcp_servers:
+        if not harness.mcp.mcp_servers:
             return
-        status = await self.harness.connect()
+        status = await harness.connect()
         if status["connected"]:
             await log.mount(NoticeMessage(f"MCP connected: {', '.join(status['connected'])}"))
         for name, error in status["failed"]:
@@ -672,6 +847,14 @@ class HarnessApp(App):
             self._pump_task.cancel()
             with suppress(CancelledError):
                 await self._pump_task
+        if self.harness is None:
+            # Attached: close the feed and the HTTP client, print the summary
+            # from the read model, and nothing else — the daemon owns the
+            # persist, the lifecycle hooks and the session's jobs.
+            await self.link.close()
+            info = self.link.info
+            self._write_exit_summary(info.duration_seconds, info.usage, info.model_id)
+            return
         # host.stop(), not host.aclose(): stop() interrupts the running turn
         # and ends the queue worker (plain asyncio, not a Textual worker — left
         # running it warns at interpreter shutdown) and publishes nothing more;
@@ -689,10 +872,14 @@ class HarnessApp(App):
         session.finalize_active_time()
         session.persist(force=True)
         # Show a brief session summary in the terminal after exit.
-        total = session.duration_seconds
-        usage = session.usage
+        self._write_exit_summary(session.duration_seconds, session.usage, self.harness.model_id)
+        await self.jobs.cancel_all()
+        await self.harness.session_end("exit")
+        await self.harness.aclose()
+
+    def _write_exit_summary(self, total: float, usage: Any, model_id: str | None) -> None:
         total_tokens = usage.input_tokens + usage.output_tokens
-        cost, _ = resolve_cost(usage, self.harness.model_id)
+        cost, _ = resolve_cost(usage, model_id)
         parts = [f"Session: {format_duration(total)}"]
         parts.append(f"Tokens: {human_tokens(total_tokens)}")
         if cost is not None:
@@ -707,13 +894,48 @@ class HarnessApp(App):
                 self._driver.flush()
             except OSError:
                 pass
-        await self.jobs.cancel_all()
-        await self.harness.session_end("exit")
-        await self.harness.aclose()
+
+    # --- The seam: local vs attached ---
+
+    @property
+    def attached(self) -> bool:
+        """True when this TUI drives a daemon-owned session (no harness here)."""
+        return self.harness is None
+
+    def require_local(self, what: str) -> Harness:
+        """The harness, for a feature that needs the process that owns it.
+        Raises ``RemoteOnly`` on an attached TUI; the command dispatcher and
+        the key actions catch it and post the one notice."""
+        if self.harness is None:
+            raise RemoteOnly(what)
+        return self.harness
+
+    def note_remote_only(self, exc: RemoteOnly) -> None:
+        self.append_log(NoticeMessage(str(exc)))
+
+    @property
+    def history_messages(self) -> Sequence[Any]:
+        """What the replay reads: the live history in process, the last
+        fetched snapshot when attached."""
+        if self.harness is not None:
+            return self.harness.session.history
+        return self._remote_history
+
+    def session_manager(self) -> SessionManager | None:
+        """The workspace's session manager: the harness's own in process; when
+        attached, one over the same on-disk workspace (the picker lists and
+        deletes from disk either way — the daemon does not own the listing)."""
+        if self.harness is not None:
+            return self.harness.session.manager
+        if self._remote_manager is None:
+            self._remote_manager = SessionManager(self.link.info.workspace_root)
+        return self._remote_manager
 
     @property
     def jobs(self) -> JobRegistry:
-        return self.harness.deps.jobs
+        if self.harness is not None:
+            return self.harness.deps.jobs
+        return self._remote_jobs
 
     @property
     def turn_busy(self) -> bool:
@@ -734,10 +956,21 @@ class HarnessApp(App):
         task, so no call_from_thread marshalling is needed — Textual widget
         mutations from asyncio tasks are safe.
         """
-        self.status.mode = self.harness.deps.workspace.mode.value
+        self.status.mode = self.link.info.mode
 
-    def action_cycle_mode(self) -> None:
-        self.harness.cycle_mode()
+    async def action_cycle_mode(self) -> None:
+        await self.set_mode(Mode(self.link.info.mode).cycle())
+
+    async def set_mode(self, mode: Mode) -> None:
+        """Switch the approval mode through the link (the harness's own setter
+        in process; ``POST mode`` when attached, where the daemon may refuse
+        mid-turn — reported, not raised). The status bar follows either way:
+        the local setter is synchronous, the remote read model is updated by
+        the link on success."""
+        try:
+            await self.link.set_mode(mode.value)
+        except HostClosed as exc:
+            self.append_log(NoticeMessage(f"Mode not switched: {exc}"))
         self._refresh_mode_display()
 
     def action_toggle_outputs(self) -> None:
@@ -757,8 +990,8 @@ class HarnessApp(App):
         """Open the full plan overlay, or flash a hint when no plan exists yet."""
         from .plan_screen import PlanScreen
 
-        plan = self.harness.deps.plan
-        if plan is None:
+        plan = self.harness.deps.plan if self.harness is not None else None
+        if plan is None or self.harness is None:
             self.notify(
                 "No plan yet — the agent presents one in plan mode.", severity="information"
             )
@@ -785,13 +1018,13 @@ class HarnessApp(App):
         transcript shows for the turn (the user bubble included) arrives back
         through the pump on ``turn.started``.
 
-        ``async`` for its callers' sake only — the submit is synchronous and
-        the busy latch is set before this returns, so no concurrent submit
-        can slip past ``turn_busy`` in between."""
+        The busy latch is set before the submit is awaited (see
+        ``_submit_turn``), so no concurrent submit can slip past ``turn_busy``
+        while a remote round trip is in flight."""
         self.activity.note_user_turn()
-        self._submit_turn(text, attachments, "user")
+        await self._submit_turn(text, attachments, "user")
 
-    def start_system_turn(self, prompt: str) -> bool:
+    async def start_system_turn(self, prompt: str) -> bool:
         """Submit a turn for a system-initiated prompt — a slash command like
         /remember or /skill that injects its own prompt. Unlike start_turn it
         leaves the autonomous-wake chain untouched, and the transcript mounts
@@ -805,24 +1038,34 @@ class HarnessApp(App):
                 NoticeMessage("A turn is already running — wait for it to finish or press Esc.")
             )
             return False
-        return self._submit_turn(prompt, None, "system")
+        return await self._submit_turn(prompt, None, "system")
 
     def mount_wake_turn(self) -> None:
         """The wake effect the ActivityMonitor's driver invokes: submit the
-        digest-only turn. Synchronous (we may be in a sync on_change callback);
-        the "resumed" notice is posted when its ``turn.started`` arrives."""
-        self._submit_turn("", None, "autonomous")
+        digest-only turn. Synchronous (we may be in a sync on_change callback):
+        the pending latch is set here, before the submit task gets its first
+        slice, so the app is busy from this call on; the "resumed" notice is
+        posted when its ``turn.started`` arrives."""
+        self.turns.note_pending()
+        self.turns_idle.clear()
+        create_task(self._submit_turn("", None, "autonomous"))
 
-    def _submit_turn(
+    async def _submit_turn(
         self, text: str, attachments: list[tuple[bytes, str]] | None, trigger: str
     ) -> bool:
-        """``host.submit`` plus the busy latch. A full host queue re-stages a
-        user prompt at the front of the TUI's own queue and pauses it, so the
-        text is kept and the user decides when to retry; a system/autonomous
-        prompt is dropped with a notice (there is nothing to keep). A closed
-        host (exit in progress) drops silently."""
+        """``link.submit`` plus the busy latch. The pending latch goes up
+        before the await: in process the submit never yields, so it is set and
+        replaced by the turn id in one step; over HTTP a second Enter during
+        the round trip must queue, not double-submit. A full host queue
+        re-stages a user prompt at the front of the TUI's own queue and pauses
+        it, so the text is kept and the user decides when to retry; a
+        system/autonomous prompt is dropped with a notice (there is nothing to
+        keep). A closed host (exit in progress) drops silently; an unreachable
+        daemon says so."""
+        self.turns.note_pending()
+        self.turns_idle.clear()
         try:
-            turn_id = self.host.submit(text, attachments, trigger=trigger)
+            turn_id = await self.link.submit(text, attachments, trigger=trigger)
         except TurnQueueFull:
             if trigger == "user":
                 self.queue.prepend(text, attachments)
@@ -830,20 +1073,32 @@ class HarnessApp(App):
             self.append_log(
                 NoticeMessage("The session's turn queue is full — press ctrl+r to retry.")
             )
-            return False
-        except HostClosed:
+            return self._submit_refused()
+        except HostClosed as exc:
+            if str(exc):
+                self.append_log(ErrorMessage(f"turn not submitted: {exc}"))
             logger.warning("turn submitted during teardown was dropped: %r", text[:60])
-            return False
+            return self._submit_refused()
+        except Exception as exc:  # noqa: BLE001 - a submit must never leave the latch stuck
+            # SessionClaimed (someone took the session between attach and
+            # now) or anything else the link raises: report, release.
+            self.append_log(ErrorMessage(f"turn not submitted: {exc}"))
+            return self._submit_refused()
         self.turns.note_submitted(turn_id)
-        self.turns_idle.clear()
         return True
 
-    def action_cancel_turn(self) -> None:
+    def _submit_refused(self) -> bool:
+        self.turns.clear_pending()
+        if not self.turns.busy:
+            self.turns_idle.set()
+        return False
+
+    async def action_cancel_turn(self) -> None:
         # Esc between submit and turn.started finds no task to cancel; the
         # turn starts anyway and a second Esc lands. Not worth a "pending
         # cancel" latch — the window is one worker hop.
         if self.turns.busy:
-            self.host.interrupt()
+            await self.link.interrupt()
 
     async def _on_turn_started(self, wire: TurnStarted) -> None:
         self.turns.on_started(wire.turn_id)
@@ -932,6 +1187,13 @@ class HarnessApp(App):
         # the queue and the wake chain.
         with suppress(NoMatches):
             self.query_one(CompactNotice).compacting = False
+        # Attached: the fields only the daemon knows (usage, threshold, name,
+        # the persisted tail) move at turn end — one re-read per turn, so the
+        # context gauge is "as of the last turn end", which is when it changes.
+        if self.harness is None:
+            with suppress(HostClosed):
+                await self.link.refresh()
+            self.status.refresh_status()
         # Set before the hand-off: a drained queue item re-clears it on submit,
         # and a waiter woken by this edge is woken by a real one either way.
         self.turns_idle.set()
@@ -1036,6 +1298,7 @@ class HarnessApp(App):
         still streaming into and wipe history it is appending to."""
         if await self._refuse_if_session_busy("clear"):
             return
+        self.require_local("/clear")
         await self.session.reset_conversation()
 
     async def start_new_session(self, name: str | None = None) -> None:
@@ -1044,6 +1307,7 @@ class HarnessApp(App):
         would race its history persist."""
         if await self._refuse_if_session_busy("start a new session"):
             return
+        self.require_local("/new")
         await self.session.start_new_session(name)
 
     async def switch_to_session_id(self, session_id: str) -> None:
@@ -1060,6 +1324,15 @@ class HarnessApp(App):
         from ...session.claim import SessionClaimed
         from ...session.store import SessionLoadError
 
+        if self.harness is None or self._owned_by_daemon(session_id):
+            # Neither direction can be switched in place yet: an attached TUI
+            # has no harness to swap the session on, and a local one cannot
+            # attach mid-run (4b). Say what works instead.
+            await self.post_system(
+                "attached sessions can't be switched in place yet — run "
+                f"`marim --session {session_id}`"
+            )
+            return
         try:
             await self.session.switch_to_session_id(session_id)
         except SessionClaimed as exc:
@@ -1067,6 +1340,13 @@ class HarnessApp(App):
             await self.post_system(f"Can't switch sessions: {exc.session_id} is owned by {who}.")
         except SessionLoadError as exc:
             await self.post_system(f"Can't switch sessions: {exc}")
+
+    def _owned_by_daemon(self, session_id: str) -> bool:
+        manager = self.session_manager()
+        if manager is None:
+            return False
+        holder = read_holder(manager.session_path(session_id))
+        return holder is not None and holder.kind == "daemon"
 
     async def _refuse_if_session_busy(self, what: str) -> bool:
         """True (with a notice posted) when ``what`` must not run right now.
@@ -1088,8 +1368,9 @@ class HarnessApp(App):
         if self.turn_busy or self.status.busy:
             await self.post_system("Can't rewind while a turn is running. Press Esc first.")
             return
+        harness = self.require_local("/rewind")
         try:
-            result = self.harness.checkpoints.rewind(index)
+            result = harness.checkpoints.rewind(index)
         except KeyError:
             await self.post_system(f"No checkpoint #{index}. Try `/rewind` to list them.")
             return
@@ -1112,7 +1393,7 @@ class HarnessApp(App):
         if self.turn_busy or self.status.busy:
             await self.post_system("Can't undo a rewind while a turn is running. Press Esc first.")
             return
-        if self.harness.checkpoints.undo_rewind():
+        if self.require_local("/rewind undo").checkpoints.undo_rewind():
             await self.session.render_session(
                 "undid the rewind — restored the pre-rewind conversation and files"
             )
@@ -1127,7 +1408,7 @@ class HarnessApp(App):
 
         self.push_screen(
             SettingsScreen(
-                harness=self.harness,
+                harness=self.require_local("the settings screen"),
                 current_theme=self.theme,
                 env_cfg=load_config(),
             )
@@ -1144,10 +1425,20 @@ class HarnessApp(App):
         path, which is not a worker — push_screen_wait would raise NoActiveWorker
         there.
         """
-        infos = self.harness.session.sessions()
-        store = self.harness.session.store
-        active = store.session_id if store is not None else None
-        self.push_screen(SessionPickerModal(infos, active), self._on_session_chosen)
+        manager = self.session_manager()
+        infos = manager.list() if manager is not None else []
+        # A holder tag per row (`· daemon`, `· tui (pid N)`): one small sidecar
+        # read each, no lock taken.
+        holders = {}
+        if manager is not None:
+            for info in infos:
+                holder = read_holder(manager.session_path(info.id))
+                if holder is not None:
+                    holders[info.id] = holder
+        active = self.link.info.session_id
+        self.push_screen(
+            SessionPickerModal(infos, active, holders=holders), self._on_session_chosen
+        )
 
     async def _on_session_chosen(self, chosen: str | None) -> None:
         """Apply a session selected in the picker. Invoked by push_screen when the
@@ -1155,7 +1446,10 @@ class HarnessApp(App):
         switch_to_session_id above, so the mid-turn refusal guard applies here too."""
         if not chosen:
             return
-        await self.switch_to_session_id(chosen)
+        try:
+            await self.switch_to_session_id(chosen)
+        except RemoteOnly as exc:
+            self.note_remote_only(exc)
 
     def _find_session_picker_modal(self) -> SessionPickerModal | None:
         """Find the session picker on the screen stack if it is still mounted.
@@ -1180,7 +1474,7 @@ class HarnessApp(App):
         having already been dismissed."""
         from ...session.claim import SessionClaimed
 
-        manager = self.harness.session.manager
+        manager = self.session_manager()
         if manager is None:
             return
         try:
@@ -1228,6 +1522,8 @@ class HarnessApp(App):
         return None
 
     async def _mount_ask(self, wire: AskPending) -> None:
+        if wire.id in self._ask_panels:
+            return  # already shown (the tail and GET asks both reported it)
         panel = self._panel_for_ask(wire)
         if panel is None:
             return
@@ -1244,7 +1540,24 @@ class HarnessApp(App):
             # The ask was resolved elsewhere before the user answered (an
             # interrupt's cancel, or another client). Nothing to send.
             return
-        self.host.answer_ask(ask_id, _ask_payload(panel, result))
+        try:
+            await self.link.answer_ask(ask_id, _ask_payload(panel, result))
+        except HostClosed as exc:
+            await self._answer_undelivered(ask_id, exc)
+
+    async def _answer_undelivered(self, ask_id: str, exc: HostClosed) -> None:
+        """A verdict the host did not take (attached: a transport failure or
+        a refusal other than "already answered"; see RemoteSessionHost.answer_ask).
+        The ask is still parked on the daemon, so: say so, drop the panel
+        whose verdict is spent, and re-read ``GET asks`` so the ask comes back
+        as a fresh panel the user can answer again. When even that read fails
+        the resync after the link recovers reconciles the panels."""
+        self.append_log(ErrorMessage(f"answer not delivered: {exc}"))
+        self._dismiss_ask(AskResolved(type="ask.resolved", id=ask_id, cancelled=True))
+        try:
+            await self._reconcile_asks()
+        except HostClosed as again:
+            logger.info("asks not re-read after an undelivered answer: %s", again)
 
     def _dismiss_ask(self, wire: AskResolved) -> None:
         entry = self._ask_panels.pop(wire.id, None)
@@ -1344,8 +1657,20 @@ class HarnessApp(App):
         if reason is not None:
             self.append_log(NoticeMessage(reason))
             return
+        if event.attachments and self.harness is None:
+            # The daemon's steer route is text-only (a 4a non-goal).
+            self.append_log(
+                NoticeMessage("Steering with an image needs the session's own process.")
+            )
+            return
         # The "↪ steering" notice renders off steer.accepted (see the handler).
-        self.host.steer(text, event.attachments)
+        try:
+            await self.link.steer(text, event.attachments)
+        except HostClosed as exc:
+            # Attached: the daemon refused it (the turn ended under the
+            # keypress) or did not answer. The text is in the box's history;
+            # say why it did not go rather than lose it silently.
+            self.append_log(ErrorMessage(f"steer not delivered: {exc}"))
 
     async def on_prompt_input_submitted(self, event: PromptInput.Submitted) -> None:
         self._hide_autocomplete()
@@ -1365,7 +1690,10 @@ class HarnessApp(App):
             await dispatch(self, text)
             return
         if (command := parse_bang(text)) is not None:
-            await self._handle_bang(command)
+            try:
+                await self._handle_bang(command)
+            except RemoteOnly as exc:
+                self.note_remote_only(exc)
             return
         reason = self.pickers.image_block_reason(attachments)
         if reason is not None:
@@ -1404,6 +1732,7 @@ class HarnessApp(App):
                 NoticeMessage("Can't run a shell command while a turn is running. Press Esc first.")
             )
             return
+        harness = self.require_local("`!` shell passthrough")
         # group="shell-passthrough": Textual's WorkerManager cancels every worker
         # sharing a group when a new *exclusive* worker joins that group. The turn
         # worker (start_turn) runs exclusive=True in the default group, so leaving
@@ -1412,7 +1741,7 @@ class HarnessApp(App):
         # immune to that sweep; a turn starting mid-passthrough is fine — the
         # passthrough's output still lands in the transcript and queues normally.
         self.run_worker(
-            self._run_shell_passthrough(command),
+            self._run_shell_passthrough(harness, command),
             group="shell-passthrough",
             exclusive=False,
             # Belt for anything the except clauses in _run_shell_passthrough miss:
@@ -1423,7 +1752,7 @@ class HarnessApp(App):
             exit_on_error=False,
         )
 
-    async def _run_shell_passthrough(self, command: str) -> None:
+    async def _run_shell_passthrough(self, harness: Harness, command: str) -> None:
         """Execute a `!` command, render its output into the transcript, and
         queue it for the next turn's context. Leading-sudo commands collect a
         password first; it only ever transits the subprocess stdin pipe."""
@@ -1434,7 +1763,7 @@ class HarnessApp(App):
                 self.append_log(NoticeMessage("sudo command cancelled"))
                 return
         try:
-            output = await run_passthrough(self.harness.deps.workspace.root, command, password)
+            output = await run_passthrough(harness.deps.workspace.root, command, password)
         except OSError as exc:
             self.append_log(ErrorMessage(f"! {command} failed to start: {exc}"))
             return
@@ -1443,7 +1772,7 @@ class HarnessApp(App):
             # gets the output on the next turn even though the transcript never
             # showed it — losing the render is recoverable (the user can scroll
             # up or re-run), losing the model-context entry silently is worse.
-            self.harness.add_shell_result(command, output)
+            harness.add_shell_result(command, output)
             await self.post_system(format_transcript_block(command, output))
         except Exception as exc:  # keep the session alive on any render failure
             self.append_log(ErrorMessage(f"! {command}: {type(exc).__name__}: {exc}"))
