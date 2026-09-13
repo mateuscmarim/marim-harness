@@ -8,6 +8,21 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **CLI providers' tool calls missing from persisted history.** Under
+  `claude-cli` and `codex-cli` the CLI's tool calls streamed live (as
+  `tool.call` / `tool.result` since 0.7.1) but were never written to the
+  session, so a resumed TUI transcript, `GET .../history` and every client
+  rebuilding from history (marim-mobile) showed the prose with holes where
+  the tool cards had been. The streamed response now records the activity in
+  an ordered ledger and the turn controller expands it at persist time into
+  real tool-call / tool-return messages — the same shape marim's own tools
+  leave, so replay, compaction and a mid-session provider switch all see
+  them. Results are capped at 16k characters in the persisted copy; a call
+  the CLI never answered (interrupted mid-tool) persists with an
+  `interrupted` return so the history stays resumable.
+
 ### Changed
 
 - **`claude-cli` model catalog is live.** The picker (and `GET /v1/models`,

@@ -19,8 +19,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
+from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent, PartStartEvent
 from pydantic_ai.models import Model
 
 if TYPE_CHECKING:
@@ -96,6 +97,116 @@ class ExternalCliModel(Model):
         thread). Called by the harness when the model is switched away from
         and at teardown. The base does nothing."""
         return None
+
+
+# The ``ModelResponse.provider_details`` key under which a CLI provider's
+# streamed response carries its tool-activity ledger (see ``ActivityLedger``).
+# The controller expands it into real ToolCallPart/ToolReturnPart messages at
+# persist time (``runtime.cli_activity.expand_cli_activity``) and strips the
+# key, so a persisted history never carries it.
+CLI_ACTIVITY_KEY = "cli_activity"
+
+# A tool result longer than this is cut at persist time. The CLI's own
+# context already saw the full output; marim's copy is for transcripts and
+# resumes, and one unbounded `cat` must not balloon the session file.
+MAX_RECORDED_RESULT_CHARS = 16_000
+
+
+class ActivityLedger:
+    """The ordered record of a CLI turn's tool activity, interleaved with the
+    response's own parts.
+
+    The CLI runs its tools itself, so its calls/results must NOT become
+    ``ToolCallPart``s of the streamed ``ModelResponse`` — the agent graph would
+    try to execute them. They are pushed out-of-band for the live UI
+    (``TextFolder.emit_tool``) and, until now, forgotten: a resumed transcript
+    and ``GET .../history`` showed the prose with holes where the tool cards
+    had been. The ledger closes that gap without touching the graph: it
+    records every tool call/result in stream order, plus a ``part`` marker
+    for each part the response starts (its index in ``get_parts()``, which
+    keeps creation order), and attaches itself to the streamed response's
+    ``provider_details`` under ``CLI_ACTIVITY_KEY`` — on the FIRST tool entry,
+    so an interrupted turn still carries what ran before the interrupt and a
+    tool-free turn stays byte-identical to before. After the run, the
+    controller expands the ledger into real tool-call/tool-return messages
+    (see ``runtime.cli_activity``) so every consumer of persisted history
+    (TUI replay, ``GET history``, compaction, a mid-session provider switch)
+    sees the CLI's tools exactly like marim's own.
+
+    Entries are plain JSON-able dicts: ``{"kind": "part", "index": n}``,
+    ``{"kind": "call", "id", "name", "args"}`` and ``{"kind": "result", "id",
+    "content", "outcome"}``."""
+
+    def __init__(self, attach: Callable[[list[dict[str, Any]]], None]) -> None:
+        self.entries: list[dict[str, Any]] = []
+        self._attach = attach
+        self._attached = False
+
+    def note_event(self, event: object) -> None:
+        """Record a stream event; only ``PartStartEvent`` matters (the response
+        grew a part, remember where it sits relative to the tool activity)."""
+        if isinstance(event, PartStartEvent):
+            self.entries.append({"kind": "part", "index": event.index})
+
+    def recording(
+        self, on_activity: Callable[[list], Awaitable[None]] | None
+    ) -> Callable[[list], Awaitable[None]] | None:
+        """``on_activity`` wrapped to record every batch it forwards. ``None``
+        stays ``None``: fold mode (headless) has no side-channel and needs no
+        ledger — its ``▸`` lines ARE the persisted record — and TextFolder
+        keys its mode on the callback's presence."""
+        if on_activity is None:
+            return None
+
+        async def forward(events: list) -> None:
+            self.note_activity(events)
+            await on_activity(events)
+
+        return forward
+
+    def note_activity(self, events: list) -> None:
+        """Record the out-of-band tool events a provider built for the UI
+        side-channel (the same ``FunctionToolCallEvent`` /
+        ``FunctionToolResultEvent`` shapes ``on_activity`` receives)."""
+        for event in events:
+            if isinstance(event, FunctionToolCallEvent):
+                part = event.part
+                self._record(
+                    {
+                        "kind": "call",
+                        "id": part.tool_call_id,
+                        "name": part.tool_name,
+                        "args": part.args,
+                    }
+                )
+            elif isinstance(event, FunctionToolResultEvent):
+                part = event.part
+                content = getattr(part, "content", "")
+                self._record(
+                    {
+                        "kind": "result",
+                        "id": part.tool_call_id,
+                        "content": _cap_result(
+                            content if isinstance(content, str) else str(content)
+                        ),
+                        "outcome": getattr(part, "outcome", "success"),
+                    }
+                )
+
+    def _record(self, entry: dict[str, Any]) -> None:
+        self.entries.append(entry)
+        if not self._attached:
+            # Attach the LIST (not a copy) so entries recorded after this
+            # point are visible to whoever reads provider_details later.
+            self._attached = True
+            self._attach(self.entries)
+
+
+def _cap_result(content: str) -> str:
+    if len(content) <= MAX_RECORDED_RESULT_CHARS:
+        return content
+    dropped = len(content) - MAX_RECORDED_RESULT_CHARS
+    return content[:MAX_RECORDED_RESULT_CHARS] + f"\n…[truncated {dropped} chars]"
 
 
 class TextFolder:

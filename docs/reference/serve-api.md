@@ -829,7 +829,14 @@ surfaced):
 Under the `claude-cli` and `codex-cli` providers the CLI runs its own tools,
 so those calls never enter the model loop's stream; the daemon publishes them
 as the same `tool.call` / `tool.result` events (with `status`), so a client
-renders a CLI provider's tool calls with no special case.
+renders a CLI provider's tool calls with no special case. They are persisted
+the same way: once the turn settles, `GET .../history` carries them as
+ordinary `tool-call` / `tool-return` parts (the prose is split around them,
+exactly as with marim's own tools), so a transcript rebuilt from history
+matches what streamed. A tool result longer than 16k characters is cut with
+a `…[truncated N chars]` marker in the persisted copy; a call the CLI never
+answered (the turn was interrupted mid-tool) is persisted with an
+`interrupted` return so the history stays resumable.
 
 Turn lifecycle:
 

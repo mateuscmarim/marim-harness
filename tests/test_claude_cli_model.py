@@ -1059,3 +1059,54 @@ async def test_old_claude_version_warns_once(tmp_path, monkeypatch, caplog):
     finally:
         await model.aclose()
     assert caplog.text.count("1.0.99") == 1
+
+
+@pytest.mark.anyio
+async def test_request_stream_records_tool_activity_ledger_for_persistence(tmp_path, monkeypatch):
+    """Cards mode: the tool calls pushed out-of-band are ALSO recorded on the
+    response's provider_details (interleaved with the part indexes) so the
+    controller can persist them as real tool messages; fold mode (no UI)
+    records nothing — its ▸ lines are the record."""
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+
+    scenario = {
+        "turns": [
+            [
+                {"text": "Looking."},
+                {"tool_use": {"id": "t1", "name": "Read", "input": {"file_path": "/a.py"}}},
+                {"tool_result": {"id": "t1", "content": "print(1)"}},
+                {"text": "Done."},
+            ]
+        ]
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+
+    async def on_activity(events):
+        pass
+
+    model.on_activity = on_activity
+    try:
+        async with model.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            resp = stream.get()
+    finally:
+        await model.aclose()
+    assert [p.content for p in resp.parts] == ["Looking.", "Done."]
+    assert resp.provider_details is not None
+    assert resp.provider_details[CLI_ACTIVITY_KEY] == [
+        {"kind": "part", "index": 0},
+        {"kind": "call", "id": "t1", "name": "read_file", "args": {"path": "/a.py"}},
+        {"kind": "result", "id": "t1", "content": "print(1)", "outcome": "success"},
+        {"kind": "part", "index": 1},
+    ]
+
+    fold = _model(tmp_path, monkeypatch, scenario)
+    try:
+        async with fold.request_stream(_user("hi"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            folded = stream.get()
+    finally:
+        await fold.aclose()
+    assert folded.provider_details is None and "▸" in folded.parts[0].content

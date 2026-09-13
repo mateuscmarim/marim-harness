@@ -58,7 +58,13 @@ from ..claude.process import (
 from ..claude.protocol import CLOSED
 from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
-from .external_cli import CliModelError, ExternalCliModel, TextFolder
+from .external_cli import (
+    CLI_ACTIVITY_KEY,
+    ActivityLedger,
+    CliModelError,
+    ExternalCliModel,
+    TextFolder,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -1021,9 +1027,10 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # (a UI is bound); headless keeps the cheap filter-only path in
         # consume_cli_stream (Claude-side child traffic is simply dropped there).
         objs = self._demuxed_objs() if self._on_subagent is not None else self._objs
+        ledger = ActivityLedger(self._attach_activity)
         folder = TextFolder(
             self._parts_manager,
-            self._on_activity,
+            ledger.recording(self._on_activity),
             activity_events=cli_activity_events,
             fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
@@ -1042,8 +1049,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                     done = chunk
                     continue
                 async for ev in self._events_for(chunk, folder, thinking):
+                    ledger.note_event(ev)
                     yield ev
         self._finalize_done(done)
+
+    def _attach_activity(self, entries: list[dict]) -> None:
+        """The ledger's first tool entry: expose it on the response (merged
+        into any provider_details already set) so it survives into
+        ``get()`` — including an interrupted stream's partial ``get()``."""
+        self.provider_details = {**(self.provider_details or {}), CLI_ACTIVITY_KEY: entries}
 
     @property
     def model_name(self) -> str:

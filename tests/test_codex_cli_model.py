@@ -918,3 +918,66 @@ async def test_clone_of_a_shared_parent_still_probes_availability(tmp_path, monk
             await clone.request(_msgs("title"), None, PARAMS)
     finally:
         await close_shared_server()
+
+
+async def test_stream_records_tool_activity_ledger_for_persistence(tmp_path):
+    """Same contract as claude-cli: cards mode records the calls/results on
+    provider_details (with part indexes) for the controller's persist-time
+    expansion; fold mode records nothing."""
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+
+    turn = [
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "Look: "}},
+        {
+            "notify": "item/started",
+            "params": {
+                "item": {"id": "c1", "type": "commandExecution", "command": "pwd", "cwd": "/w"}
+            },
+        },
+        {
+            "notify": "item/completed",
+            "params": {
+                "item": {
+                    "id": "c1",
+                    "type": "commandExecution",
+                    "command": "pwd",
+                    "cwd": "/w",
+                    "status": "failed",
+                    "exitCode": 1,
+                    "aggregatedOutput": "nope",
+                }
+            },
+        },
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m2", "delta": "done"}},
+    ]
+    m = _model(tmp_path, {"turns": [turn, turn]})
+
+    async def on_activity(events):
+        pass
+
+    m.on_activity = on_activity
+    try:
+        async with m.request_stream(_msgs(), None, PARAMS) as stream:
+            async for _ in stream:
+                pass
+            resp = stream.get()
+        m.on_activity = None
+        async with m.request_stream(_msgs("more"), None, PARAMS) as stream:
+            async for _ in stream:
+                pass
+            folded = stream.get()
+    finally:
+        await m.aclose()
+    assert resp.provider_details is not None
+    ledger = resp.provider_details[CLI_ACTIVITY_KEY]
+    assert ledger[0] == {"kind": "part", "index": 0}
+    assert ledger[1] == {
+        "kind": "call",
+        "id": "c1",
+        "name": "bash",
+        "args": {"command": "pwd", "cwd": "/w"},
+    }
+    assert ledger[2]["kind"] == "result" and ledger[2]["id"] == "c1"
+    assert ledger[2]["content"] == "nope\n[exit 1]" and ledger[2]["outcome"] == "failed"
+    assert ledger[3] == {"kind": "part", "index": 1}
+    assert folded.provider_details is None
