@@ -14,7 +14,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Footer, Header
 
 from ...ask_user import Choice, Question
-from ...jobs import JobRegistry
+from ...jobs import JobsView
 from ...runtime.harness import Harness
 from ...runtime.permissions import Mode
 from ...server.attach import RemoteTarget
@@ -76,6 +76,7 @@ from .interactions import (
 from .link import Feed, LocalSessionLink, RemoteOnly, SessionLink
 from .pickers import ModelPickers
 from .queue_control import QueueController
+from .remote_jobs import JobMirror
 from .session_picker import SessionPickerModal
 from .session_view import SessionView
 from .settings import SettingsScreen
@@ -228,6 +229,14 @@ async def _handle_tasks_changed(app: "HarnessApp", _wire: TasksChanged) -> None:
 
 
 async def _handle_jobs_changed(app: "HarnessApp", _wire: JobsChanged) -> None:
+    if app.attached:
+        # The event carries no rows; GET jobs is the authority. A worker
+        # (exclusive: a burst restarts it and the last read wins) so the pump
+        # is never held on a round trip.
+        app.run_worker(
+            app.refresh_remote_jobs(), group="jobs-refresh", exclusive=True, exit_on_error=False
+        )
+        return
     app.activity.on_jobs_changed()
 
 
@@ -437,10 +446,10 @@ class HarnessApp(App):
         # which is why the pump reads the attribute rather than a local.
         self._feed: Feed | None = None
         # Remote only: the replay source (the last transcript snapshot fetched
-        # from the daemon) and the empty, process-scoped jobs registry the
-        # panels render from. See ``history_messages`` / ``jobs``.
+        # from the daemon) and the mirror of the daemon's jobs the panels and
+        # the replay settle read from. See ``history_messages`` / ``jobs``.
         self._remote_history: list[Any] = []
-        self._remote_jobs = JobRegistry()
+        self._remote_jobs = JobMirror()
         self._remote_manager: SessionManager | None = None
         self.status = StatusBar()
         self.stream = StreamRenderer(self)
@@ -652,6 +661,7 @@ class HarnessApp(App):
         self.turns.on_status(status)
         self.status.mode = link.info.mode
         self.status.refresh_title()
+        await self._load_remote_jobs()
         snapshot = await link.history()
         self._remote_history = snapshot.messages
         await self._mount_transcript(log)
@@ -714,6 +724,7 @@ class HarnessApp(App):
         self._remote_history = snapshot.messages
         self.turns.on_status(status)
         self.status.set_busy(status != "idle")
+        await self._load_remote_jobs()
         await self.session.render_session(
             "resynced from history; the running turn's earlier output is not shown."
         )
@@ -873,7 +884,7 @@ class HarnessApp(App):
         session.persist(force=True)
         # Show a brief session summary in the terminal after exit.
         self._write_exit_summary(session.duration_seconds, session.usage, self.harness.model_id)
-        await self.jobs.cancel_all()
+        await self.harness.deps.jobs.cancel_all()
         await self.harness.session_end("exit")
         await self.harness.aclose()
 
@@ -932,10 +943,49 @@ class HarnessApp(App):
         return self._remote_manager
 
     @property
-    def jobs(self) -> JobRegistry:
+    def jobs(self) -> JobsView:
+        """The session's jobs as the panels and the replay read them: the
+        live registry in process, the daemon's mirrored rows attached."""
         if self.harness is not None:
             return self.harness.deps.jobs
         return self._remote_jobs
+
+    @property
+    def jobs_known(self) -> bool:
+        """True when ``jobs`` reflects the session's real registry — always
+        in process; attached, once a ``GET jobs`` read has succeeded. Until
+        then the replay cannot tell a spawn the daemon is driving from one
+        that died with it (see ``SessionView._unknown_running``)."""
+        return self.harness is not None or self._remote_jobs.synced
+
+    async def _load_remote_jobs(self) -> None:
+        """The attach/resync jobs read, before the transcript is replayed:
+        the replay settles sub-agent cards against these rows. A failed read
+        is reported and leaves the mirror as it was (unsynced on a first
+        attach), so the replay degrades to the 4a behaviour rather than
+        flagging every running sidecar interrupted."""
+        try:
+            self._remote_jobs.apply(await self.link.jobs())
+        except HostClosed as exc:
+            self.append_log(ErrorMessage(f"jobs not readable: {exc}"))
+
+    async def refresh_remote_jobs(self) -> None:
+        """Re-read the daemon's jobs after a ``jobs.changed``. A job that
+        settled while its detached card is still waiting gets its full
+        result from ``GET jobs/{id}`` before the repaint — the list carries
+        only tails — so the card reads exactly as it does in process. Then
+        the same repaint the local registry hook runs. Runs as an exclusive
+        worker: a restart mid-read drops this pass before ``apply``, so the
+        mirror is never half-applied."""
+        mirror = self._remote_jobs
+        try:
+            mirror.apply(await self.link.jobs())
+            for job_id in mirror.settled_needing_result(self.stream.detached_job_ids()):
+                mirror.set_result(job_id, await self.link.job_output(job_id))
+        except HostClosed as exc:
+            self.append_log(ErrorMessage(f"jobs not refreshed: {exc}"))
+            return
+        self.activity.on_jobs_changed()
 
     @property
     def turn_busy(self) -> bool:

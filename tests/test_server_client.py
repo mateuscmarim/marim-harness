@@ -175,6 +175,9 @@ async def test_remote_host_end_to_end_against_a_real_daemon(server):
 
         assert await host.interrupt() is False  # idle: nothing to interrupt
         assert await host.pending_asks() == []
+        assert await host.jobs() == []  # the daemon's registry, read over the wire
+        assert await host.job_output("job-1") == "No job 'job-1'."
+        assert await host.cancel_job("job-1") == "No job 'job-1'."
         assert await host.answer_ask("nope", {"approve": True}) is False
         await host.set_mode("ask")
         assert host.info.mode == "ask"
@@ -397,6 +400,76 @@ async def test_history_paginates_a_long_transcript(monkeypatch):
     host = _mock_host(handler)
     snapshot = await host.history()
     assert len(snapshot.messages) == 3
+
+
+async def test_jobs_read_and_actions_status_mapping():
+    """Phase 4b: the jobs read maps the list DTO back to ``Job`` rows (tail as
+    the result), the actions ride the registry's own wording back, an unknown
+    id reads as the registry's "No job" rather than an error, and any other
+    failure is raised so the app can say the action did not go."""
+    rows = [
+        {
+            "id": "job-1",
+            "kind": "agent",
+            "label": "explore: x",
+            "status": "running",
+            "stream_id": "sg-1",
+            "started_at": "2026-09-13T00:00:00+00:00",
+            "finished_at": None,
+            "result_tail": None,
+        },
+        {"id": "job-2", "kind": "bash", "label": "ls", "status": "done", "result_tail": "ok"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/jobs"):
+            return httpx.Response(200, json={"jobs": rows})
+        if path.endswith("/jobs/job-2"):
+            return httpx.Response(200, json={"id": "job-2", "result": "the full output"})
+        if path.endswith("/jobs/job-9"):
+            return _error(404, "job_not_found", "unknown job")
+        if path.endswith("/jobs/job-1/cancel"):
+            return httpx.Response(200, json={"ok": True, "message": "cancelled job-1"})
+        if path.endswith("/jobs/job-2/cancel"):
+            return _error(409, "already_settled", "job job-2 already done")
+        if path.endswith("/jobs/job-9/cancel"):
+            return _error(404, "job_not_found", "unknown job")
+        if path.endswith("/subagents/sg-1/resume"):
+            return httpx.Response(201, json={"job_id": "job-3"})
+        if path.endswith("/subagents/sg-2/resume"):
+            return _error(409, "resume_refused", "Spawn already done — nothing to resume.")
+        return _error(500, "boom", "it broke")
+
+    host = _mock_host(handler)
+    jobs = await host.jobs()
+    assert [(j.id, j.kind, j.status, j.stream_id, j.result) for j in jobs] == [
+        ("job-1", "agent", "running", "sg-1", None),
+        ("job-2", "bash", "done", None, "ok"),
+    ]
+    assert jobs[0].started_at == "2026-09-13T00:00:00+00:00"
+    assert await host.job_output("job-2") == "the full output"
+    assert await host.job_output("job-9") == "No job 'job-9'."
+    assert await host.cancel_job("job-1") == "cancelled job-1"
+    assert await host.cancel_job("job-2") == "job job-2 already done"
+    assert await host.cancel_job("job-9") == "No job 'job-9'."
+    assert await host.resume_spawn("sg-1") == ("job-3", "")
+    assert await host.resume_spawn("sg-2") == (None, "Spawn already done — nothing to resume.")
+    with pytest.raises(RemoteUnavailable, match="job not readable: it broke"):
+        await host.job_output("broken")
+    with pytest.raises(RemoteUnavailable, match="job not cancelled: it broke"):
+        await host.cancel_job("broken")
+    with pytest.raises(RemoteUnavailable, match="resume not started: it broke"):
+        await host.resume_spawn("broken")
+
+
+async def test_unreadable_jobs_are_raised_not_read_as_none():
+    """A failed jobs read must never look like "no jobs": the app keeps its
+    last mirror and reports instead (the replay would otherwise settle every
+    running spawn as dead)."""
+    host = _mock_host(lambda request: _error(500, "boom", "it broke"))
+    with pytest.raises(RemoteUnavailable, match="jobs not readable: it broke"):
+        await host.jobs()
 
 
 async def test_unreadable_history_and_asks_degrade_predictably():

@@ -546,14 +546,16 @@ class SessionView:
 
     @staticmethod
     def _unknown_running(metas: dict[str, dict]) -> dict[str, dict]:
-        """The sidecar scan as an attached TUI may read it. A "running" meta
-        means "checkpointed, never finalized" — in process that is proof the
-        spawn died with the process that owned it, but attached, the owner is
-        the daemon and it may well still be driving that spawn (its live jobs
-        never reach this process: ``app.jobs`` is an empty, process-local
-        registry here, and jobs rendering over the wire is a later phase). So
-        the status is demoted to "unknown": no card is flagged interrupted,
-        none is synthesized, and the resume affordance stays off."""
+        """The sidecar scan as an attached TUI reads it while the daemon's
+        jobs are NOT known (the attach-time ``GET jobs`` failed). A "running"
+        meta means "checkpointed, never finalized" — in process that is proof
+        the spawn died with the process that owned it, but attached, the owner
+        is the daemon and it may well still be driving that spawn; without the
+        mirror this process cannot tell. So the status is demoted to
+        "unknown": no card is flagged interrupted, none is synthesized, and
+        the resume affordance stays off. With the mirror synced the demotion
+        is unnecessary: a spawn the daemon is driving has a live row and is
+        re-armed onto it, one without really is interrupted."""
         return {
             sid: {**meta, "status": "unknown"} if meta.get("status") == "running" else meta
             for sid, meta in metas.items()
@@ -565,16 +567,25 @@ class SessionView:
         ToolReturnPart is only a job-id handoff), and the sidecar meta scan flags
         spawns that died mid-run as interrupted — including ones whose owning
         turn never persisted, which get a card synthesized from meta alone so no
-        work silently vanishes. Attached to the daemon, the mid-run flagging is
-        withheld (``_unknown_running``): the daemon may still be running them."""
+        work silently vanishes. Attached to the daemon, the same join runs
+        against the mirrored registry; only while the daemon's jobs are not
+        known is the mid-run flagging withheld (``_unknown_running``)."""
         transcripts = self.transcripts()
         if transcripts is None:
             return
         metas = transcripts.scan_meta()
-        if self.app.attached:
+        if not self.app.jobs_known:
             metas = self._unknown_running(metas)
         jobs = self.app.jobs
-        settled = {j.stream_id: j for j in jobs.history if j.stream_id}
+        # Settled rows come from the history AND the live list: in process the
+        # live list's settled jobs already filled their cards through
+        # note_detached_spawn (so this is a harmless superset), but the mirror
+        # keeps every daemon row — running and settled — in ``list()``.
+        settled = {
+            j.stream_id: j
+            for j in jobs.history + jobs.list()
+            if j.stream_id and j.status != "running"
+        }
         # A background job survives a session switch/rebuild (jobs are process-
         # scoped), so a spawn that is STILL running has a live registry job while
         # its sidecar still says "running". Left to the meta-status arms below that

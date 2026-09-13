@@ -26,9 +26,11 @@ from marim_harness.interfaces.tui.link import RemoteOnly
 from marim_harness.interfaces.tui.widgets import (
     AssistantMessage,
     ErrorMessage,
+    JobPanel,
     NoticeMessage,
     UserMessage,
 )
+from marim_harness.jobs import Job
 from marim_harness.server.attach import RemoteTarget
 from marim_harness.server.client import HistorySnapshot, RemoteInfo, RemoteUnavailable
 from marim_harness.server.host import HostClosed
@@ -101,6 +103,14 @@ class _Link:
         self.answer_error: Exception | None = None
         self.asks_error: Exception | None = None
         self.steer_error: Exception | None = None
+        # Jobs (4b): what GET jobs returns (rows as the client builds them,
+        # ``result`` = the tail), GET jobs/{id} results, and the scripted
+        # verdicts for cancel / resume.
+        self.jobs_rows: list[Job] = []
+        self.jobs_error: Exception | None = None
+        self.outputs: dict[str, str] = {}
+        self.cancel_reply = "cancelled job-1"
+        self.resume_reply: tuple[str | None, str] | Exception = ("job-9", "")
 
     async def load_session(self) -> str:
         self.calls.append("load_session")
@@ -159,6 +169,26 @@ class _Link:
     async def close(self) -> None:
         self.calls.append("close")
 
+    async def jobs(self) -> list[Job]:
+        self.calls.append("jobs")
+        if self.jobs_error is not None:
+            raise self.jobs_error
+        return [Job(**vars(row)) for row in self.jobs_rows]  # fresh rows, like the wire
+
+    async def job_output(self, job_id: str) -> str:
+        self.calls.append(("job_output", job_id))
+        return self.outputs.get(job_id, f"No job {job_id!r}.")
+
+    async def cancel_job(self, job_id: str) -> str:
+        self.calls.append(("cancel_job", job_id))
+        return self.cancel_reply
+
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
+        self.calls.append(("resume", stream_id))
+        if isinstance(self.resume_reply, Exception):
+            raise self.resume_reply
+        return self.resume_reply
+
     @property
     def feed(self) -> _Feed:
         return self.feeds[-1]
@@ -201,8 +231,8 @@ async def test_attach_seeds_the_view_replays_history_and_feeds_from_the_boundary
     async with app.run_test() as pilot:
         await pilot.pause()
         link = links[0]
-        # Spec order: GET session → history → attach(after_seq) → GET asks.
-        assert link.calls[:3] == ["load_session", "history", "pending_asks"]
+        # Spec order: GET session → jobs → history → attach(after_seq) → asks.
+        assert link.calls[:4] == ["load_session", "jobs", "history", "pending_asks"]
         assert link.feed.after_seq == HISTORY_SEQ
         assert app.link is link and app.sub_title == str(link.info.workspace_root)
         assert app.status.mode == "auto"
@@ -290,7 +320,7 @@ async def test_stream_gap_resyncs_from_history_and_reattaches(remote):
         await _settle(pilot, lambda: len(link.feeds) == 2, what="the re-attach")
         assert first.closed  # link.attach() closes the old feed
         assert link.feed.after_seq == HISTORY_SEQ
-        assert link.calls[:3] == ["load_session", "history", "pending_asks"]
+        assert link.calls[:4] == ["load_session", "history", "jobs", "pending_asks"]
         assert app.turn_busy  # the resync took the daemon's word: running
         await _settle(
             pilot,
@@ -477,7 +507,7 @@ async def test_process_local_commands_post_one_notice(remote):
     app, links = remote
     async with app.run_test() as pilot:
         await pilot.pause()
-        for command in ("/clear", "/new", "/compact", "/rewind", "/mcp", "/jobs"):
+        for command in ("/clear", "/new", "/compact", "/rewind", "/mcp", "/jobs wake"):
             await dispatch(app, command)
         await pilot.pause()
         notices = _texts(app, NoticeMessage)
@@ -547,21 +577,12 @@ def _running_sidecars(root: Path, *stream_ids: str) -> None:
         ts.write(sid, [ModelRequest(parts=[])], 2000, meta=meta)
 
 
-@pytest.mark.anyio
-async def test_attached_replay_leaves_the_daemons_running_spawns_alone(tmp_path, monkeypatch):
-    """In process, a "running" sidecar means the spawn died with the process
-    that owned it. Attached, the owner is the daemon and it may still be
-    driving that spawn (its jobs never reach this process), so the settle
-    must not flag a card interrupted, synthesize an orphan card, or dangle a
-    resume this process cannot perform."""
+def _spawn_history(repair_stub: str) -> list:
+    """A persisted turn with one background spawn (handed off as job-1) and
+    one foreground spawn cut down mid-run (its return is the repair stub)."""
     from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
-    _running_sidecars(tmp_path, "sg-bg", "sg-fg", "sg-ghost")
-    repair_stub = (
-        "Tool call was interrupted before completion and did not run (the turn "
-        "was aborted). Re-issue it if you still need the result."
-    )
-    messages = [
+    return [
         ModelResponse(
             parts=[
                 ToolCallPart(
@@ -588,36 +609,215 @@ async def test_attached_replay_leaves_the_daemons_running_spawns_alone(tmp_path,
         ),
     ]
 
+
+_REPAIR_STUB = (
+    "Tool call was interrupted before completion and did not run (the turn "
+    "was aborted). Re-issue it if you still need the result."
+)
+
+
+def _running_job(job_id: str, stream_id: str) -> Job:
+    return Job(
+        id=job_id,
+        kind="agent",
+        label=f"general: task {stream_id}",
+        status="running",
+        stream_id=stream_id,
+        started_at="2026-09-13T00:00:00+00:00",
+    )
+
+
+def _spawn_app(
+    tmp_path, monkeypatch, configure, *, spawn_history: bool = True
+) -> tuple[HarnessApp, list[_Link]]:
+    """An attached app with ``configure(link)`` applied before mount (the
+    jobs and history reads happen at attach), over the spawn history unless
+    ``spawn_history`` is off."""
+    links: list[_Link] = []
+
     def factory(target, root, *, on_state=None):
         link = _Link(target, root, on_state=on_state)
-        link.messages = messages  # what GET history returns at attach
+        if spawn_history:
+            link.messages = _spawn_history(_REPAIR_STUB)
+        configure(link)
+        links.append(link)
         return link
 
     monkeypatch.setattr(app_mod, "RemoteSessionHost", factory)
-    app = HarnessApp(None, remote=_target(tmp_path))
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        cards = {w.stream_id: w for w in app.stream.subagents}
-        assert cards["sg-bg"].status == "pending"  # still the daemon's to finish
-        assert cards["sg-fg"].status == "done"  # not flipped by the sidecar
-        assert "sg-ghost" not in cards  # no orphan synthesized
-        assert not any(w.status == "interrupted" for w in app.stream.subagents)
+    return HarnessApp(None, remote=_target(tmp_path)), links
 
 
 @pytest.mark.anyio
-async def test_resume_key_when_attached_posts_the_remote_only_notice(remote):
-    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+async def test_attached_replay_settles_spawns_from_the_daemons_jobs(tmp_path, monkeypatch):
+    """The daemon's registry decides: a "running" sidecar whose stream has a
+    live job is the daemon's to finish (re-armed onto that job, still
+    pending); one with no live job really was cut down (interrupted,
+    resumable), and a running sidecar with no card at all is synthesized —
+    exactly the in-process settle, against the mirrored rows."""
+    _running_sidecars(tmp_path, "sg-bg", "sg-fg", "sg-ghost")
 
-    app, _links = remote
+    def configure(link):
+        link.jobs_rows = [_running_job("job-1", "sg-bg")]
+
+    app, _links = _spawn_app(tmp_path, monkeypatch, configure)
     async with app.run_test() as pilot:
         await pilot.pause()
+        assert app.jobs_known
+        cards = {w.stream_id: w for w in app.stream.subagents}
+        assert cards["sg-bg"].status == "pending"
+        assert app.stream.detached_job_ids() == {"job-1"}  # adopted: settles from the mirror
+        assert cards["sg-fg"].status == "interrupted"
+        assert cards["sg-ghost"].status == "interrupted"  # the orphan, synthesized
+        assert "job-1" in str(app.query_one("#job-body").render())
+
+
+@pytest.mark.anyio
+async def test_attached_replay_without_the_daemons_jobs_keeps_running_spawns_pending(
+    tmp_path, monkeypatch
+):
+    """The jobs read failed at attach: the mirror is unsynced, so the replay
+    cannot tell a spawn the daemon drives from a dead one and keeps the 4a
+    behaviour — nothing flagged, no orphan, no resume affordance — and the
+    failure is on screen."""
+    _running_sidecars(tmp_path, "sg-bg", "sg-fg", "sg-ghost")
+
+    def configure(link):
+        link.jobs_error = RemoteUnavailable("jobs not readable: 500")
+
+    app, _links = _spawn_app(tmp_path, monkeypatch, configure)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert not app.jobs_known
+        cards = {w.stream_id: w for w in app.stream.subagents}
+        assert cards["sg-bg"].status == "pending"
+        assert cards["sg-fg"].status == "done"  # not flipped by the sidecar
+        assert "sg-ghost" not in cards
+        assert not any(w.status == "interrupted" for w in app.stream.subagents)
+        assert any("jobs not readable" in t for t in _texts(app, ErrorMessage))
+
+
+@pytest.mark.anyio
+async def test_jobs_changed_refreshes_the_mirror_and_fills_the_settled_card(tmp_path, monkeypatch):
+    """``jobs.changed`` carries nothing: the app re-reads GET jobs, fetches
+    the full result for a job whose card is still waiting (the list only
+    ships tails), fills the card with it and repaints the panel."""
+    _running_sidecars(tmp_path, "sg-bg")
+
+    def configure(link):
+        link.jobs_rows = [_running_job("job-1", "sg-bg")]
+
+    app, links = _spawn_app(tmp_path, monkeypatch, configure)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        card = next(w for w in app.stream.subagents if w.stream_id == "sg-bg")
+        assert card.status == "pending"
+        settled = _running_job("job-1", "sg-bg")
+        settled.status, settled.result = "done", "…the tail"
+        settled.finished_at = "2026-09-13T00:01:00+00:00"
+        link.jobs_rows = [settled]
+        link.outputs = {"job-1": "the full report, longer than the tail"}
+        link.feed.push("jobs.changed")
+        await _settle(pilot, lambda: card.status == "done", what="the card to settle")
+        assert card.report == "the full report, longer than the tail"
+        assert ("job_output", "job-1") in link.calls
+        assert app.jobs.get("job-1").result == "the full report, longer than the tail"
+        assert app.stream.detached_job_ids() == set()
+        # A later list read (tails only) never downgrades the fetched result.
+        link.feed.push("jobs.changed")
+        await _settle(pilot, lambda: link.calls.count("jobs") == 3, what="the second refresh")
+        await pilot.pause()
+        assert app.jobs.get("job-1").result == "the full report, longer than the tail"
+        assert link.calls.count(("job_output", "job-1")) == 1
+
+
+@pytest.mark.anyio
+async def test_failed_jobs_refresh_is_reported_and_keeps_the_mirror(tmp_path, monkeypatch):
+    def configure(link):
+        link.jobs_rows = [_running_job("job-1", "sg-bg")]
+
+    app, links = _spawn_app(tmp_path, monkeypatch, configure, spawn_history=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        assert [j.id for j in app.jobs.list()] == ["job-1"]
+        assert app.query_one(JobPanel).display is True
+        link.jobs_error = RemoteUnavailable("jobs not readable: 500")
+        link.feed.push("jobs.changed")
+        await _settle(
+            pilot,
+            lambda: any("jobs not refreshed" in t for t in _texts(app, ErrorMessage)),
+            what="the refresh error",
+        )
+        assert [j.id for j in app.jobs.list()] == ["job-1"]  # as it was
+        assert app.query_one(JobPanel).display is True
+
+
+@pytest.mark.anyio
+async def test_jobs_commands_go_through_the_link_when_attached(tmp_path, monkeypatch):
+    def configure(link):
+        link.jobs_rows = [_running_job("job-1", "sg-bg")]
+        link.outputs = {"job-1": "(still running)"}
+
+    app, links = _spawn_app(tmp_path, monkeypatch, configure, spawn_history=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        for command in ("/jobs", "/jobs output job-1", "/jobs cancel job-1", "/jobs wake"):
+            await dispatch(app, command)
+        await pilot.pause()
+        posted = _texts(app, AssistantMessage)
+        assert any("job-1" in t and "task sg-bg" in t for t in posted)
+        assert any("(still running)" in t for t in posted)
+        assert any("cancelled job-1" in t for t in posted)
+        assert ("job_output", "job-1") in link.calls and ("cancel_job", "job-1") in link.calls
+        assert any(
+            "/jobs wake needs the session's own process" in t for t in _texts(app, NoticeMessage)
+        )
+        # The daemon did not answer: reported, not swallowed.
+        link.cancel_reply = None
+
+        async def failing(job_id):
+            raise RemoteUnavailable("daemon gone")
+
+        link.cancel_job = failing
+        await dispatch(app, "/jobs cancel job-1")
+        await pilot.pause()
+        assert any("/jobs cancel failed: daemon gone" in t for t in _texts(app, ErrorMessage))
+
+
+@pytest.mark.anyio
+async def test_resume_key_when_attached_resumes_on_the_daemon(remote):
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+
+    app, links = remote
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        errors: list[str] = []
         card = SubAgentWidget("general", "task", "test:remote")
         card.stream_id = "sg-int"
+        card.pane = SimpleNamespace(append_error=errors.append)
         card.finish("", status="interrupted")
+        # Refused by the daemon's runner: the reason lands in the pane, the
+        # card stays interrupted so the user can retry.
+        link.resume_reply = (None, "Spawn already finished — nothing to resume.")
+        await app.subagents._resume(card)
+        assert card.status == "interrupted"
+        assert errors == ["Spawn already finished — nothing to resume."]
+        # The daemon did not answer: same shape, naming the failure.
+        link.resume_reply = RemoteUnavailable("daemon gone")
+        await app.subagents._resume(card)
+        assert card.status == "interrupted"
+        assert errors[-1] == "resume failed: daemon gone"
+        # Started: the card is re-armed onto the daemon's new job.
+        link.resume_reply = ("job-9", "")
         await app.subagents._resume(card)
         await pilot.pause()
-        assert card.status == "interrupted"
-        assert any(
-            "sub-agent resume needs the session's own process" in n
-            for n in _texts(app, NoticeMessage)
-        )
+        assert card.status == "pending" and card.job_id == "job-9"
+        assert "job-9" in app.stream.detached_job_ids()
+        assert [c for c in link.calls if isinstance(c, tuple) and c[0] == "resume"] == [
+            ("resume", "sg-int")
+        ] * 3

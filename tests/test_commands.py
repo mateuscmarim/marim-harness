@@ -51,7 +51,14 @@ class _FakeApp:
         )
         # The link seam (phase 4a): commands read the session through
         # ``link.info`` and switch mode/model through the app's async setters.
-        self.link = SimpleNamespace(info=_FakeInfo(self))
+        # The jobs verbs (4b) go through the link too; here they delegate to
+        # whatever registry the test parked on ``harness.deps.jobs``, as the
+        # in-process link does.
+        self.link = SimpleNamespace(
+            info=_FakeInfo(self),
+            job_output=self._job_output,
+            cancel_job=self._cancel_job,
+        )
         self.mode_calls: list = []
 
         self.undone = False
@@ -60,6 +67,16 @@ class _FakeApp:
     def query_one(self, selector):
         assert selector is CompactNotice
         return self._compact_notice
+
+    @property
+    def jobs(self):
+        return self.harness.deps.jobs
+
+    async def _job_output(self, job_id: str) -> str:
+        return self.harness.deps.jobs.output(job_id)
+
+    async def _cancel_job(self, job_id: str) -> str:
+        return await self.harness.deps.jobs.cancel(job_id)
 
     async def post_system(self, msg: str) -> None:
         self.posted.append(msg)

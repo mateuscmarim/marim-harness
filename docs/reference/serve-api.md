@@ -192,6 +192,10 @@ Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
 | POST   | `/v1/workspaces/{ws}/sessions/{sid}/mode`         | Switch the session's approval mode |
 | WS     | `/v1/workspaces/{ws}/sessions/{sid}/ws`           | Live event stream                  |
 | GET    | `/v1/workspaces/{ws}/sessions/{sid}/history`      | Persisted message history          |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}/jobs`         | Background jobs (live + persisted) |
+| GET    | `/v1/workspaces/{ws}/sessions/{sid}/jobs/{id}`    | One job with its prompt and result |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/jobs/{id}/cancel` | Cancel a running job           |
+| POST   | `/v1/workspaces/{ws}/sessions/{sid}/subagents/{stream_id}/resume` | Resume an interrupted spawn |
 | GET    | `/v1/workspaces/{ws}/sessions/{sid}/images/{sha}` | Cached image bytes                 |
 
 ## Health
@@ -680,6 +684,80 @@ yet persisted. A session with no live bus reports `history_seq: 0`.
 
 `500 unreadable` if the session file cannot be parsed.
 
+## Jobs
+
+Background work the agent started (detached `bash` commands, background
+sub-agent spawns) lives on the session's job registry, which the daemon
+owns. These routes are the authority an attached TUI reads its jobs panel
+and sub-agent cards from; the `jobs.changed` stream event is only the
+trigger to re-read them.
+
+### GET /v1/workspaces/{ws}/sessions/{sid}/jobs
+
+`200 {"jobs": [JobDto, ...]}`, running jobs first, then settled ones by
+`finished_at` descending. With a live host the list is its registry (live
+rows plus the settled history the session file carried when it loaded);
+with no host loaded it is the settled history persisted in the session
+file, so a spawn that finished in an earlier daemon life is still listed.
+`Cache-Control: max-age=30`.
+
+```json
+{
+  "id": "job-3",
+  "kind": "agent",
+  "label": "explore: find the flaky test",
+  "status": "running",
+  "started_at": "2026-09-13T10:00:00+00:00",
+  "finished_at": null,
+  "stream_id": "sg-7f3a",
+  "duration_secs": null,
+  "usage": null,
+  "tool_count": null,
+  "result_tail": null,
+  "prompt": null
+}
+```
+
+- `kind` is `bash` or `agent`; `status` is `running`, `done`, `failed`,
+  `timeout` or `cancelled`.
+- `stream_id` is set on agent jobs and matches the `subagent.*` events and
+  the transcript sidecar of that spawn.
+- `duration_secs`, `usage` (`{"input", "output"}`) and `tool_count` come
+  from the spawn's sidecar meta once written; `null` for bash jobs and for
+  a spawn still running.
+- `result_tail` is the settled result's whitespace-collapsed tail (the
+  last ~200 characters, the same verdict-carrying tail the persisted
+  history keeps); `null` while the job runs.
+- `prompt` is always `null` on the list (see the detail route).
+
+### GET /v1/workspaces/{ws}/sessions/{sid}/jobs/{id}
+
+The same `JobDto` plus `prompt` (the spawn's task or the bash command)
+and the full `result` (the job's output so far, or its final output).
+`404 job_not_found` for an unknown id, and for every id while no host is
+loaded (a cold session has no readable job output).
+
+### POST /v1/workspaces/{ws}/sessions/{sid}/jobs/{id}/cancel
+
+Stops a running job (kills its process if any, cancels its task).
+`200 {"ok": true, "message": "cancelled job-3"}` — `message` is the
+registry's own wording, so an attached TUI's `/jobs cancel` reads exactly
+as the in-process one. `409 already_settled` when the job already
+finished; `404 job_not_found` for an unknown id, or for any id while no
+host is loaded (history rows are settled by definition).
+
+### POST /v1/workspaces/{ws}/sessions/{sid}/subagents/{stream_id}/resume
+
+Resumes an interrupted sub-agent spawn from its persisted transcript as a
+new background job on the daemon (what `r` does in the TUI's sub-agents
+screen). Loads the host when cold, through the same `409 claimed` /
+`404 not_found` mapping `POST messages` uses. `201 {"job_id": "job-4"}`
+when the resume started — watch `jobs.changed` and the spawn's
+`subagent.*` events from there. `409 resume_refused` with a readable
+`message` when the runner declines: no resumable transcript, the spawn
+already finished, a resume already in flight, or a session without the
+resume seam.
+
 ## Images
 
 ### GET /v1/workspaces/{ws}/sessions/{sid}/images/{sha}
@@ -783,7 +861,7 @@ Session and housekeeping:
 | `session.mode_changed`| `{"mode": "plan" \| "ask" \| "auto"}`     |
 | `session.notice`      | `{"message": "..."}` — a system notice line for the transcript |
 | `tasks.changed`       | `{}` (re-fetch task state out of band)    |
-| `jobs.changed`        | `{}`                                      |
+| `jobs.changed`        | `{}` (re-read `GET .../jobs`; the registry changed — a job registered, settled or cancelled) |
 | `compaction.started`  | `{}`                                      |
 | `compaction.finished` | `{"before": <n>, "after": <n>}`           |
 | `subagent.event`      | `{"stream_id": "...", "event": {...}}` — `event` is a stream-event dict with an inner `"type"` of `text`/`thinking`/`tool_call`/`tool_result` |
@@ -837,19 +915,25 @@ holder is a `marim serve` daemon whose endpoint answers, whose pid matches
 the daemon's runtime record, whose token is readable from the daemon's
 state directory (`$XDG_DATA_HOME/marim-harness/server/token`) and which
 lists this workspace, the TUI starts as a client of this API instead —
-`GET session` seeds its status bar, `GET history` replays the transcript,
-the WebSocket (from `history_seq`) streams the live tail, `GET asks`
-reconciles the panels, and every action (`POST messages` with the
-attachments base64-encoded, `interrupt`, `steer`, `asks/{aid}`, `mode`,
-`model`) goes through the routes above. Prompts sent from any other
+`GET session` seeds its status bar, `GET jobs` seeds its jobs panel
+(re-read on every `jobs.changed`, with `GET jobs/{id}` fetched for a
+spawn card that settles while the TUI is watching), `GET history` replays
+the transcript, the WebSocket (from `history_seq`) streams the live tail,
+`GET asks` reconciles the panels, and every action (`POST messages` with
+the attachments base64-encoded, `interrupt`, `steer`, `asks/{aid}`, `mode`,
+`model`, `jobs/{id}/cancel`, `subagents/{stream_id}/resume`) goes through
+the routes above. The daemon's jobs list is what decides whether a replayed
+spawn card is still running or finished; only when that read fails does
+the TUI fall back to leaving every running card pending. Prompts sent from any other
 client (a phone, curl) show up in the attached TUI and vice versa, since
 they are the same session on the same host. The status bar shows `daemon`
 (`daemon · reconnecting…` while the socket is re-established with backoff;
 `daemon · lost` after 60 s or an auth/not-found rejection). On
 `stream.gap` the TUI re-renders from `GET history` and re-attaches at its
-boundary. Commands that need the session's own process (`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!` shell passthrough,
+boundary. Commands that need the session's own process (`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs wake`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!` shell passthrough,
 steering with an image, switching sessions in place) are refused with a notice
-while attached. When any probe fails the launch prints why
+while attached; `/jobs` (list, `output`, `cancel`) and resuming a sub-agent
+act on the daemon's jobs, and autonomous wake stays the daemon's to drive. When any probe fails the launch prints why
 (`not attaching: …`) and falls back to the usual "already open" refusal;
 headless runs never attach. The daemon keeps the claim throughout — an
 attached TUI holds no claim of its own — so the session is still

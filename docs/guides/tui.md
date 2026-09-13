@@ -216,7 +216,7 @@ conversation. The picker tags a session another process has open
 (`daemon`, or `tui (pid N)`); one the `marim serve` daemon owns can be
 attached to with `marim --session <id>` — the status bar then reads
 `daemon`, and the few commands that need the session's own process
-(`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image, resuming a sub-agent) say so instead of running. An attached TUI also never flags a spawn as interrupted from its transcript alone: the daemon may still be running it, so such a card stays pending.
+(`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs wake`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image) say so instead of running. The jobs panel, `/jobs` (list, `output`, `cancel`) and `r` on an interrupted sub-agent card act on the daemon's jobs over its API: the daemon's job list decides whether a replayed spawn card is still running or finished, and a spawn that settles while you watch fills its card with the full result. Only when that list cannot be read does a running card stay pending rather than being flagged as interrupted.
 
 Compaction runs automatically when context approaches the threshold shown in
 the status bar; `/compact` triggers it on demand, with optional instructions
@@ -355,7 +355,9 @@ Long-running work the agent starts in the background (detached commands,
 background sub-agent runs) shows in the jobs panel and is managed with
 `/jobs`. Jobs are process-scoped: they survive session switches but are
 killed when the app exits. Each completion fires a desktop notification
-(when enabled).
+(when enabled). Attached to a `marim serve` daemon, the panel mirrors the
+daemon's jobs instead (they outlive the TUI) and `/jobs wake` is the one
+sub-command that stays refused — autonomous wake is the daemon's to drive.
 
 With autonomous wake on (`/jobs wake on`, or the Settings checkbox), a job
 finishing while no turn is running wakes the agent with a digest-only turn —

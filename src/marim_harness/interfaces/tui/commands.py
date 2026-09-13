@@ -21,6 +21,7 @@ from ...workspace import discover_skills
 from .link import RemoteOnly
 from .themes import THEME_NAMES
 from .trust_flow import apply_trust_and_confirm
+from .widgets import ErrorMessage
 from .widgets.compact_notice import CompactNotice
 
 if TYPE_CHECKING:
@@ -496,38 +497,54 @@ async def _cmd_worktree(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_jobs(app: HarnessApp, arg: str) -> None:
-    harness = app.require_local("/jobs")
+    """``/jobs``: the session's jobs through the link, so an attached TUI
+    lists, reads and cancels the daemon's jobs with the same verbs. Only
+    ``wake`` stays process-local — the toggle belongs to whichever process
+    runs the wake driver, and attached that is the daemon."""
     from ...jobs import render_jobs
 
-    jobs = harness.deps.jobs
     sub, _, rest = arg.strip().partition(" ")
     rest = rest.strip()
     if sub in ("", "list"):
-        rendered = render_jobs(jobs.list())
+        jobs = app.jobs
+        rendered = render_jobs(jobs.history + jobs.list())
         await app.post_system(rendered or "No background jobs.")
-    elif sub == "output":
+    elif sub in ("output", "cancel"):
         if not rest:
-            await app.post_system("Usage: /jobs output <id>")
+            await app.post_system(f"Usage: /jobs {sub} <id>")
             return
-        await app.post_system(jobs.output(rest))
-    elif sub == "cancel":
-        if not rest:
-            await app.post_system("Usage: /jobs cancel <id>")
-            return
-        await app.post_system(await jobs.cancel(rest))
+        await _jobs_link_verb(app, sub, rest)
     elif sub == "wake":
-        if rest in ("on", "off"):
-            app.autonomous_wake = rest == "on"
-            await app.post_system(f"Autonomous wake: {rest}.")
-        elif rest == "":
-            state = "on" if app.autonomous_wake else "off"
-            await app.post_system(
-                f"Autonomous wake is {state}. Use `/jobs wake on|off` to change it."
-            )
-        else:
-            await app.post_system("Usage: /jobs wake [on|off]")
+        await _jobs_wake(app, rest)
     else:
         await app.post_system("Usage: /jobs [list | output <id> | cancel <id> | wake [on|off]]")
+
+
+async def _jobs_link_verb(app: HarnessApp, verb: str, job_id: str) -> None:
+    """``/jobs output|cancel <id>`` over the link. A daemon that did not
+    answer is reported as an error, like a steer or an ask answer that did
+    not land — the verdict line is what the user asked for."""
+    try:
+        if verb == "output":
+            text = await app.link.job_output(job_id)
+        else:
+            text = await app.link.cancel_job(job_id)
+    except HostClosed as exc:
+        app.append_log(ErrorMessage(f"/jobs {verb} failed: {exc}"))
+        return
+    await app.post_system(text)
+
+
+async def _jobs_wake(app: HarnessApp, rest: str) -> None:
+    app.require_local("/jobs wake")
+    if rest in ("on", "off"):
+        app.autonomous_wake = rest == "on"
+        await app.post_system(f"Autonomous wake: {rest}.")
+    elif rest == "":
+        state = "on" if app.autonomous_wake else "off"
+        await app.post_system(f"Autonomous wake is {state}. Use `/jobs wake on|off` to change it.")
+    else:
+        await app.post_system("Usage: /jobs wake [on|off]")
 
 
 async def _cmd_plugin(app: HarnessApp, arg: str) -> None:

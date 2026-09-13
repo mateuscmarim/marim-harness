@@ -1,4 +1,4 @@
-from marim_harness.jobs import Job
+from marim_harness.jobs import Job, result_tail
 from marim_harness.server.jobs_view import assemble, detail_dto, job_to_dto
 
 
@@ -26,6 +26,20 @@ def test_job_to_dto_enriches_agent_meta():
     assert dto["tool_count"] == 3
     assert dto["duration_secs"] == 12.5
     assert dto["prompt"] is None  # detail-only, never on the list DTO
+
+
+def test_job_to_dto_carries_the_result_tail_once_settled():
+    """The list DTO carries the same whitespace-collapsed tail the persisted
+    history stores (phase 4b: an attached TUI paints settled cards from it),
+    and nothing while the job still runs — a partial result is not a verdict."""
+    long = "line one\n" + "x" * 500 + "\nthe verdict"
+    settled = _agent("job-1", "done", "2026-07-23T00:05:00+00:00")
+    settled.result = long
+    assert job_to_dto(settled, None)["result_tail"] == result_tail(long)
+    assert job_to_dto(settled, None)["result_tail"].endswith("the verdict")
+    running = _agent("job-2", "running")
+    running.result = "so far"
+    assert job_to_dto(running, None)["result_tail"] is None
 
 
 def test_job_to_dto_null_meta_leaves_metrics_none():

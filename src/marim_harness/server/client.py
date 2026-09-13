@@ -38,6 +38,7 @@ from pydantic_ai.usage import RunUsage
 
 from ..compaction import estimate_tokens, repair_masked_narrowed_returns
 from ..images import rehydrate_images
+from ..jobs import Job
 from ..session.claim import SessionClaimed
 from .attach import RemoteTarget
 from .host import HostClosed, TurnQueueFull
@@ -150,6 +151,23 @@ def usage_from_summary(summary: dict) -> RunUsage:
         output_tokens=count("output_tokens"),
         cache_read_tokens=count("cache_read_tokens"),
         cache_write_tokens=count("cache_write_tokens"),
+    )
+
+
+def _job_from_dto(row: dict) -> Job:
+    """A JobDto (``GET jobs`` row) as a read-only ``Job``: no task, no kill,
+    no live output; ``result`` carries the tail the list DTO ships."""
+    status = str(row.get("status") or "done")
+    return Job(
+        id=str(row.get("id", "?")),
+        kind=str(row.get("kind", "agent")),
+        label=str(row.get("label", "")),
+        status=status,  # type: ignore[arg-type]  # the wire's vocabulary is the registry's
+        result=row.get("result_tail") or None,
+        stream_id=row.get("stream_id"),
+        finished_at=row.get("finished_at"),
+        started_at=row.get("started_at"),
+        prompt=row.get("prompt"),
     )
 
 
@@ -285,6 +303,51 @@ class RemoteSessionHost:
             raise RemoteUnavailable(f"model not switched: {_error_message(response)}")
         self.info.model_id = model_id
         self.info.model_label = model_id
+
+    # -------------------------------------------------------------- jobs --
+    async def jobs(self) -> list[Job]:
+        """``GET jobs`` as read-only rows: the daemon's registry in its own
+        order (running first, then settled newest-first). ``result`` is the
+        list DTO's tail; ``job_output`` fetches the full text."""
+        response = await self._request("GET", "/jobs")
+        if response.status_code != 200:
+            raise RemoteUnavailable(f"jobs not readable: {_error_message(response)}")
+        return [_job_from_dto(row) for row in response.json().get("jobs", [])]
+
+    async def job_output(self, job_id: str) -> str:
+        """The job's output as the registry reports it (the full result once
+        settled, the live buffer / running marker before). An unknown id
+        reads as the registry's own ``No job`` line so ``/jobs output`` says
+        the same thing on both kinds of link."""
+        response = await self._request("GET", f"/jobs/{job_id}")
+        if response.status_code == 200:
+            return str(response.json().get("result") or "")
+        if response.status_code == 404 and _error_code(response) == "job_not_found":
+            return f"No job {job_id!r}."
+        raise RemoteUnavailable(f"job not readable: {_error_message(response)}")
+
+    async def cancel_job(self, job_id: str) -> str:
+        """Cancel a running job on the daemon; returns the registry's verdict
+        line (``cancelled job-1`` / ``job job-1 already done`` / ``No job``)."""
+        response = await self._request("POST", f"/jobs/{job_id}/cancel")
+        if response.status_code == 200:
+            return str(response.json().get("message") or f"cancelled {job_id}")
+        if response.status_code == 404 and _error_code(response) == "job_not_found":
+            return f"No job {job_id!r}."
+        if response.status_code == 409 and _error_code(response) == "already_settled":
+            return _error_message(response)
+        raise RemoteUnavailable(f"job not cancelled: {_error_message(response)}")
+
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
+        """Resume an interrupted spawn on the daemon: ``(job_id, "")`` when
+        it started, ``(None, reason)`` when the runner refused — the same
+        pair ``services.resume_subagent`` returns in process."""
+        response = await self._request("POST", f"/subagents/{stream_id}/resume")
+        if response.status_code == 201:
+            return str(response.json()["job_id"]), ""
+        if response.status_code == 409 and _error_code(response) == "resume_refused":
+            return None, _error_message(response)
+        raise RemoteUnavailable(f"resume not started: {_error_message(response)}")
 
     # ---------------------------------------------------- read / replay --
     async def load_session(self) -> str:

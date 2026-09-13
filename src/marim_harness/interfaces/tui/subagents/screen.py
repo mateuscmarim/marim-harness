@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from textual.containers import VerticalScroll
 from textual.css.query import NoMatches
 
-from ..link import RemoteOnly
+from ....server.host import HostClosed
 from ..widgets import NoticeMessage, PromptInput
 from .stats import tree_order
 from .view import SubAgentsView
@@ -122,19 +122,16 @@ class SubAgentsScreen:
         self._app.run_worker(self._resume(card), group="subagent-resume", exit_on_error=False)
 
     async def _resume(self, card) -> None:
+        """Resume through the link: in process the runner itself, attached
+        the daemon's resume route (the transcript is on disk for both; the
+        runner that can resume it lives with the harness). Either way the
+        card is re-armed onto the new job id and its settle fills it."""
         try:
-            harness = self._app.require_local("sub-agent resume")
-        except RemoteOnly as exc:
-            # Attached to the daemon: the spawn's transcript is on disk but
-            # the runner that could resume it lives in the daemon's process.
-            # Say so (the same notice every process-local command posts)
-            # rather than swallow the keypress.
-            self._app.note_remote_only(exc)
-            return
-        resume = harness.deps.services.resume_subagent
-        if resume is None:
-            return
-        job_id, message = await resume(card.stream_id)
+            job_id, message = await self._app.link.resume_spawn(card.stream_id)
+        except HostClosed as exc:
+            # The daemon did not answer: the card stays interrupted (nothing
+            # started) and the pane says why, like a refusal.
+            job_id, message = None, f"resume failed: {exc}"
         if job_id is None:
             # Refused: surface the reason in the card's pane; the card stays
             # interrupted so the user can retry after fixing the cause.
