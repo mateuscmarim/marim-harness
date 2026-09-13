@@ -190,8 +190,36 @@ def _claim_target(workspace: Path, target: str | None, *, kind: str, err):
                 file=err,
             )
             return None, False
+        notice = _stale_daemon_notice(claim, target)
+        if notice is not None:
+            # Headless reads this on stderr. The TUI prints it too, but
+            # Textual paints over it — _start_tui hands the same text to the
+            # app, which shows it in the transcript once it is up.
+            print(notice, file=err)
         return claim, True
     return _refuse_or_attach(workspace, target, session_path, kind=kind, err=err)
+
+
+def _stale_daemon_notice(claim: "SessionClaim | None", target: str | None) -> str | None:
+    """The line to show when a launch that could have attached took the
+    session over instead: the claim file said a ``marim serve`` daemon held
+    ``target``, but its lock was free (the daemon died or let the session
+    go), so this process now drives it locally. Silent for any other
+    predecessor — a TUI or headless run that exited is the normal case, not
+    news. Without it the fallback is invisible: the only tell was that the
+    status bar did NOT read ``daemon``."""
+    if claim is None or target is None:
+        return None
+    previous = claim.displaced
+    if previous is None or previous.kind != "daemon":
+        return None
+    where = f" at {previous.endpoint}" if previous.endpoint else ""
+    return (
+        f"session {target} was held by the marim serve daemon{where} (pid {previous.pid}), "
+        "but that claim is stale — the daemon no longer holds it. Running the session "
+        "locally in this process, not attached; restart the daemon (and warm the session "
+        "there) to attach instead."
+    )
 
 
 def _is_session_id(target: str) -> bool:
@@ -264,10 +292,15 @@ def _run_claimed(
         harness.release_claim()
 
 
-def _launch_tui(harness) -> int:
+def _launch_tui(harness, *, notice: str | None = None) -> int:
+    """Run the TUI on a process-local Harness. ``notice`` is a launch-time
+    line for the transcript (a stale-daemon-claim fallback, see
+    _stale_daemon_notice): anything printed to stderr before Textual starts
+    is painted over, so it has to travel into the app."""
     from ..tui.app import HarnessApp
 
-    HarnessApp(harness, history=PromptHistory(default_history_path())).run()
+    notices = [notice] if notice is not None else []
+    HarnessApp(harness, history=PromptHistory(default_history_path()), notices=notices).run()
     return 0
 
 
@@ -407,7 +440,10 @@ def _start_tui(args, workspace: Path, err) -> int:
         # claim stays with the daemon, so there is nothing to adopt or release.
         return _launch_remote_tui(built[1])
     harness, claim = built
-    return _run_claimed(harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness))
+    notice = _stale_daemon_notice(claim, target)
+    return _run_claimed(
+        harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness, notice=notice)
+    )
 
 
 def run_default(argv, *, stdin=None, out=None, err=None) -> int:

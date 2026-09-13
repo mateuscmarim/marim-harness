@@ -58,7 +58,7 @@ from .isolation import SpawnWorktree
 from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
 from .policies import MaskingPolicy, RetryPolicy
-from .run_driver import SpawnRunDriver, _resumable_history
+from .run_driver import SpawnRunDriver, _resumable_history, model_ref, strip_thinking
 from .tiers import resolve_tier
 
 logger = logging.getLogger(__name__)
@@ -1001,6 +1001,16 @@ class SubagentRunner:
             report_model = self.deps.ui.on_subagent_model
             if report_model is not None and stream_id:
                 await report_model(stream_id, resolved_model)
+        if meta is not None:
+            # The model the run ACTUALLY lands on, read from the built agent —
+            # distinct from ``meta["model"]`` above, which is the request (a slug
+            # the resume path feeds back through the tier allowlist, where it
+            # can be dropped for the tier default if the configuration changed
+            # in between). resume_spawn compares this against the resumed
+            # build to decide whether the transcript's thinking parts are safe
+            # to replay (see strip_thinking). getattr: the build() seam is
+            # replaced by bare doubles in tests, which carry no model.
+            meta["model_ref"] = model_ref(getattr(sub, "model", None))
         await self._report_spawn_thinking(stream_id, thinking, spawn_defn)
         t_built = time.perf_counter()
         granted, unknown, mcp_withheld, ask_withheld = await self._spawn_mcp_grant(mcp_names)
@@ -1467,6 +1477,21 @@ class SubagentRunner:
                 # No teardown here — doing it before was a no-op that ran only after
                 # discard() had already deleted the branch it meant to preserve.
                 return None, prep
+            # Continuing on a different model than the one that wrote the
+            # transcript — the tier configuration changed, the recorded slug
+            # fell out of the allowlist, or the sidecar predates model_ref —
+            # means its persisted reasoning is another model's and must not be
+            # replayed (a provider that names the thinking field differently
+            # rejects the whole request). Only an exact match keeps it.
+            current = model_ref(getattr(prep.sub, "model", None))
+            if meta.get("model_ref") != current:
+                logger.debug(
+                    "resume %s: model changed (%s -> %s), dropping persisted thinking",
+                    stream_id,
+                    meta.get("model_ref"),
+                    current,
+                )
+                history = strip_thinking(history)
             label = f"{type_}: resumed — {task}"
             job_id = self.deps.jobs.register(
                 "agent",

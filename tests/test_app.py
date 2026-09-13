@@ -5247,3 +5247,21 @@ async def test_autocomplete_offset_tracks_the_prompt_height(tmp_path: Path):
         assert prompt.box_height > 3
         assert menu.styles.offset.y.value == -(1 + prompt.box_height)
         assert menu.styles.offset.y.value < one_line, "menu did not move up"
+
+
+@pytest.mark.anyio
+async def test_startup_notices_render_in_the_transcript(tmp_path: Path):
+    """A launch-time line the CLI could only print to stderr (painted over by
+    Textual) — the stale-daemon-claim fallback — shows in the log on mount."""
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(TestModel(call_tools=[]), BuiltinToolProvider(), deps, instructions="test")
+    app = HarnessApp(harness, notices=["session s1 was held by the marim serve daemon"])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        texts = [str(n.render()) for n in app.query(NoticeMessage)]
+        assert any("marim serve daemon" in t for t in texts)

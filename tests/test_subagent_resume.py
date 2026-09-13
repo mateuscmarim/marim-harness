@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -511,3 +512,126 @@ async def test_final_meta_records_tool_count_and_duration(tmp_path):
     assert meta["status"] == "finished"
     assert meta["tool_count"] == 1  # the single list_files call
     assert meta["duration"] > 0
+
+
+# --- Cross-model resume: another model's reasoning is not replayed ---
+#
+# Seen live: a spawn transcript written by zen-go mimo-v2.5 resumed on glm-5.2
+# failed 400 "Extra inputs are not permitted, field: messages[n].reasoning" —
+# pydantic-ai replays a persisted ThinkingPart under the field it arrived in
+# whenever the part's provider matches, and the two models name it differently.
+# The runner stamps the model it actually ran on into the sidecar (model_ref)
+# and strips the thinking parts when the resumed build lands on another one.
+
+
+def _thinking_history() -> list:
+    """A transcript with reasoning in both shapes that matter: a thinking-only
+    response (must be dropped whole, never sent as content:null) and a thinking
+    + tool-call response (keeps its call, so the repaired return still pairs)."""
+    return [
+        ModelRequest(parts=[UserPromptPart(content="original task")]),
+        ModelResponse(
+            parts=[ThinkingPart(content="let me think", id="reasoning", provider_name="openai")]
+        ),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content="I'll read x", id="reasoning", provider_name="openai"),
+                ToolCallPart(tool_name="read_file", args={"path": "x"}, tool_call_id="dangling"),
+            ]
+        ),
+    ]
+
+
+def _thinking_parts(messages) -> list:
+    return [p for m in messages for p in getattr(m, "parts", []) if isinstance(p, ThinkingPart)]
+
+
+def test_strip_thinking_drops_reasoning_and_thinking_only_responses():
+    from marim_harness.subagents.run_driver import strip_thinking
+
+    original = _thinking_history()
+    out = strip_thinking(original)
+    assert _thinking_parts(out) == []
+    # The thinking-only response is gone entirely; the tool call survived.
+    assert len(out) == 2
+    assert isinstance(out[1], ModelResponse)
+    assert [type(p) for p in out[1].parts] == [ToolCallPart]
+    # A copy: the persisted transcript's objects are left as they were.
+    assert len(original) == 3 and len(original[2].parts) == 2
+
+
+def test_strip_thinking_returns_the_same_list_when_there_is_nothing_to_strip():
+    from marim_harness.subagents.run_driver import strip_thinking
+
+    history = _dangling_history()
+    assert strip_thinking(history) is history
+
+
+def test_model_ref_names_system_and_model_or_falls_back_to_str():
+    from marim_harness.subagents.run_driver import model_ref
+
+    fm = FunctionModel(lambda messages, info: ModelResponse(parts=[]), model_name="glm-5.2")
+    assert model_ref(fm) == "function:glm-5.2"
+    assert model_ref("zen-go:glm-5.2") == "zen-go:glm-5.2"
+    assert model_ref(None) == "None"
+
+
+@pytest.mark.anyio
+async def test_spawn_stamps_the_model_it_ran_on_into_the_sidecar(tmp_path):
+    from marim_harness.subagents.run_driver import model_ref
+
+    store = _session_store(tmp_path)
+    model = _tool_then_text_model()
+    harness = _make_harness(model, _make_deps(tmp_path), store=store)
+    assert await harness.subagents.run("general", "look around", stream_id="sg-ref") == "report"
+    meta = TranscriptStore(store.path, store.session_id).read_meta("sg-ref")
+    assert meta["model_ref"] == model_ref(model)
+
+
+def _model_expecting_thinking(present: bool) -> FunctionModel:
+    """Finishes after asserting whether the incoming history still carries
+    reasoning, and that the dangling call was repaired either way."""
+
+    def fn(messages, info):
+        returns = [
+            p for m in messages for p in getattr(m, "parts", []) if isinstance(p, ToolReturnPart)
+        ]
+        assert any(p.tool_call_id == "dangling" for p in returns)
+        assert bool(_thinking_parts(messages)) is present
+        return ModelResponse(parts=[TextPart(content="resumed-ok")])
+
+    return FunctionModel(fn)
+
+
+@pytest.mark.parametrize("recorded", ["openai:mimo-v2.5", None], ids=["other-model", "pre-ref"])
+@pytest.mark.anyio
+async def test_resume_on_another_model_drops_the_persisted_thinking(tmp_path, recorded):
+    """A sidecar written by a different model — or one that predates the
+    model_ref stamp, where the writer is unknown — resumes without its
+    reasoning; the tool call and its repaired return are kept."""
+    store = _session_store(tmp_path)
+    harness = _make_harness(_model_expecting_thinking(False), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    meta = _interrupted_meta("sg-x")
+    if recorded is not None:
+        meta["model_ref"] = recorded
+    ts.write("sg-x", _thinking_history(), 2000, meta=meta)
+    job_id, message = await harness.subagents.resume_spawn("sg-x")
+    assert job_id is not None, message
+    assert await harness.deps.jobs.wait(job_id) == "resumed-ok"
+
+
+@pytest.mark.anyio
+async def test_resume_on_the_same_model_keeps_the_persisted_thinking(tmp_path):
+    from marim_harness.subagents.run_driver import model_ref
+
+    store = _session_store(tmp_path)
+    model = _model_expecting_thinking(True)
+    harness = _make_harness(model, _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
+    meta = _interrupted_meta("sg-same")
+    meta["model_ref"] = model_ref(model)
+    ts.write("sg-same", _thinking_history(), 2000, meta=meta)
+    job_id, message = await harness.subagents.resume_spawn("sg-same")
+    assert job_id is not None, message
+    assert await harness.deps.jobs.wait(job_id) == "resumed-ok"

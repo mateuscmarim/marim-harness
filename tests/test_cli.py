@@ -183,7 +183,7 @@ def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path
     captured = {}
 
     class FakeApp:
-        def __init__(self, harness, history=None):
+        def __init__(self, harness, history=None, *, notices=()):
             captured["harness"] = harness
             captured["history"] = history
 

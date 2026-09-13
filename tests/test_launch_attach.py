@@ -68,7 +68,7 @@ def launch(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, "build_harness", lambda *a, **kw: calls.append(("build", kw)))
     monkeypatch.setattr(default_cmd, "_tui_available", lambda: True)
     monkeypatch.setattr(router, "route_logging_to_file", lambda *a, **kw: None)
-    monkeypatch.setattr(default_cmd, "_launch_tui", lambda h: calls.append(("tui", h)) or 0)
+    monkeypatch.setattr(default_cmd, "_launch_tui", lambda h, **kw: calls.append(("tui", h)) or 0)
     monkeypatch.setattr(
         default_cmd, "_launch_remote_tui", lambda t: calls.append(("remote", t)) or 0
     )
@@ -163,7 +163,7 @@ def test_session_flag_opens_an_unowned_session_locally(tmp_path, monkeypatch):
         return _Harness()
 
     monkeypatch.setattr(bootstrap, "build_harness", fake_build)
-    monkeypatch.setattr(default_cmd, "_launch_tui", lambda h: 0)
+    monkeypatch.setattr(default_cmd, "_launch_tui", lambda h, **kw: 0)
     from marim_harness.interfaces.cli.default_cmd import run_default
 
     err = io.StringIO()

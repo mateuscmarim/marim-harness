@@ -430,10 +430,15 @@ class HarnessApp(App):
         history: PromptHistory | None = None,
         *,
         remote: RemoteTarget | None = None,
+        notices: Sequence[str] = (),
     ) -> None:
         super().__init__()
         if (harness is None) == (remote is None):
             raise ValueError("HarnessApp takes exactly one of a harness or a remote target")
+        # Launch-time lines the CLI could only print to stderr, which Textual
+        # paints over (a stale daemon claim taken over locally, say). Shown
+        # in the transcript on mount, after the session-default notices.
+        self._startup_notices = list(notices)
         # The process-local harness, or None when this TUI is attached to a
         # daemon-owned session. Nothing reads it directly for a value the
         # widgets need (that is ``link.info``); the reaches that remain are
@@ -575,6 +580,8 @@ class HarnessApp(App):
         self.activity.render_jobs()  # process-scoped jobs survive session switches
         self.queue.render()
         self._announce_session_defaults()
+        for text in self._startup_notices:
+            self.append_log(NoticeMessage(text))
         # Coalesce streaming text deltas: render buffered AssistantMessages on a
         # shared interval instead of re-parsing the markdown on every token.
         self.set_interval(_STREAM_FLUSH_INTERVAL, self.stream.flush_streams)

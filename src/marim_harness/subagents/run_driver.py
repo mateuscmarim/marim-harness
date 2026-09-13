@@ -83,6 +83,64 @@ def _resumable_history(messages: list) -> list | None:
     return repaired or None
 
 
+def model_ref(model: object) -> str:
+    """The identity of the model a spawn runs on, as ``"<system>:<model_name>"``
+    (pydantic-ai's ``Model.system`` / ``Model.model_name``), stamped into the
+    spawn's sidecar meta so a resume can tell whether it is continuing on the
+    SAME model. Deliberately not the ``meta["model"]`` slug: that is the
+    tier-resolved *request* (``zen-go:glm-5.2``), and on resume it is fed back
+    through the tier allowlist, where a slug the CURRENT configuration no
+    longer lists is dropped for the tier default — so the slug can name one
+    model while the run lands on another. This reads the built agent, so it
+    always names what actually ran. Anything without those attributes (a bare
+    string, a test double) falls back to ``str()``."""
+    system = getattr(model, "system", None)
+    name = getattr(model, "model_name", None)
+    if system is None or name is None:
+        return str(model)
+    return f"{system}:{name}"
+
+
+def strip_thinking(history: list) -> list:
+    """A copy of ``history`` with every ``ThinkingPart`` removed, and every
+    ``ModelResponse`` that held nothing else dropped.
+
+    Used when a spawn resumes on a different model than the one that wrote
+    its transcript. pydantic-ai replays a persisted ThinkingPart back to the
+    provider under the field it arrived in (``reasoning``,
+    ``reasoning_content``, a provider-specific block id) whenever the part's
+    ``provider_name`` matches the current model's ``system`` — and two models
+    behind one OpenAI-compatible provider share that system while disagreeing
+    about the field: glm-5.2 answers 400 "Extra inputs are not permitted,
+    field: messages[n].reasoning" to a transcript mimo-v2.5 wrote. Reasoning is
+    only ever meaningful to the model that produced it, so dropping it costs
+    the new model nothing it could use. A response left with no parts is
+    dropped too rather than sent as ``{"role": "assistant", "content": null}``
+    (the shape some providers reject — see ``_drop_contentless_responses``);
+    a thinking + tool-call response keeps its tool call, so no ToolReturnPart
+    is stranded. Returns the input list itself when there is nothing to strip."""
+    from dataclasses import replace
+
+    from pydantic_ai.messages import ModelResponse, ThinkingPart
+
+    def has_thinking(message: object) -> bool:
+        return isinstance(message, ModelResponse) and any(
+            isinstance(part, ThinkingPart) for part in message.parts
+        )
+
+    if not any(has_thinking(message) for message in history):
+        return history
+    out: list = []
+    for message in history:
+        if has_thinking(message):
+            kept = [part for part in message.parts if not isinstance(part, ThinkingPart)]
+            if not kept:
+                continue
+            message = replace(message, parts=kept)
+        out.append(message)
+    return out
+
+
 class SpawnRunDriver:
     """Drives a built sub-agent's model loop to completion. Retry/overflow/
     contention recovery lives here, keeping ``SubagentRunner`` the
