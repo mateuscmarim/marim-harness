@@ -27,6 +27,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..config import MultiModelSource, detect_active_providers
 from ..images import image_cache_root, media_type_for_path
+from ..jobs import history_rows
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
 from ..session.store import SessionLoadError
@@ -88,6 +89,23 @@ def _workspace(request: Request):
 def _session_exists(record, session_id: str) -> bool:
     manager = SessionManager(Path(record.path))
     return manager.session_path(session_id).exists()
+
+
+def _session_scope(request: Request) -> tuple:
+    """The (workspace record, session id, error) triple every per-session
+    route opens with: the bearer check, then the workspace and the session
+    file must exist. ``error`` is the response to return when set (the other
+    two are None then)."""
+    denied = _unauthorized(request)
+    if denied:
+        return None, None, denied
+    record = _workspace(request)
+    if record is None:
+        return None, None, _error(404, "not_found", "unknown workspace")
+    session_id = request.path_params["sid"]
+    if not _session_exists(record, session_id):
+        return None, None, _error(404, "not_found", "unknown session")
+    return record, session_id, None
 
 
 async def _json_body(request: Request, model):
@@ -645,12 +663,17 @@ async def list_jobs(request: Request) -> Response:
     if not _session_exists(record, session_id):
         return _error(404, "not_found", "unknown session")
     host = _supervisor(request).peek(record.id, session_id)
+    reader = _spawn_meta_reader(record, session_id)
     if host is None:
-        return _cached_json({"jobs": []}, "max-age=30")
+        # No host loaded: the session's settled history is still on disk (the
+        # same rows a loaded host would serve as ``registry.history``), and
+        # nothing can be running — a cold session has no live registry.
+        persisted = SessionManager(Path(record.path)).persisted_jobs(session_id)
+        return _cached_json(
+            {"jobs": jobs_view.assemble([], history_rows(persisted), reader)}, "max-age=30"
+        )
     registry = host.harness.deps.jobs
-    dtos = jobs_view.assemble(
-        registry.list(), registry.history, _spawn_meta_reader(record, session_id)
-    )
+    dtos = jobs_view.assemble(registry.list(), registry.history, reader)
     return _cached_json({"jobs": dtos}, "max-age=30")
 
 
@@ -681,6 +704,48 @@ async def get_job(request: Request) -> Response:
     if job.kind == "agent" and job.stream_id:
         meta = _spawn_meta_reader(record, session_id)(job.stream_id)
     return _cached_json(jobs_view.detail_dto(job, result, meta), "max-age=30")
+
+
+async def cancel_job(request: Request) -> Response:
+    """``POST .../jobs/{job_id}/cancel``: stop a running job. The registry's
+    own wording rides back as ``message`` so an attached TUI's ``/jobs
+    cancel`` reads exactly as the in-process one. A cold host has no live
+    jobs (its history rows are settled by definition), so it is a 404 like
+    an unknown id; a settled job is a 409 rather than a silent no-op."""
+    record, session_id, error = _session_scope(request)
+    if error is not None:
+        return error
+    job_id = request.path_params["job_id"]
+    host = _supervisor(request).peek(record.id, session_id)
+    job = host.harness.deps.jobs.get(job_id) if host is not None else None
+    if host is None or job is None:
+        return _error(404, "job_not_found", "unknown job")
+    if job.status != "running":
+        return _error(409, "already_settled", f"job {job_id} already {job.status}")
+    message = await host.harness.deps.jobs.cancel(job_id)
+    return JSONResponse({"ok": True, "message": message})
+
+
+async def resume_spawn(request: Request) -> Response:
+    """``POST .../subagents/{stream_id}/resume``: resume an interrupted
+    sub-agent spawn as a background job on the daemon. Loads the host when
+    cold (the runner that can resume lives on the harness), through the same
+    claim/delete mapping ``POST messages`` uses. A refusal from the runner
+    (no sidecar, already finished, already resuming, unreadable transcript)
+    is a 409 carrying the runner's reason."""
+    record, session_id, error = _session_scope(request)
+    if error is not None:
+        return error
+    host, error = await _host_for_response(request, record, session_id)
+    if error is not None:
+        return error
+    resume = host.harness.deps.services.resume_subagent
+    if resume is None:
+        return _error(409, "resume_refused", "sub-agent resume is not available in this session")
+    job_id, message = await resume(request.path_params["stream_id"])
+    if job_id is None:
+        return _error(409, "resume_refused", message)
+    return JSONResponse({"job_id": job_id}, status_code=201)
 
 
 async def list_asks(request: Request) -> Response:
@@ -863,6 +928,8 @@ def create_app(
         Route(f"{base}/asks/{{aid}}", answer_ask, methods=["POST"]),
         Route(f"{base}/jobs", list_jobs, methods=["GET"]),
         Route(f"{base}/jobs/{{job_id}}", get_job, methods=["GET"]),
+        Route(f"{base}/jobs/{{job_id}}/cancel", cancel_job, methods=["POST"]),
+        Route(f"{base}/subagents/{{stream_id}}/resume", resume_spawn, methods=["POST"]),
         WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),

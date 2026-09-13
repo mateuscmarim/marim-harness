@@ -603,6 +603,11 @@ class StreamRenderer:
         widget.finish(report, status=status)
         del self._detached_cards[job_id]
 
+    def detached_job_ids(self) -> set[str]:
+        """The job ids of detached cards still waiting on their job to settle
+        (a card leaves the map the moment it is filled)."""
+        return set(self._detached_cards)
+
     def fill_finished_detached_cards(self, jobs) -> None:
         """Fill every mapped detached card whose job has settled. Called from the
         job-registry change hook so cards update live as background jobs complete."""

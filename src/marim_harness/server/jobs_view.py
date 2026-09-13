@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from ..jobs import Job
+from ..jobs import Job, result_tail
 
 
 def job_to_dto(job: Job, meta: dict | None) -> dict:
     """One JobDto. ``meta`` is the spawn's sidecar meta (agent jobs) or None.
     Metric fields stay ``None`` when meta is absent (bash jobs, or an agent
-    spawn still running before its terminal meta is written)."""
+    spawn still running before its terminal meta is written). ``result_tail``
+    is the settled result's verdict-carrying tail (the same one the persisted
+    history stores), ``None`` while the job runs — enough for an attached TUI
+    to settle a sub-agent card without a detail round trip."""
     usage = meta.get("usage") if meta else None
     tool_count = meta.get("tool_count") if meta else None
     duration = meta.get("duration") if meta else None
@@ -29,6 +32,7 @@ def job_to_dto(job: Job, meta: dict | None) -> dict:
         "duration_secs": duration,
         "usage": usage,
         "tool_count": tool_count,
+        "result_tail": result_tail(job.result) if job.status != "running" else None,
         # Detail-only field: the list DTO never carries the actual prompt (it
         # can be long and isn't needed for the jobs panel); detail_dto()
         # overwrites this placeholder with job.prompt.

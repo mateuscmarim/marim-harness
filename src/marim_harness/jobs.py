@@ -26,7 +26,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,11 @@ _DIGEST_RESULT_CHARS = 200
 _HISTORY_CAP = 50
 
 
-def _result_tail(result: str | None) -> str:
+def result_tail(result: str | None) -> str:
     """The last _DIGEST_RESULT_CHARS chars of a result, whitespace-collapsed —
-    the same verdict-carrying tail the digest inlines."""
+    the same verdict-carrying tail the digest inlines, the persisted history
+    stores, and the jobs list DTO carries over the wire. Idempotent: the tail
+    of a tail is that tail."""
     if not result:
         return ""
     compact = " ".join(result.split())
@@ -99,6 +101,42 @@ class Job:
     task: asyncio.Task | None = field(default=None, repr=False)
     kill: Callable[[], None] | None = field(default=None, repr=False)
     output_fn: Callable[[], str] | None = field(default=None, repr=False)
+
+
+def history_rows(entries: list[dict]) -> list[Job]:
+    """Persisted settled summaries (the ``jobs`` list a session file carries,
+    see :meth:`JobRegistry.export_settled`) as read-only :class:`Job` rows —
+    no task, no kill, ``result`` is the stored tail. Shared by the registry's
+    ``import_history`` and the daemon's cold-session jobs listing, so both
+    read a session file's history the same way."""
+    return [
+        Job(
+            id=str(e.get("id", "?")),
+            kind=str(e.get("kind", "agent")),
+            label=str(e.get("label", "")),
+            status=_validated_status(e.get("status")),
+            result=e.get("result_tail") or None,
+            stream_id=e.get("stream_id"),
+            finished_at=e.get("finished_at"),
+            prompt=e.get("prompt"),
+        )
+        for e in entries
+        if isinstance(e, dict)
+    ]
+
+
+class JobsView(Protocol):
+    """The read surface the TUI's panels and replay need from "the session's
+    jobs": the live :class:`JobRegistry` in process, a read-only mirror of the
+    daemon's registry when attached (``interfaces/tui/remote_jobs.py``). The
+    mutating verbs (cancel, resume) are link commands, not part of this."""
+
+    @property
+    def history(self) -> list[Job]: ...
+    def list(self) -> list[Job]: ...
+    def get(self, job_id: str) -> Job | None: ...
+    def any_running(self) -> bool: ...
+    def has_finished_pending(self) -> bool: ...
 
 
 class JobRegistry:
@@ -438,7 +476,7 @@ class JobRegistry:
         :data:`_DIGEST_RESULT_CHARS` chars of its result, whitespace-collapsed so
         the verdict reads on one line. Empty when the job has no result (e.g.
         cancelled)."""
-        tail = _result_tail(job.result)
+        tail = result_tail(job.result)
         return f": {tail}" if tail else ""
 
     def export_settled(self) -> list[dict]:
@@ -454,7 +492,7 @@ class JobRegistry:
                 "kind": j.kind,
                 "label": j.label,
                 "status": j.status,
-                "result_tail": _result_tail(j.result),
+                "result_tail": result_tail(j.result),
                 "stream_id": j.stream_id,
                 "finished_at": j.finished_at,
                 "prompt": j.prompt,
@@ -468,20 +506,7 @@ class JobRegistry:
         """Load prior-session settled summaries as read-only ``history``. Also
         seeds the id counter past any imported ``job-N`` so a job launched this
         process never shares an id with a history row on the panel."""
-        self.history = [
-            Job(
-                id=str(e.get("id", "?")),
-                kind=str(e.get("kind", "agent")),
-                label=str(e.get("label", "")),
-                status=_validated_status(e.get("status")),
-                result=e.get("result_tail") or None,
-                stream_id=e.get("stream_id"),
-                finished_at=e.get("finished_at"),
-                prompt=e.get("prompt"),
-            )
-            for e in entries
-            if isinstance(e, dict)
-        ]
+        self.history = history_rows(entries)
         for job in self.history:
             m = re.fullmatch(r"job-(\d+)", job.id)
             if m:

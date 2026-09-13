@@ -391,6 +391,21 @@ class SessionManager:
         construction reserves the id)."""
         return self._path(session_id)
 
+    def persisted_jobs(self, session_id: str) -> list[dict]:
+        """The settled-job summaries a session file carries (``jobs``, see
+        ``JobRegistry.export_settled``), read off the header fast path so a
+        cold session's jobs listing never parses its transcript. Falls back to
+        the full load for a pre-header file; a missing or unreadable file is
+        simply no history."""
+        data = _header_fields(self._path(session_id))
+        if data is not None:
+            jobs = data.get("jobs")
+            return jobs if isinstance(jobs, list) else []
+        try:
+            return self.store(session_id).load()[4]
+        except SessionLoadError:
+            return []
+
     def list(self) -> list[SessionInfo]:
         """All saved sessions for this workspace, newest first."""
         infos: list[SessionInfo] = []

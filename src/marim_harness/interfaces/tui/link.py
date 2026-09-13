@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from pydantic_ai.usage import RunUsage
 
 from ...compaction import estimate_tokens
+from ...jobs import Job
 from ...runtime.permissions import Mode
 from ...server.client import HistorySnapshot
 from ...server.schema import Event
@@ -122,6 +123,13 @@ class SessionLink(Protocol):
     async def history(self) -> HistorySnapshot: ...
     async def refresh(self) -> None: ...
     async def close(self) -> None: ...
+    # Jobs (phase 4b): the read is a snapshot of the session's registry; the
+    # verbs return the registry's / runner's own verdict strings so the
+    # commands read identically on both kinds of link.
+    async def jobs(self) -> list[Job]: ...
+    async def job_output(self, job_id: str) -> str: ...
+    async def cancel_job(self, job_id: str) -> str: ...
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]: ...
 
 
 class LocalLinkInfo:
@@ -259,3 +267,19 @@ class LocalSessionLink:
 
     async def close(self) -> None:
         await self.host.stop()
+
+    async def jobs(self) -> list[Job]:
+        registry = self.harness.deps.jobs
+        return registry.history + registry.list()
+
+    async def job_output(self, job_id: str) -> str:
+        return self.harness.deps.jobs.output(job_id)
+
+    async def cancel_job(self, job_id: str) -> str:
+        return await self.harness.deps.jobs.cancel(job_id)
+
+    async def resume_spawn(self, stream_id: str) -> tuple[str | None, str]:
+        resume = self.harness.deps.services.resume_subagent
+        if resume is None:
+            return None, "sub-agent resume is not available in this session"
+        return await resume(stream_id)

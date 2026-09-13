@@ -257,6 +257,30 @@ def test_list_reads_header_without_parsing_messages(tmp_path: Path):
     assert infos[0].tokens == 5
 
 
+def test_persisted_jobs_reads_the_header_and_falls_back_for_old_files(tmp_path: Path):
+    """``persisted_jobs`` (the daemon's cold jobs listing, phase 4b) comes off
+    the header fast path — a file whose messages portion is broken still
+    answers — and off the full load for a pre-header file; a session with no
+    file at all is simply no history."""
+    mgr = _manager(tmp_path)
+    entry = {"id": "job-1", "kind": "agent", "label": "l", "status": "done", "result_tail": "r"}
+    store = mgr.create("with-jobs")
+    store.save(_history(), RunUsage(), [], jobs=[entry])
+    head, sep, _tail = store.path.read_text().partition('"messages":')
+    assert sep
+    store.path.write_text(head + '"messages": [THIS IS NOT JSON')
+    assert mgr.persisted_jobs(store.session_id) == [entry]
+
+    old = mgr.create("pre-header")
+    old.save([], RunUsage(), [], jobs=[entry])
+    data = json.loads(old.path.read_text())
+    del data["message_count"]  # the header fast path requires it
+    old.path.write_text(json.dumps(data))
+    assert mgr.persisted_jobs(old.session_id) == [entry]
+
+    assert mgr.persisted_jobs("never-saved") == []
+
+
 def test_list_skips_checkpoint_sidecar(tmp_path: Path):
     """A ``<id>.checkpoints.json`` sidecar shares the sessions dir and matches
     ``*.json`` but is NOT a session — killing marim during a session's first-ever

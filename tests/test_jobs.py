@@ -709,6 +709,26 @@ async def _noop() -> str:
     return ""
 
 
+def test_history_rows_tolerates_sparse_and_malformed_entries():
+    """``history_rows`` is what both ``import_history`` and the daemon's cold
+    jobs listing (phase 4b) read persisted summaries through: a missing field
+    gets a safe default, an unknown status is normalised, and a non-dict
+    entry is dropped rather than raising on an old or hand-edited file."""
+    from marim_harness.jobs import history_rows
+
+    rows = history_rows(
+        [
+            {"id": "job-1", "kind": "agent", "label": "l", "status": "done", "result_tail": "r"},
+            {"id": "job-2", "status": "bogus", "result_tail": ""},
+            "not a row",
+        ]
+    )
+    assert [(r.id, r.kind, r.label, r.status, r.result) for r in rows] == [
+        ("job-1", "agent", "l", "done", "r"),
+        ("job-2", "agent", "", "done", None),  # unknown status -> "done"
+    ]
+
+
 def test_import_history_is_not_live():
     reg = JobRegistry()
     reg.import_history(

@@ -901,6 +901,145 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     assert agent_body["duration_secs"] == 7.5
 
 
+def test_jobs_list_on_a_cold_session_returns_its_persisted_history(client):
+    """Phase 4b: a session with no live host still answers ``GET jobs`` with
+    the settled rows its file carries (``jobs``, the export the in-process
+    panel imports as history), so an attached TUI's replay can settle a
+    spawn card that finished in an earlier daemon life. Rows are settled by
+    definition, so ``result_tail`` is the persisted tail."""
+    from pydantic_ai.usage import RunUsage
+
+    from marim_harness.session import SessionManager
+
+    test_client, tmp_path = client
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path)
+    store = SessionManager(project).store(sid)
+    store.save(
+        [],
+        RunUsage(),
+        jobs=[
+            {
+                "id": "job-1",
+                "kind": "agent",
+                "label": "explore: old",
+                "status": "done",
+                "result_tail": "it worked",
+                "stream_id": "sg-old",
+                "finished_at": "2026-09-13T00:00:00+00:00",
+            }
+        ],
+    )
+    resp = test_client.get(f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs", headers=AUTH)
+    assert resp.status_code == 200
+    [row] = resp.json()["jobs"]
+    assert (row["id"], row["status"], row["stream_id"]) == ("job-1", "done", "sg-old")
+    assert row["result_tail"] == "it worked"
+    # Cold: no live job to cancel (history rows are settled by definition).
+    cancel = test_client.post(
+        f"/v1/workspaces/{ws_id}/sessions/{sid}/jobs/job-1/cancel", headers=AUTH
+    )
+    assert cancel.status_code == 404
+    assert cancel.json()["error"]["code"] == "job_not_found"
+
+
+def test_cancel_job_stops_a_running_job_and_refuses_a_settled_one(client_with_supervisor):
+    """Phase 4b: ``POST .../jobs/{id}/cancel`` cancels a live job with the
+    registry's own wording riding back, a second cancel is a 409 (settled),
+    an unknown id a 404, and the listing shows the job ``cancelled``."""
+    test_client, tmp_path, supervisor, loop_holder = client_with_supervisor
+    ws_id, sid, _project = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    _mount_idle_host(test_client, base)
+    host = supervisor.peek(ws_id, sid)
+    assert host is not None
+    registry = host.harness.deps.jobs
+    loop = loop_holder["loop"]
+
+    async def _register_forever() -> str:
+        async def _forever() -> str:
+            await asyncio.Event().wait()
+            return "never"
+
+        return registry.register("bash", "sleep forever", _forever(), prompt="sleep")
+
+    job_id = asyncio.run_coroutine_threadsafe(_register_forever(), loop).result(timeout=5.0)
+
+    unknown = test_client.post(f"{base}/jobs/job-99/cancel", headers=AUTH)
+    assert unknown.status_code == 404
+    assert unknown.json()["error"]["code"] == "job_not_found"
+    assert test_client.post(f"{base}/jobs/{job_id}/cancel").status_code == 401
+
+    cancelled = test_client.post(f"{base}/jobs/{job_id}/cancel", headers=AUTH)
+    assert cancelled.status_code == 200
+    assert cancelled.json() == {"ok": True, "message": f"cancelled {job_id}"}
+    [row] = test_client.get(f"{base}/jobs", headers=AUTH).json()["jobs"]
+    assert (row["id"], row["status"]) == (job_id, "cancelled")
+
+    again = test_client.post(f"{base}/jobs/{job_id}/cancel", headers=AUTH)
+    assert again.status_code == 409
+    assert again.json()["error"] == {
+        "code": "already_settled",
+        "message": f"job {job_id} already cancelled",
+    }
+
+
+def test_resume_spawn_loads_the_host_and_maps_the_runners_answer(client_with_supervisor):
+    """Phase 4b: ``POST .../subagents/{stream_id}/resume`` reaches the
+    harness's resume seam even on a cold session (the host is loaded like
+    ``POST messages`` does); the runner's refusal is a 409 carrying its
+    reason, a started resume is a 201 with the job id, and a session whose
+    harness has no resume seam refuses too."""
+    test_client, tmp_path, supervisor, _loop_holder = client_with_supervisor
+    ws_id, sid, _project = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    assert supervisor.peek(ws_id, sid) is None  # cold
+
+    assert test_client.post(f"{base}/subagents/sg-1/resume").status_code == 401
+    refused = test_client.post(f"{base}/subagents/sg-never/resume", headers=AUTH)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "resume_refused"
+    assert "No resumable transcript" in refused.json()["error"]["message"]
+    host = supervisor.peek(ws_id, sid)
+    assert host is not None  # the resume loaded it
+
+    seen: list[str] = []
+
+    async def fake_resume(stream_id: str) -> tuple[str | None, str]:
+        seen.append(stream_id)
+        return "job-7", "resumed"
+
+    host.harness.deps.services.resume_subagent = fake_resume
+    started = test_client.post(f"{base}/subagents/sg-1/resume", headers=AUTH)
+    assert started.status_code == 201
+    assert started.json() == {"job_id": "job-7"}
+    assert seen == ["sg-1"]
+
+    host.harness.deps.services.resume_subagent = None
+    missing = test_client.post(f"{base}/subagents/sg-1/resume", headers=AUTH)
+    assert missing.status_code == 409
+    assert missing.json()["error"]["message"] == (
+        "sub-agent resume is not available in this session"
+    )
+    assert test_client.post(f"{base}/subagents/sg-1/resume", headers=AUTH).status_code == 409
+    assert (
+        test_client.post(
+            f"/v1/workspaces/{ws_id}/sessions/nope/subagents/sg-1/resume", headers=AUTH
+        ).status_code
+        == 404
+    )
+
+
+def _mount_idle_host(test_client, base: str) -> None:
+    """Drive one real turn to a parked approval, answer it and poll back to
+    idle so the supervisor holds a live host for ``base`` (``peek`` only
+    answers with a live host, and the fixture's idle_ttl keeps it mounted)."""
+    test_client.post(f"{base}/messages", headers=AUTH, json={"prompt": "edit it"})
+    state = _poll(test_client, base, lambda s: s["status"] == "waiting_ask")
+    [ask] = state["pending_asks"]
+    test_client.post(f"{base}/asks/{ask['id']}", headers=AUTH, json={"approve": True})
+    _poll(test_client, base, lambda s: s["status"] == "idle")
+
+
 def test_get_cache_control_headers(client):
     test_client, tmp_path = client
     ws_id, sid, _ = _setup_workspace_and_session(test_client, tmp_path)

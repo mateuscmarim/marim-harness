@@ -41,3 +41,37 @@ async def test_local_link_reports_the_host_status_and_mirrors_the_harness(tmp_pa
         assert await link.interrupt() is False  # nothing running
     finally:
         await link.close()  # stops the host, as on_unmount does
+
+
+@pytest.mark.anyio
+async def test_local_link_jobs_surface_is_the_registry(tmp_path):
+    """Phase 4b: the jobs read is history + live rows (what the panel paints),
+    the actions are the registry's own (same wording as the in-process
+    commands), and a resume goes through the harness's runner seam."""
+    harness = _harness(tmp_path)
+    host = SessionHost(harness, EventBus(), autonomous_wake=False)
+    link = LocalSessionLink(harness, host)
+    try:
+        registry = harness.deps.jobs
+        registry.import_history(
+            [{"id": "job-1", "kind": "agent", "label": "l", "status": "done", "result_tail": "r"}]
+        )
+
+        async def _work() -> str:
+            return "done"
+
+        job_id = registry.register("bash", "x", _work())
+        await registry.wait(job_id)
+        assert [j.id for j in await link.jobs()] == ["job-1", job_id]
+        assert await link.job_output(job_id) == "done"
+        assert await link.job_output("job-9") == "No job 'job-9'."
+        assert await link.cancel_job(job_id) == f"job {job_id} already done"
+        resumed, message = await link.resume_spawn("sg-never")
+        assert resumed is None and message  # refused with the runner's reason
+        harness.deps.services.resume_subagent = None
+        assert await link.resume_spawn("sg-never") == (
+            None,
+            "sub-agent resume is not available in this session",
+        )
+    finally:
+        await link.close()

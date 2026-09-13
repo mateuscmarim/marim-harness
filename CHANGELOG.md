@@ -10,6 +10,18 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **Jobs over the wire (attached TUI).** A TUI attached to a daemon-owned
+  session now sees and acts on the daemon's background jobs: `GET
+  .../jobs` seeds the jobs panel and is re-read on every `jobs.changed`,
+  the daemon's list decides whether a replayed sub-agent card is still
+  running or finished (a spawn that settles while attached fills its card
+  with the full result via `GET jobs/{id}`), `/jobs` (list, `output`,
+  `cancel`) and `r` on an interrupted spawn go through the new `POST
+  .../jobs/{id}/cancel` and `POST .../subagents/{stream_id}/resume`
+  routes, and only `/jobs wake` stays refused (autonomous wake is the
+  daemon's). The list DTO gains `result_tail` (`null` while running) and a
+  cold session's `GET jobs` returns the settled history its file carries.
+  Phase 4b of the cross-process session-event design.
 - `codex-cli` provider: `MARIM_PROVIDER=codex-cli` delegates each turn to
   `codex app-server` (JSON-RPC over stdio) on a ChatGPT/Codex subscription,
   with approvals brokered through marim's own panel, thinking levels mapped
