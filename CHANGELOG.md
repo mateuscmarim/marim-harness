@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-13
+
 ### Added
 
 - **Jobs over the wire (attached TUI).** A TUI attached to a daemon-owned
@@ -124,6 +126,16 @@ pre-1.0, minor versions may contain breaking changes.
   no sign of it — the only tell was a status bar without `daemon`. The launch
   now says so: a notice on stderr for headless, and in the TUI transcript
   once it is up.
+- **Sub-agents screen repaint after teardown.** The screen's flush tick could
+  fire after Textual had already removed the view from the DOM (a shutdown
+  without `App.exit`, or a screen switch mid-stream) and raise `NoMatches`;
+  the tick now skips quietly when the view is gone.
+
+### Security
+
+- Dependency bump clearing 19 pip-audit advisories: `cryptography` 50.0.1,
+  `requests` 2.34.2 (pinned through a `[tool.uv]` override), `httpcore`/`httpx`
+  2.12.0, `mcp` 1.30.0, `pyasn1` 0.6.4, `pydantic-settings` 2.15.0.
 
 ## [0.6.0] - 2026-09-01
 
