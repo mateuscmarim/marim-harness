@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-13
+
 ### Fixed
 
 - **CLI providers' tool calls missing from persisted history.** Under
