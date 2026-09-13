@@ -1348,6 +1348,39 @@ async def test_respawn_resets_the_cost_baseline(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_a_failed_turn_leaves_its_spend_for_the_next_turn_to_bill(tmp_path, monkeypatch):
+    """A ``result`` that errored with no text raises, and the raise records no
+    usage — so the meter is NOT advanced past it: the next successful turn
+    bills the failed turn's spend too, and the ledger's total still equals
+    the CLI's running total (0.006) instead of losing the failed 0.004."""
+    scenario = {
+        "turns": [
+            [
+                {
+                    "result": {
+                        "subtype": "error_during_execution",
+                        "is_error": True,
+                        "result": "",
+                        "total_cost_usd": 0.004,
+                    }
+                }
+            ],
+            [{"text": "ok"}, {"result": {"total_cost_usd": 0.006}}],
+        ]
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+    history = _user("first")
+    try:
+        with pytest.raises(CliModelError):
+            await model.request(history, None, ModelRequestParameters())
+        resp = await model.request(history, None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert resp.usage.details[COST_DETAIL_KEY] == 6000
+    assert len(read_claude_argvs(tmp_path)) == 1  # same process, same running total
+
+
+@pytest.mark.anyio
 async def test_quota_poll_failure_is_ignored_and_ephemeral_clones_skip_it(tmp_path, monkeypatch):
     model = _model(tmp_path, monkeypatch, {"usage_report": {"rate_limits_available": False}})
     clone = model.ephemeral_clone(cwd=str(tmp_path))

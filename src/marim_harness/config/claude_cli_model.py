@@ -940,7 +940,15 @@ class ClaudeCliModel(ExternalCliModel):
 
     def _settle_turn(self, done: DoneChunk) -> RequestUsage:
         """The turn's usage with its per-turn cost billed (``CostMeter``), and
-        the context report's window refreshed from the result."""
+        the context report's window refreshed from the result.
+
+        Deliberately NOT called for a turn that raises (a ``result`` that
+        errored with no usable text): the raise records no usage anywhere, so
+        advancing the meter there would drop that turn's spend from the
+        ledger for good. Leaving the baseline where it was makes the next
+        successful turn carry the failed one's cost — attributed late, but
+        the session total stays equal to the CLI's own running total, which
+        is the number the ledger is meant to reproduce."""
         if done.context_window:
             self._context_window = done.context_window
             if self.context_report is not None:
