@@ -86,7 +86,14 @@ flows through the **job registry**:
   `/jobs wake on|off`.
 
 Interrupted spawns persist a sidecar transcript and can be resumed from the
-sub-agents screen; a resume always continues as a background job.
+sub-agents screen; a resume always continues as a background job. A resume
+survives a model change (a tier reconfigured in between, or a `model=` slug
+that fell out of the allowlist): the sidecar records the model the spawn
+actually ran on, and when the resumed build lands on a different one its
+persisted reasoning is dropped before the first request — thinking parts are
+only meaningful to the model that wrote them, and a provider that names the
+thinking field differently rejects the whole request otherwise. Tool calls
+and their results are kept.
 
 ## Agent specs
 

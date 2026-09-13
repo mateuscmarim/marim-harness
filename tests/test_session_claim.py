@@ -116,3 +116,23 @@ def test_session_claimed_lives_in_claim_module_and_supervisor_reexports():
     assert exc.session_id == "20260831-1"
     assert exc.holder is not None and exc.holder.kind == "tui"
     assert str(exc) == "20260831-1"
+
+
+def test_acquire_records_the_holder_it_displaced(session_file: Path) -> None:
+    """A claim remembers who the file said held the session before it (the
+    LAST holder — its lock was free, so it is gone): None the first time, the
+    previous identity after. The CLI uses this to notice a dead daemon."""
+    first = try_acquire(session_file, kind="daemon", endpoint="http://127.0.0.1:8642")
+    assert first is not None
+    assert first.displaced is None
+    first.release()
+    second = try_acquire(session_file, kind="tui")
+    assert second is not None
+    try:
+        assert second.displaced == Holder(
+            pid=os.getpid(), kind="daemon", endpoint="http://127.0.0.1:8642"
+        )
+        # The file now describes the new holder, not the displaced one.
+        assert read_holder(session_file) == Holder(pid=os.getpid(), kind="tui", endpoint=None)
+    finally:
+        second.release()

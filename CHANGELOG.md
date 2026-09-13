@@ -107,6 +107,24 @@ pre-1.0, minor versions may contain breaking changes.
   `MARIM_CLAUDE_CLI_TIMEOUT` is now a per-turn *silence* bound that pauses while an
   approval prompt waits. Claude Code ≥ 2.1 required (older versions warn). Closes #109.
 
+### Fixed
+
+- **Resuming a sub-agent on a different model.** A spawn transcript written
+  by one model and resumed on another (a tier reconfigured in between, or a
+  recorded `model=` slug the current allowlist no longer carries) failed the
+  first request with `400 Extra inputs are not permitted, field:
+  messages[n].reasoning` — pydantic-ai replays persisted thinking parts under
+  the field they arrived in, and models behind one OpenAI-compatible provider
+  disagree about that field. The sidecar now records the model the spawn ran
+  on (`model_ref`), and a resume that lands on a different model (or a sidecar
+  that predates the stamp) drops the persisted thinking parts, keeping tool
+  calls and results.
+- **Stale daemon claim taken over silently.** After a `marim serve` daemon
+  died, `marim --session <id>` (or `--resume`) ran the session locally with
+  no sign of it — the only tell was a status bar without `daemon`. The launch
+  now says so: a notice on stderr for headless, and in the TUI transcript
+  once it is up.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

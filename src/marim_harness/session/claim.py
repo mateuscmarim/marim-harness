@@ -78,9 +78,15 @@ class SessionClaim:
     fd closes regardless, so a failed unlock can never strand a session.
     """
 
-    def __init__(self, path: Path, fd: int | None) -> None:
+    def __init__(self, path: Path, fd: int | None, displaced: "Holder | None" = None) -> None:
         self.path = path
         self._fd = fd
+        # Who the claim file described when this claim took it — the LAST
+        # holder, long gone (the lock was free). None for a never-claimed
+        # session, an unreadable file, or a degraded (unlocked) claim. The CLI
+        # reads it to tell a user who expected to attach to a ``marim serve``
+        # daemon that the daemon no longer holds the session.
+        self.displaced = displaced
 
     def release(self) -> None:
         fd, self._fd = self._fd, None
@@ -122,8 +128,11 @@ def try_acquire(session_path, *, kind: str, endpoint: str | None = None) -> Sess
         with contextlib.suppress(OSError):
             os.close(fd)
         return None
+    # Read the previous holder BEFORE stamping ourselves over it: with the lock
+    # ours, whatever the file says is a claim that has already ended.
+    displaced = read_holder(session_path)
     _write_identity(fd, kind=kind, endpoint=endpoint)
-    return SessionClaim(path, fd)
+    return SessionClaim(path, fd, displaced)
 
 
 def _write_identity(fd: int, *, kind: str, endpoint: str | None) -> None:

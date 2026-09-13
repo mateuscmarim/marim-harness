@@ -215,7 +215,11 @@ manage them. Untitled sessions are auto-titled in the background after some
 conversation. The picker tags a session another process has open
 (`daemon`, or `tui (pid N)`); one the `marim serve` daemon owns can be
 attached to with `marim --session <id>` — the status bar then reads
-`daemon`, and the few commands that need the session's own process
+`daemon`. If the daemon that held the session is gone (it died or was
+restarted without reloading the session), that launch takes the session
+over locally instead and says so in the transcript (headless: on stderr);
+start the daemon and have it load the session (`marim serve` loads a
+session on its first message) to attach. Attached, the few commands that need the session's own process
 (`/clear`, `/new`, `/compact`, `/rewind`, `/name`, `/switch`, `/skill`, `/mcp`, `/jobs wake`, `/worktree`, `/plugin`, `/trust`, `/advisor`, `/think`, `!`, steering with an image) say so instead of running. The jobs panel, `/jobs` (list, `output`, `cancel`) and `r` on an interrupted sub-agent card act on the daemon's jobs over its API: the daemon's job list decides whether a replayed spawn card is still running or finished, and a spawn that settles while you watch fills its card with the full result. Only when that list cannot be read does a running card stay pending rather than being flagged as interrupted.
 
 Compaction runs automatically when context approaches the threshold shown in
