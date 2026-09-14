@@ -28,6 +28,9 @@ class Event:
 # Maps stream_events.event_to_dict()'s "type" field to the wire event type
 # published on the bus. Events whose type isn't listed here are not surfaced.
 STREAM_EVENT_TYPES = {
+    "backend_state": "session.backend_state",
+    "notice": "session.notice",
+    "backend_task": "backend.task",
     "text": "text.delta",
     "thinking": "thinking.delta",
     "tool_call": "tool.call",

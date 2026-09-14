@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 import re
 import time
 from dataclasses import asdict
@@ -20,12 +21,14 @@ from pathlib import Path
 from pydantic import ValidationError
 from pydantic_ai.usage import RunUsage
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..config import MultiModelSource, detect_active_providers
+from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
 from ..jobs import history_rows
@@ -37,6 +40,7 @@ from ..trust_surface import ProjectSurface, scan_project_surface
 from ..usage import usage_summary
 from . import jobs_view
 from .auth import token_matches
+from .files import InvalidFileRequest, WorkspaceFile, WorkspaceFileNotFound, open_workspace_file
 from .host import HostClosed, SessionHost, TurnQueueFull
 from .schema import (
     AskAnswerIn,
@@ -52,6 +56,7 @@ from .supervisor import SessionBusy, SessionClaimed, SessionSupervisor
 from .workspaces import WorkspaceRegistry
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+logger = logging.getLogger(__name__)
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -487,6 +492,8 @@ def _live_session_fields(host) -> dict:
         "compact_threshold": session.compact_threshold,
         "context": report.to_payload() if report is not None else None,
         "quota": (hint.render() or None) if hint is not None else None,
+        "backend_inventory": backend_snapshot(harness.current_model, "backend_inventory"),
+        "backend_telemetry": backend_snapshot(harness.current_model, "backend_telemetry"),
     }
 
 
@@ -895,6 +902,61 @@ async def get_history(request: Request) -> Response:
     )
 
 
+class _WorkspaceFileResponse(StreamingResponse):
+    def __init__(self, download: WorkspaceFile) -> None:
+        self.download = download
+        super().__init__(download.chunks(), headers=download.headers)
+
+    async def __call__(self, scope, receive, send) -> None:
+        # A generator's finally is insufficient: disconnect may happen before
+        # its first iteration. The response owns the descriptor throughout ASGI
+        # execution, including send failures, cancellation and early disconnect.
+        logger.debug("workspace file download started bytes=%s", self.download.size)
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.download.close()
+            logger.debug("workspace file download closed")
+
+
+def _close_cancelled_download(task: asyncio.Task[WorkspaceFile]) -> None:
+    with contextlib.suppress(InvalidFileRequest, WorkspaceFileNotFound, asyncio.CancelledError):
+        task.result().close()
+    logger.debug("workspace file open abandoned after cancellation")
+
+
+async def _open_download(root: Path, path: str | None) -> WorkspaceFile:
+    opening = asyncio.create_task(run_in_threadpool(open_workspace_file, root, path))
+    try:
+        # Cancelling a request cannot stop its worker thread. Preserve the
+        # result so a late-opened descriptor still has an owner to close it.
+        return await asyncio.shield(opening)
+    except asyncio.CancelledError:
+        opening.add_done_callback(_close_cancelled_download)
+        raise
+
+
+async def get_session_file(request: Request) -> Response:
+    record, _, error = _session_scope(request)
+    if error is not None:
+        return error
+    if len(request.query_params.getlist("path")) > 1:
+        return _error(400, "bad_request", "provide exactly one path")
+    try:
+        download = await _open_download(Path(record.path), request.query_params.get("path"))
+    except InvalidFileRequest as exc:
+        logger.debug("workspace file download refused: invalid request")
+        return _error(400, "bad_request", str(exc))
+    except WorkspaceFileNotFound:
+        logger.debug("workspace file download refused: unavailable file")
+        return _error(404, "not_found", "file is unavailable in this workspace")
+    try:
+        return _WorkspaceFileResponse(download)
+    except BaseException:
+        download.close()
+        raise
+
+
 async def get_session_image(request: Request) -> Response:
     denied = _unauthorized(request)
     if denied:
@@ -949,6 +1011,7 @@ def create_app(
         Route(f"{base}/subagents/{{stream_id}}/resume", resume_spawn, methods=["POST"]),
         WebSocketRoute(f"{base}/ws", session_ws),
         Route(f"{base}/history", get_history, methods=["GET"]),
+        Route(f"{base}/files", get_session_file, methods=["GET"]),
         Route(f"{base}/images/{{sha}}", get_session_image, methods=["GET"]),
     ]
 

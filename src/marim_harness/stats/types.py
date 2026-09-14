@@ -23,6 +23,7 @@ class TurnEvent:
     cost_usd: float | None
     cost_is_exact: bool
     session_duration_seconds: float | None
+    backend_result: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -64,3 +65,24 @@ class DayModelSeries:
 class ModelsReport:
     series: list[DayModelSeries]
     totals: list[ModelTotal]
+
+
+def normalize_backend_result(value: object) -> dict | None:
+    """Optional display details, never token or cost inputs (including on replay)."""
+    if not isinstance(value, dict):
+        return None
+    result: dict = {}
+    for key in ("num_turns", "duration_api_ms"):
+        count = value.get(key)
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            result[key] = count
+    if isinstance(value.get("stop_reason"), str):
+        result["stop_reason"] = value["stop_reason"]
+    denials = value.get("permission_denials")
+    if isinstance(denials, list):
+        result["permission_denials"] = [
+            {key: row[key] for key in ("tool_name", "tool_use_id") if isinstance(row.get(key), str)}
+            for row in denials
+            if isinstance(row, dict)
+        ]
+    return result or None

@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 
 from pydantic_ai.usage import RunUsage
 
+from ..config.lifecycle import BackendNotice, deliver_child_notice
 from .server import CodexServer, ThreadHandle, thread_id_for, thread_label
 from .transcript import ItemTranscript
 from .translate import (
@@ -307,7 +308,7 @@ class CollabRouter:
         for child in self._receivers(item.receivers):
             if child.settled:
                 out.extend(self._reopen(child))
-            out.extend(self._emit(child, Notice(text)))
+            out.extend(self._emit(child, Notice(text, transient=True)))
         return out
 
     def _reopen(self, child: _Child) -> list[object]:
@@ -379,7 +380,7 @@ class CollabRouter:
         elif item.is_error:
             text = f"{item.tool} failed: {item.result}" if item.result else f"{item.tool} failed"
             for child in self._receivers(item.receivers):
-                out.extend(self._emit(child, Notice(text)))
+                out.extend(self._emit(child, Notice(text, transient=True)))
         for tid, state in item.states.items():
             out.extend(self._fold_state(str(tid), state, item.result))
         return out
@@ -406,7 +407,9 @@ class CollabRouter:
             return []  # a ping for an agent nothing spawned: nothing to show
         if item.path and child.label is None:
             child.label = item.path.rsplit("/", 1)[-1] or item.path
-        out = self._emit(child, Notice(f"agent {item.path or child.label} {item.kind}"))
+        out = self._emit(
+            child, Notice(f"agent {item.path or child.label} {item.kind}", transient=True)
+        )
         if item.kind in _PING_SETTLES and not child.settled:
             content = "".join(child.last_text) or f"agent {item.kind}"
             out.extend(self._settle(child, content, item.kind == "interrupted", status=item.kind))
@@ -546,9 +549,9 @@ class ChildStreams:
         sid, item, sinks = routed.stream_id, routed.item, self._sinks
         if routed.model and sinks.on_model is not None:
             await sinks.on_model(sid, routed.model)
-        if isinstance(item, Notice):
+        if isinstance(item, Notice) and item.transient:
             if sinks.on_notice is not None:
-                await sinks.on_notice(sid, item.message)
+                await deliver_child_notice(item.normalized(), sid, None, sinks.on_notice)
             return
         if isinstance(item, UsageUpdate):
             if sinks.on_usage is not None and routed.usage is not None:
@@ -556,5 +559,9 @@ class ChildStreams:
             return
         tx = self._transcripts.setdefault(sid, ItemTranscript())
         for event in tx.feed(item):
-            if sinks.on_event is not None:
+            if isinstance(event, BackendNotice):
+                await deliver_child_notice(
+                    event, sid, sinks.on_event, sinks.on_notice, routed.usage
+                )
+            elif sinks.on_event is not None:
                 await sinks.on_event(sid, event, routed.usage)

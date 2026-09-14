@@ -32,6 +32,7 @@ class CommandAutocomplete(Static):
         super().__init__(*args, **kwargs)
         self._options: list[tuple[str, str]] = []  # (name, display)
         self.can_focus = False
+        self._query = ""
 
     def compose(self) -> ComposeResult:
         yield OptionList(id="cmd-options")
@@ -50,15 +51,16 @@ class CommandAutocomplete(Static):
         every edit that can change the prompt's height."""
         self.styles.offset = (0, -(_FOOTER_ROWS + prompt_box_height))
 
-    def filter(self, query: str) -> None:
+    def filter(self, query: str, *, backend_inventory: dict | None = None) -> None:
         """Update the dropdown to show commands matching *query*.
 
         ``query`` is the text after the leading ``/``.  An empty query shows
         all commands.  Matching is a case-insensitive prefix check on the
         command name and all its aliases.
         """
-        from ..commands import COMMANDS
+        from ..commands import COMMANDS, backend_command_completions
 
+        self._query = query
         query_lower = query.lower()
         self._options = []
         seen: set[str] = set()
@@ -72,6 +74,7 @@ class CommandAutocomplete(Static):
             display = f"/{cmd.name}  — {cmd.summary}"
             self._options.append((cmd.name, display))
 
+        self._options.extend(backend_command_completions(backend_inventory or {}, query))
         option_list = self.query_one("#cmd-options", OptionList)
         option_list.clear_options()
         if not self._options:
@@ -82,6 +85,11 @@ class CommandAutocomplete(Static):
         self.visible = True
         # Highlight the first item.
         option_list.highlighted = 0
+
+    def refresh_inventory(self, inventory: dict) -> None:
+        """Replace an open menu when init changes its owning process snapshot."""
+        if self.visible:
+            self.filter(self._query, backend_inventory=inventory)
 
     def move_highlight(self, delta: int) -> bool:
         """Move the highlighted option by ``delta`` (clamped to the list bounds).

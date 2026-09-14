@@ -304,3 +304,30 @@ async def test_escape_dismisses_slash_autocomplete():
         await pilot.press("escape")
         await pilot.pause()
         assert "dismissed" in app.events
+
+
+@pytest.mark.anyio
+async def test_backend_completion_is_selectable_and_replaces_inventory():
+    app = _AcApp()
+    inventory = {
+        "backend": "claude-cli",
+        "slash_commands": ["review-backend", "terminal", "help", "ls", "review-backend"],
+        "terminal_slash_commands": ["terminal"],
+    }
+    async with app.run_test() as pilot:
+        ac = app.query_one(CommandAutocomplete)
+        ac.filter("", backend_inventory=inventory)
+        options = dict(ac._options)
+        assert "review-backend" in options and "claude-cli" in options["review-backend"]
+        assert "terminal" not in options and "ls" not in options
+        assert sum(name == "help" for name, _ in ac._options) == 1
+        assert "claude-cli" not in options["help"]
+        ac.filter("review-b", backend_inventory=inventory)
+        assert ac.accept_highlighted()
+        await pilot.pause()
+        assert app.selected == ["review-backend"]
+        ac.filter("review-b", backend_inventory=inventory)
+        ac.refresh_inventory({"backend": "claude-cli", "slash_commands": ["new-command"]})
+        assert not ac.visible and not ac._options
+        ac.filter("", backend_inventory={"backend": "unknown-cli", "slash_commands": ["secret"]})
+        assert "secret" not in dict(ac._options)

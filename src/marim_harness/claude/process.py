@@ -205,6 +205,8 @@ class ClaudeProcess:
         self._on_request = on_request
         self._on_unsolicited = on_unsolicited
         self.on_observation: Callable[[dict], None] | None = None
+        self.on_closed: Callable[[str], None] | None = None
+        self._stop_requested = False
         self.silence_timeout = silence_timeout
         self._idle_timeout = idle_timeout
         self._proc: asyncio.subprocess.Process | None = None
@@ -476,7 +478,14 @@ class ClaudeProcess:
 
     def _closed_object(self) -> dict:
         code = self._proc.returncode if self._proc is not None else None
-        return {"type": CLOSED, "stderr": self.last_stderr, "returncode": code}
+        return {
+            "type": CLOSED,
+            "stderr": self.last_stderr,
+            "returncode": code,
+            "closure_status": "failed"
+            if code not in (None, 0) and not self._stop_requested
+            else "interrupted",
+        }
 
     def _deliver_closed(self) -> None:
         self._observe(self._closed_object())
@@ -497,8 +506,15 @@ class ClaudeProcess:
         # notifications it did see in its own history.
         self._background.clear()
         self._changed.set()
+        callback, self.on_closed = self.on_closed, None
+        if callback is not None:
+            try:
+                callback(self._closed_object()["closure_status"])
+            except Exception as exc:
+                logger.warning("claude close observer failed cause=%s", type(exc).__name__)
 
     async def aclose(self) -> None:
+        self._stop_requested = True
         self._cancel_idle()
         proc = self._proc
         if proc is None:

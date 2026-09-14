@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
 from ...claude.env import cli_timeout
+from ...config.lifecycle import notice_output
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...stream_events import event_to_dict
@@ -132,7 +133,8 @@ async def run_headless(
     try:
         await harness.connect()  # open any configured MCP servers for this run
         await harness.session_start("resume" if harness.session.history else "startup")
-        output = await _run_turns(harness, prompt, handler)
+        with notice_output(err):
+            output = await _run_turns(harness, prompt, handler)
     except Exception as exc:  # keep the failure surface small and scriptable
         detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
         print(detail, file=err)

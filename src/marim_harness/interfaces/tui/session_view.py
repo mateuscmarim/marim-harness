@@ -13,6 +13,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Static
 
 from ...compaction import summary_text
+from ...config.lifecycle import notice_from_part
 from ...runtime.harness import strip_turn_context
 from ...session import TranscriptStore
 from ...stream_events import status_from_part
@@ -83,7 +84,7 @@ def order_response_parts(parts: Sequence[Any]) -> list:
     ordered: list = []
     segment: list = []
     for part in parts:
-        if isinstance(part, (TextPart, ThinkingPart)):
+        if isinstance(part, (TextPart, ThinkingPart)) and notice_from_part(part) is None:
             segment.append(part)
         else:
             ordered.extend(ordered_segment(segment))
@@ -99,6 +100,27 @@ class SessionView:
 
     def __init__(self, app) -> None:
         self.app = app
+        self._notice_ids: set[str] = set()
+
+    def claim_notice(self, identity: str | None) -> bool:
+        """Only stable occurrence ids deduplicate; older unkeyed notes still render."""
+        if not identity:
+            return True
+        if identity in self._notice_ids:
+            return False
+        self._notice_ids.add(identity)
+        return True
+
+    async def _replay_notice(self, payload, mount_fn) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        message = payload.get("message")
+        if not isinstance(message, str) or not message.strip():
+            return False
+        identity = payload.get("id")
+        if self.claim_notice(identity if isinstance(identity, str) else None):
+            await mount_fn(NoticeMessage(message))
+        return True
 
     async def _replay_text_part(self, part, mount_fn, group, solo):
         """TextPart arm of ``_replay_parts``."""
@@ -119,6 +141,8 @@ class SessionView:
         # _on_text_start defers the mount until the part has visible content, so
         # replaying on `part.content` alone would resurrect after a resume the
         # very blank message the live path now refuses to mount.
+        if await self._replay_notice(notice_from_part(part), mount_fn):
+            return group, solo
         if part.content and part.content.strip():
             msg = AssistantMessage()
             await mount_fn(msg)
@@ -273,6 +297,11 @@ class SessionView:
             )
         elif isinstance(part, ToolReturnPart):
             group, solo = await self._replay_tool_return_part(part, tool_widgets, group, solo)
+            notices = (part.metadata or {}).get("backend_notices_after", [])
+            if isinstance(notices, list):
+                for payload in notices:
+                    if await self._replay_notice(payload, mount_fn):
+                        group, solo = None, None
         return group, solo
 
     async def _replay_user_prompt(self, part, log) -> None:
@@ -693,6 +722,7 @@ class SessionView:
         """Rebuild the log for a fresh view of the active session: banner, an
         intro note, then a replay of any restored history."""
         self.app.stream.reset()
+        self._notice_ids.clear()
         log = self.app.query_one("#log", VerticalScroll)
         # Guard the rebuild: while old content is torn down and new content mounted,
         # the log's max_scroll_y is stale, so an interval flush tick must not anchor

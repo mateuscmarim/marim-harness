@@ -21,8 +21,9 @@ from pydantic_ai.usage import RequestUsage
 
 from ..config.context_report import ContextReport
 from ..config.external_cli import CliModelError
+from ..config.lifecycle import nonnegative_int
 from .server import CLOSED, CodexServer, ThreadHandle
-from .translate import ItemTranslator, TurnDone, TurnFailure, UsageUpdate
+from .translate import ItemTranslator, Notice, TurnDone, TurnFailure, UsageUpdate
 
 if TYPE_CHECKING:
     from .collab import CollabRouter
@@ -46,7 +47,8 @@ class TurnState:
     # published through ``on_context`` as it streams so the status bar moves
     # mid-turn; None until the first update.
     context: ContextReport | None = None
-    on_context: Callable[[ContextReport], None] | None = None
+    context_window: int | None = None
+    on_context: Callable[[ContextReport | None], None] | None = None
     # Codex-side sub-agents (``codex/collab.py``): when set, notifications
     # for the thread's adopted children are routed to their cards instead of
     # being translated as the parent's own, and the parent's collab items
@@ -83,7 +85,7 @@ def _is_stale_completion(method: str, params: dict, turn_id: str | None) -> bool
     would end the new turn instantly with the wrong (usually empty) turn's
     result; the caller drops it and keeps waiting for its own."""
     if method != "turn/completed":
-        return False
+        return params.get("turnId") is not None and str(params["turnId"]) != str(turn_id)
     return str((params.get("turn") or {}).get("id")) != str(turn_id)
 
 
@@ -104,7 +106,15 @@ def _fold(item: object, state: TurnState) -> object | None:
         state.failure = item.message
         if not item.will_retry:
             state.done = TurnDone("failed", item.message)
+        if item.will_retry:
+            return Notice(f"Codex is retrying: {item.message}", kind="retry")
         return None
+    if isinstance(item, Notice) and item.kind == "compaction":
+        if state.context is not None:
+            state.context_window = state.context.window
+        state.context = None
+        if state.on_context is not None:
+            state.on_context(None)
     return item
 
 
@@ -132,8 +142,13 @@ def _note_context(item: UsageUpdate, state: TurnState) -> None:
     as an empty context."""
     if not item.last:
         return
-    used = int(item.last.get("inputTokens") or 0)
-    window = item.model_context_window or (state.context.window if state.context else None)
+    used = nonnegative_int(item.last.get("inputTokens"))
+    if used is None:
+        return
+    window = item.model_context_window or (
+        state.context.window if state.context else state.context_window
+    )
+    state.context_window = window
     state.context = ContextReport(used, window)
     if state.on_context is not None:
         state.on_context(state.context)

@@ -29,6 +29,18 @@ def osc_title(text: str) -> str:
     return f"\033]0;{text}\007"
 
 
+def backend_telemetry_text(telemetry: dict) -> str:
+    """An observation label separate from billed usage and host busy state."""
+    fields = []
+    estimate = telemetry.get("thinking_tokens")
+    if isinstance(estimate, int) and not isinstance(estimate, bool) and estimate >= 0:
+        fields.append(f"thinking ~{human_tokens(estimate)}")
+    state = telemetry.get("state")
+    if state in ("idle", "running", "requires_action"):
+        fields.append(f"backend {state.replace('_', ' ')}")
+    return " · ".join(fields)
+
+
 class StatusBar(Static):
     """A reactive status bar that auto-renders on state changes."""
 
@@ -128,6 +140,9 @@ class StatusBar(Static):
         quota = self._quota_text()
         if quota:
             fields.append(Content(quota))
+        telemetry = backend_telemetry_text(getattr(app.link.info, "backend_telemetry", {}))
+        if telemetry:
+            fields.append(Content(telemetry))
         if self.link_label:
             fields.append(Content(self.link_label))
         if self.busy:

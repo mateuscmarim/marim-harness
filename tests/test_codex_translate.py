@@ -187,8 +187,10 @@ def test_mcp_web_search_collab_plan_and_compaction():
         ActivityStart("p1", "update_plan", {"text": "1. do\n2. done"}),
         ActivityEnd("p1", "1. do\n2. done", False),
     ]
-    assert t.translate("item/started", {"item": {"type": "contextCompaction", "id": "z"}}) == [
-        Notice("Codex compacted its context")
+    # Phase 3: starting compaction cannot claim successful completion.
+    assert t.translate("item/started", {"item": {"type": "contextCompaction", "id": "z"}}) == []
+    assert t.translate("item/completed", {"item": {"type": "contextCompaction", "id": "z"}}) == [
+        Notice("Codex compacted its context", kind="compaction", severity="info")
     ]
     assert t.translate("item/started", {"item": {"type": "userMessage", "id": "u"}}) == []
 

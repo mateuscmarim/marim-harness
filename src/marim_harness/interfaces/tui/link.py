@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from pydantic_ai.usage import RunUsage
 
 from ...compaction import estimate_tokens
+from ...config.backend_state import backend_snapshot
 from ...jobs import Job
 from ...runtime.permissions import Mode
 from ...server.client import HistorySnapshot
@@ -94,6 +95,10 @@ class LinkInfo(Protocol):
     def context_report(self) -> Any: ...
     @property
     def model_source(self) -> Any: ...
+    @property
+    def backend_inventory(self) -> dict: ...
+    @property
+    def backend_telemetry(self) -> dict: ...
 
 
 class SessionLink(Protocol):
@@ -223,6 +228,14 @@ class LocalLinkInfo:
     @property
     def model_source(self) -> Any:
         return self._harness.model_source
+
+    @property
+    def backend_inventory(self) -> dict:
+        return backend_snapshot(self._harness.current_model, "backend_inventory")
+
+    @property
+    def backend_telemetry(self) -> dict:
+        return backend_snapshot(self._harness.current_model, "backend_telemetry")
 
 
 class LocalSessionLink:

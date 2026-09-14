@@ -64,6 +64,7 @@ from .external_cli import (
     ExternalCliModel,
     TextFolder,
 )
+from .lifecycle import deliver_notice, notice_part
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -127,6 +128,8 @@ class CodexCliModel(ExternalCliModel):
         # model is not supported" (seen on the PR #128 live probe).
         self._model_id = model_id or None
         self.ephemeral = ephemeral
+        self.context_invalidated = False
+        self._context_window: int | None = None
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
         self._server = server
@@ -237,6 +240,8 @@ class CodexCliModel(ExternalCliModel):
         if self._server is not None:
             self._drop_own_thread(self._server)
         self.context_report = None
+        self.context_invalidated = False
+        self._context_window = None
 
     def _drop_own_thread(self, server: CodexServer) -> None:
         if self.thread is not None:
@@ -416,6 +421,7 @@ class CodexCliModel(ExternalCliModel):
         server, handle, turn_id = await self._begin_turn(messages, model_settings)
         state = self._turn_state()
         parts: list[str] = []
+        response_parts = []
         try:
             async for item in turn_events(server, handle, state, turn_id=turn_id):
                 if isinstance(item, TextDelta):
@@ -425,7 +431,12 @@ class CodexCliModel(ExternalCliModel):
                     if seg:
                         parts.append(seg)
                 elif isinstance(item, Notice):
-                    logger.info("codex: %s", item.message)
+                    if parts:
+                        response_parts.append(TextPart("".join(parts)))
+                        parts.clear()
+                    notice = item.normalized()
+                    response_parts.append(notice_part(notice.to_payload()))
+                    await deliver_notice(notice, self.on_activity, ephemeral=self.ephemeral)
                 # Routed child traffic / LedgerOnly: nothing to fold — a
                 # child's spawn card is the `▸ spawn_agent` line above.
         finally:
@@ -433,7 +444,7 @@ class CodexCliModel(ExternalCliModel):
         await self._refresh_quota(server)
         usage = finish_turn(handle, state)
         return ModelResponse(
-            parts=[TextPart(content="".join(parts))],
+            parts=[*response_parts, TextPart(content="".join(parts))],
             model_name=self.model_name,
             timestamp=datetime.now(tz=timezone.utc),
             usage=usage,
@@ -460,6 +471,7 @@ class CodexCliModel(ExternalCliModel):
             _model_id=self.model_name,
             _ts=datetime.now(tz=timezone.utc),
             _on_activity=self.on_activity,
+            _ephemeral=self.ephemeral,
             _children=ChildStreams(self._child_sinks()),
             _seal=self._seal_children,
         )
@@ -483,11 +495,18 @@ class CodexCliModel(ExternalCliModel):
         report so a window learned on an earlier turn survives an update
         that omits ``modelContextWindow``."""
         return TurnState(
-            context=self.context_report, on_context=self._note_context, router=self._router
+            context=self.context_report,
+            on_context=self._note_context,
+            router=self._router,
+            context_window=self._context_window,
         )
 
-    def _note_context(self, report: ContextReport) -> None:
+    def _note_context(self, report: ContextReport | None) -> None:
+        previous = report or self.context_report
+        if previous is not None and previous.window is not None:
+            self._context_window = previous.window
         self.context_report = report
+        self.context_invalidated = report is None
 
     def _response_details(self) -> dict | None:
         """``provider_details`` for the turn's response: the context report,
@@ -549,6 +568,7 @@ class CodexStreamedResponse(StreamedResponse):
     _model_id: str = "default"
     _ts: datetime | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
+    _ephemeral: bool = False
     # Codex-side sub-agents: where a child's routed traffic goes, and the
     # end-of-turn seal for the cards still open (``codex/collab.py``).
     _children: ChildStreams | None = None
@@ -573,6 +593,11 @@ class CodexStreamedResponse(StreamedResponse):
                 if isinstance(item, Routed):
                     if self._children is not None:
                         await self._children.deliver(item)
+                elif isinstance(item, Notice):
+                    notice = item.normalized()
+                    ledger.note_notice(notice)
+                    folder.part_n += 1
+                    await deliver_notice(notice, self._on_activity, ephemeral=self._ephemeral)
                 elif isinstance(item, LedgerOnly):
                     note(activity_events(item.item))
                 else:
@@ -593,7 +618,7 @@ class CodexStreamedResponse(StreamedResponse):
                 yield ev
         elif isinstance(item, ThinkingDelta):
             for ev in self._parts_manager.handle_thinking_delta(
-                vendor_part_id=f"think-{item.item_id}", content=item.delta
+                vendor_part_id=f"think-{item.item_id}-{folder.part_n}", content=item.delta
             ):
                 yield ev
         elif isinstance(item, (ActivityStart, ActivityEnd)):
