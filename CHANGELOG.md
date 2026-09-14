@@ -69,8 +69,8 @@ pre-1.0, minor versions may contain breaking changes.
   transcript entry, and nothing is re-sent to the CLI. A typed turn
   submitted first goes out first (the CLI's own turn is let finish before
   marim sends one), a report the CLI never reacts to still settles its card
-  at the start of the next turn, the idle reaper holds while a background
-  agent runs, and a resumed history records the unanswered spawn as
+  at the start of the next turn, the idle reaper holds (bounded) while a
+  background agent runs, and a resumed history records the unanswered spawn as
   "reports later" rather than as an interrupted call.
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
   bidirectional transport every `result` carries the process's *running*

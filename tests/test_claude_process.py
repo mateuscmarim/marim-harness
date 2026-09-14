@@ -536,7 +536,7 @@ async def test_death_during_the_cli_own_turn_delivers_closed(tmp_path: Path):
 
 async def test_idle_reaper_holds_while_a_background_agent_runs(tmp_path: Path):
     """An idle close would kill the running sub-agent and lose its report:
-    the clock starts only when its notification lands."""
+    the normal clock starts only when its notification lands."""
     scenario = {"turns": [_spawn_turn({"delay": 0.6, "prelude": [_NOTIFICATION]})]}
     process = _process(tmp_path, scenario, idle_timeout=0.2)
     await process.start()
@@ -548,3 +548,19 @@ async def test_idle_reaper_holds_while_a_background_agent_runs(tmp_path: Path):
     finally:
         await process.aclose()
     assert process.alive is False and process.background_tasks == frozenset()
+
+
+async def test_idle_hold_for_an_agent_that_never_reports_is_bounded(tmp_path: Path):
+    """A sub-agent whose notification never comes must not pin the process
+    forever: the hold is the idle timeout stretched, not switched off."""
+    scenario = {"turns": [_spawn_turn()]}
+    process = _process(tmp_path, scenario, idle_timeout=0.1)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await asyncio.sleep(0.4)
+        assert process.alive is True and process.background_tasks == frozenset({"tu1"})
+        await asyncio.wait_for(process.closed.wait(), 3.0)
+    finally:
+        await process.aclose()
+    assert process.alive is False

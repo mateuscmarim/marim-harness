@@ -154,9 +154,11 @@ entry, marim's history stays aligned with Claude's, and nothing is sent to
 the CLI for it. This bypasses the wake policy on purpose — it costs no marim
 model call and there is no decision to make, the turn already ran. A typed
 turn submitted first goes out first; the buffered one plays right after. The
-idle reaper holds while a background agent is still running (closing the
-process would kill it and lose the report) and starts its clock when the
-report lands. Two things do not cover this: a `backend: claude-cli` *spawn*
+idle reaper stretches its clock tenfold while a background agent is still
+running (closing the process would kill it and lose the report; the
+stretched clock only bounds an agent that never reports, since a closed
+process resumes by id anyway) and starts the normal one when the report
+lands. Two things do not cover this: a `backend: claude-cli` *spawn*
 closes its process when its own turn ends, so a background agent inside a
 spawn is lost with it; and a headless/aux clone has no session to play the
 turn into, so its reaction stays in Claude's history only.

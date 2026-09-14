@@ -89,6 +89,10 @@ _STRIPPED_ENV = ("CLAUDE_CODE_SSE_PORT", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 # status patch) are kept for the next turn to see; a CLI that chattered for
 # ever with nobody consuming would otherwise grow the buffer without bound.
 _PRELUDE_LIMIT = 64
+# While a background sub-agent runs the idle clock is stretched by this factor
+# rather than stopped: Claude Code always ends an agent with a notification, so
+# the hold is only ever a bound on a report that will never come.
+_BACKGROUND_HOLD_FACTOR = 10
 
 # The callback fired when the CLI opens a turn of its own: receives the
 # objects the turn opened with (any inter-turn prelude — the task
@@ -201,7 +205,7 @@ class ClaudeProcess:
         # notification the CLI did not react to yet) wait in the prelude for
         # whichever turn opens next. `_background` is the set of sub-agents
         # still running in the background — while it is non-empty the idle
-        # reaper stays off.
+        # clock runs `_BACKGROUND_HOLD_FACTOR` times longer.
         self._own_turn: TurnHandle | None = None
         self._unsolicited: deque[TurnHandle] = deque()
         self._prelude: deque[dict] = deque(maxlen=_PRELUDE_LIMIT)
@@ -501,10 +505,10 @@ class ClaudeProcess:
                 return
             if obj.get("subtype") != "init":
                 self._prelude.append(obj)
-                if self._idle_task is None:
-                    # The last sub-agent's notification with no turn to
-                    # follow it: the hold `_arm_idle` kept ends here.
-                    self._arm_idle()
+                # No turn is open, so the clock is (re)armed for the new
+                # state: the last sub-agent's notification with no turn to
+                # follow it ends the hold `_arm_idle` kept.
+                self._arm_idle()
                 return
             handle = self._open_own_turn(obj)
         handle.events.put_nowait(obj)
@@ -621,15 +625,17 @@ class ClaudeProcess:
     def _arm_idle(self) -> None:
         if self._idle_timeout <= 0:
             return
+        delay = self._idle_timeout
         if self._background:
             # A sub-agent is still working in the background; an idle close
-            # would kill it and its report would never arrive. The clock
-            # starts when its notification lands (or when the CLI's turn on
-            # that notification ends).
-            self._cancel_idle()
-            return
+            # would kill it and its report would never arrive. The normal
+            # clock starts when its notification lands (or when the CLI's
+            # turn on that notification ends); the stretched one only bounds
+            # a notification that never comes, since a closed process resumes
+            # by id on the next turn anyway.
+            delay *= _BACKGROUND_HOLD_FACTOR
         self._cancel_idle()
-        self._idle_task = asyncio.get_running_loop().create_task(self._idle_close())
+        self._idle_task = asyncio.get_running_loop().create_task(self._idle_close(delay))
 
     def _cancel_idle(self) -> None:
         task = self._idle_task
@@ -639,8 +645,8 @@ class ClaudeProcess:
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
-    async def _idle_close(self) -> None:
-        await asyncio.sleep(self._idle_timeout)
+    async def _idle_close(self, delay: float) -> None:
+        await asyncio.sleep(delay)
         # Set BEFORE the first await inside the close: from here on `alive` is
         # False, so a turn that starts concurrently waits this close out and
         # respawns instead of cancelling it half-done. (Everything between the
@@ -648,9 +654,7 @@ class ClaudeProcess:
         # where a turn can see the reaper as neither armed nor closing.)
         self._closing = True
         self._close_done.clear()
-        logger.info(
-            "claude idle for %.0fs; closing (the next turn resumes by id)", self._idle_timeout
-        )
+        logger.info("claude idle for %.0fs; closing (the next turn resumes by id)", delay)
         try:
             await self.aclose()
         finally:
