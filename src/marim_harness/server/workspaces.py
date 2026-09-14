@@ -1,10 +1,10 @@
 """Server-side workspace registry: named directories sessions run in.
 
-Two flavors. *Registered* workspaces point at existing directories on the host
-(like opening a project) and are never deleted from disk. *Managed* workspaces
-are created by the server under a workspaces root — empty or git-cloned — and
-may be purged on delete. Persisted as one JSON file under the server state
-dir."""
+Three flavors. *Registered* workspaces point at existing directories on the
+host (like opening a project) and are never deleted from disk. *Managed* and
+*chat* workspaces are created by the server under a workspaces root — empty or
+git-cloned — and may be purged on delete. Persisted as one JSON file under the
+server state dir."""
 
 import json
 import logging
@@ -37,7 +37,7 @@ class WorkspaceRecord:
     id: str
     name: str
     path: str
-    kind: str  # "registered" | "managed"
+    kind: str  # "registered" | "managed" | "chat"
     created: str
 
     def as_dict(self) -> dict:
@@ -98,7 +98,9 @@ class WorkspaceRegistry:
         self._save()
         return record
 
-    def create_managed(self, name: str, git_url: str | None = None) -> WorkspaceRecord:
+    def create_managed(
+        self, name: str, git_url: str | None = None, *, chat: bool = False
+    ) -> WorkspaceRecord:
         ws_id = self._unique_id(_slugify(name))
         target = self.workspaces_root / ws_id
         target.mkdir(parents=True, exist_ok=False)
@@ -119,7 +121,7 @@ class WorkspaceRegistry:
             id=ws_id,
             name=name,
             path=str(target.resolve()),
-            kind="managed",
+            kind="chat" if chat else "managed",
             created=_now(),
         )
         self._records[record.id] = record
@@ -130,7 +132,7 @@ class WorkspaceRegistry:
         record = self._records.get(ws_id)
         if record is None:
             raise KeyError(ws_id)
-        if purge and record.kind != "managed":
+        if purge and record.kind not in ("managed", "chat"):
             raise ValueError("purge applies only to managed workspaces")
         if purge:
             with suppress(FileNotFoundError):

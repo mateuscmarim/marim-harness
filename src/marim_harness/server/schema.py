@@ -37,11 +37,14 @@ STREAM_EVENT_TYPES = {
 
 class WorkspaceIn(BaseModel):
     """POST /v1/workspaces. ``path`` registers an existing directory;
-    otherwise a managed workspace is created (cloned when ``git_url`` set)."""
+    otherwise a managed workspace is created (cloned when ``git_url`` set).
+    ``chat`` marks a managed workspace as a chat sandbox whose sessions share
+    server-managed project memory."""
 
     name: str
     path: str | None = None
     git_url: str | None = None
+    chat: bool = False
 
 
 class SessionIn(BaseModel):
