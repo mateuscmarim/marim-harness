@@ -10,6 +10,23 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **`codex-cli`: Codex's own sub-agents are first-class cards.** When
+  Codex spawns an agent with its collab tools (`spawn_agent`, `send_input`,
+  `wait`, `close_agent`), marim now renders it as a `spawn_agent` card in
+  the sub-agents screen — type `codex-agent`, a `codex-cli:<model>` badge,
+  the child's text, tool calls and usage streaming in, collab follow-ups
+  as notices on the card, settled with the child's last message — the
+  Codex counterpart of the `claude-cli` Agent/Task demux. The child's
+  approval requests go through marim's panel labelled with the agent's
+  name (`agent scout`; declined without a prompt under `plan`). The spawn
+  persists with the turn as an ordinary `spawn_agent` tool call + return
+  (an agent still running at the end of a turn is sealed with a `running
+  (detached; continues next turn)` return and picked up by the turn that
+  collects it), reaches attached clients as the `subagent.*` events, and
+  works inside `backend: codex-cli` spawns too (nested under the spawn's
+  card, with each child's transcript persisted in its own sidecar). The
+  opaque `codex_agent` tool card that stood in for a collab call before is
+  gone; histories written with it still expand.
 - **The CLI backends report their own context.** Under `claude-cli` and
   `codex-cli` the status bar's `ctx` field now shows the backend's real
   numbers — the prompt size of its most recent model request (system

@@ -167,6 +167,40 @@ primary fields):
 claude-cli takes effect on the next turn without a process restart, and
 `system/status` echoes the mode marim set.
 
+## Phase 2b — Codex sub-agents
+
+**Goal.** Codex's own sub-agents (its collab tools `spawnAgent`,
+`sendInput`, `wait`, `closeAgent`) render, broker and persist as
+first-class `spawn_agent` cards, the Codex counterpart of the claude-cli
+Agent/Task demux. Independent of Phases 2 and 3 and higher payoff than 3.
+Spec: [codex-collab-subagents.md](codex-collab-subagents.md).
+
+**Wire.** A child is a separate thread on the same app-server, announced
+with `thread/started` (`parentThreadId`, `agentNickname`, `agentRole`);
+its items, deltas and approval requests carry its own `threadId`. The
+parent's `collabAgentToolCall` item (`tool`, `senderThreadId`,
+`receiverThreadIds`, `agentsStates`, `prompt`, `model`) is the spawn/
+follow-up; `subAgentActivity` pings (`agentPath`, `agentThreadId`,
+`kind`) mark agent starts/completions.
+
+**marim seams.** `CodexServer.adopt_thread` registers a child under its
+parent's handle (same queue, same request handler; dropping the parent
+drops the children; a `thread/started` with a registered parent adopts on
+the reader task so the child's first traffic is never dropped);
+`codex/collab.py`'s `CollabRouter` turns a `spawnAgent` into a
+`spawn_agent` `ActivityStart` on the parent's stream and routes each
+child's translated items to its card; `ApprovalBroker.label_for` names
+the agent on the panel; the main-loop model seals an open child in the
+activity ledger at turn end (`running (detached; continues next turn)`)
+and a spawn closes its children with its thread.
+
+**Acceptance.** Shipped as the "Codex collab sub-agents" PR: a Codex
+spawn shows as a `spawn_agent` card within the turn (streaming, model
+badge, usage, notices); a child's approval opens the panel agent-labelled
+under `ask` and is declined under `plan`; `GET …/history` carries the
+spawn as a `spawn_agent` call + return; marim-mobile sees it via
+`subagent.*` unchanged.
+
 ## Phase 3 — Backend lifecycle in the transcript
 
 **Goal.** What the backend does between marim's turns (compaction, model
@@ -273,6 +307,12 @@ codex-cli.
   picker; write sandbox and approval settings once instead of per turn.
 - **`externalAgentConfig/import`** — Codex's own importer for Claude
   configuration, adjacent to `marim import claude`.
+- **Persist child transcripts for the main-loop CLI providers.** Claude's
+  and Codex's sub-agents stream as cards but only a `backend:` spawn keeps
+  the child transcripts (its sidecar `child_transcripts`); for the
+  main-loop providers a `provider_details` sidecar keyed by stream id is
+  the obvious shape, so the sub-agents screen can replay a child after a
+  session resume.
 
 ## Non-goals
 

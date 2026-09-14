@@ -39,6 +39,7 @@ from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.usage import RequestUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
+from ..codex.collab import ChildSinks, ChildStreams, CollabRouter, LedgerOnly, Routed, router_for
 from ..codex.env import INSTALL_HINT, CodexUnavailable, codex_available
 from ..codex.quota import QuotaHint, quota_from
 from ..codex.server import (
@@ -50,6 +51,7 @@ from ..codex.server import (
     is_shared_server,
     shared_server,
 )
+from ..codex.transcript import activity_events
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
 from ..runtime.permissions import Mode
@@ -89,42 +91,13 @@ def effort_for(level: str | None, supported: list[str] | None) -> str | None:
     return _EFFORT_FOR_LEVEL.get(level, "medium")
 
 
-# --- activity rendering (shared with the spawn path, Task 11) ----------------
-# `item` takes `ActivityStart | ActivityEnd` in practice, but stays annotated
-# as `object` here so these match `TextFolder.__init__`'s callback shape
-# (`Callable[[object], ...]`, shared with claude-cli's untyped equivalents) —
-# a narrower parameter type is a real contravariance mismatch pyright flags.
-def activity_events(item: object) -> list:
-    """pydantic-ai tool events for a Codex activity, for the TUI card sinks
-    (``on_activity``) — the same shapes ``cli_activity_events`` builds for
-    claude-cli. Never enters the ModelResponse."""
-    from pydantic_ai.messages import (
-        FunctionToolCallEvent,
-        FunctionToolResultEvent,
-        ToolCallPart,
-        ToolReturnPart,
-    )
-
-    if isinstance(item, ActivityStart):
-        part = ToolCallPart(tool_name=item.tool_name, args=item.args, tool_call_id=item.item_id)
-        return [FunctionToolCallEvent(part=part)]
-    assert isinstance(item, ActivityEnd)
-    part = ToolReturnPart(
-        tool_name="tool",
-        content=item.content,
-        tool_call_id=item.item_id,
-        timestamp=datetime.now(tz=timezone.utc),
-        outcome="failed" if item.is_error else "success",
-    )
-    return [FunctionToolResultEvent(part=part)]
-
-
 def fold_activity_text(item: object, leading: bool) -> str:
     """Headless rendering: a tool call becomes a ``▸ name(args)`` line; results
     are folded only when they failed (so a headless transcript stays short but
     a failing command is visible)."""
     if isinstance(item, ActivityStart):
-        arg = item.args.get("command") or item.args.get("path") or item.args.get("query") or ""
+        args = item.args
+        arg = args.get("command") or args.get("path") or args.get("query") or args.get("task") or ""
         line = f"▸ {item.tool_name} {arg}".rstrip()
     elif isinstance(item, ActivityEnd) and item.is_error:
         first = item.content.strip().splitlines()[:1]
@@ -184,6 +157,10 @@ class CodexCliModel(ExternalCliModel):
         # lazily from model/list on the first turn; drives effort_for.
         self._efforts: dict[str, list[str]] | None = None
         self._broker: ApprovalBroker | None = None
+        # Codex-side sub-agents (``codex/collab.py``): one router per live
+        # thread — it outlives a turn because the children do (Codex keeps a
+        # spawned agent around for later ``wait``/``sendInput`` calls).
+        self._router: CollabRouter | None = None
 
     # --- identity -------------------------------------------------------------
     @property
@@ -244,13 +221,15 @@ class CodexCliModel(ExternalCliModel):
             await close_shared_server_if_idle()
         elif self._owns_server:
             await server.aclose()
+            self._router = None
         else:
             self._drop_own_thread(server)
 
     def _drop_own_thread(self, server: CodexServer) -> None:
         if self.thread is not None:
-            server.drop_thread(self.thread)
+            server.drop_thread(self.thread)  # cascades to the adopted children
             self.thread = None
+        self._router = None
 
     # --- mode / policy ----------------------------------------------------------
     def _mode(self) -> Mode:
@@ -347,11 +326,11 @@ class CodexCliModel(ExternalCliModel):
                 persisted, options=options, request_handler=request_handler
             )
             if handle is not None:
-                self.thread = handle
+                self._own_thread(server, handle)
                 return handle, False
             logger.info("codex thread %s gone; starting fresh with flattened history", persisted)
         handle = await server.start_thread(options=options, request_handler=request_handler)
-        self.thread = handle
+        self._own_thread(server, handle)
         if not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + handle.thread_id)
         # FRESH (full flattened history needed) whenever `messages` carries more
@@ -364,6 +343,23 @@ class CodexCliModel(ExternalCliModel):
         # reformat the same single prompt — skip that to keep behavior
         # unchanged for the common case.
         return handle, len(messages) > 1
+
+    def _own_thread(self, server: CodexServer, handle: ThreadHandle) -> None:
+        """Take ``handle`` as this model's thread, with a fresh collab router
+        (its children register under the handle) whose labels the broker
+        uses to prefix a child's approval prompts."""
+        self.thread = handle
+        self._router = router_for(server, handle)
+        if self._broker is not None:
+            self._broker.label_for = self._router.label_for
+
+    def _child_sinks(self) -> ChildSinks:
+        return ChildSinks(
+            on_event=self.on_subagent,
+            on_model=self.on_subagent_model,
+            on_notice=self.on_subagent_notice,
+            on_usage=self.on_subagent_usage,
+        )
 
     async def _begin_turn(
         self, messages: list, model_settings: ModelSettings | None
@@ -396,15 +392,20 @@ class CodexCliModel(ExternalCliModel):
         server, handle, turn_id = await self._begin_turn(messages, model_settings)
         state = self._turn_state()
         parts: list[str] = []
-        async for item in turn_events(server, handle, state, turn_id=turn_id):
-            if isinstance(item, TextDelta):
-                parts.append(item.delta)
-            elif isinstance(item, (ActivityStart, ActivityEnd)):
-                seg = fold_activity_text(item, leading=not parts)
-                if seg:
-                    parts.append(seg)
-            elif isinstance(item, Notice):
-                logger.info("codex: %s", item.message)
+        try:
+            async for item in turn_events(server, handle, state, turn_id=turn_id):
+                if isinstance(item, TextDelta):
+                    parts.append(item.delta)
+                elif isinstance(item, (ActivityStart, ActivityEnd)):
+                    seg = fold_activity_text(item, leading=not parts)
+                    if seg:
+                        parts.append(seg)
+                elif isinstance(item, Notice):
+                    logger.info("codex: %s", item.message)
+                # Routed child traffic / LedgerOnly: nothing to fold — a
+                # child's spawn card is the `▸ spawn_agent` line above.
+        finally:
+            self._seal_children()
         await self._refresh_quota(server)
         usage = finish_turn(handle, state)
         return ModelResponse(
@@ -435,6 +436,8 @@ class CodexCliModel(ExternalCliModel):
             _model_id=self.model_name,
             _ts=datetime.now(tz=timezone.utc),
             _on_activity=self.on_activity,
+            _children=ChildStreams(self._child_sinks()),
+            _seal=self._seal_children,
         )
         try:
             yield stream
@@ -444,13 +447,20 @@ class CodexCliModel(ExternalCliModel):
                     await server.interrupt(handle)
                 handle.current_turn_id = None
 
+    def _seal_children(self) -> list[LedgerOnly]:
+        """End of a turn: the ledger-only returns for the children still
+        running (see ``CollabRouter.seal_open``)."""
+        return self._router.seal_open() if self._router is not None else []
+
     # --- context / quota ----------------------------------------------------------------
     def _turn_state(self) -> TurnState:
         """A turn's accumulator, publishing each usage update's context
         reading onto ``context_report`` as it streams. Seeded with the last
         report so a window learned on an earlier turn survives an update
         that omits ``modelContextWindow``."""
-        return TurnState(context=self.context_report, on_context=self._note_context)
+        return TurnState(
+            context=self.context_report, on_context=self._note_context, router=self._router
+        )
 
     def _note_context(self, report: ContextReport) -> None:
         self.context_report = report
@@ -514,6 +524,10 @@ class CodexStreamedResponse(StreamedResponse):
     _model_id: str = "default"
     _ts: datetime | None = None
     _on_activity: Callable[[list], Awaitable[None]] | None = None
+    # Codex-side sub-agents: where a child's routed traffic goes, and the
+    # end-of-turn seal for the cards still open (``codex/collab.py``).
+    _children: ChildStreams | None = None
+    _seal: Callable[[], list[LedgerOnly]] | None = None
 
     async def _get_event_iterator(self):
         if self._items is None:
@@ -526,10 +540,25 @@ class CodexStreamedResponse(StreamedResponse):
             fold_text=fold_activity_text,
             is_call=lambda item: isinstance(item, ActivityStart),
         )
-        async for item in self._items:
-            async for ev in self._events_for(item, folder):
-                ledger.note_event(ev)
-                yield ev
+        # Ledger-only spawn entries (a child's seal/resume) matter only in
+        # cards mode: fold mode's ▸ lines are its own persisted record.
+        note = ledger.note_activity if self._on_activity is not None else (lambda events: None)
+        try:
+            async for item in self._items:
+                if isinstance(item, Routed):
+                    if self._children is not None:
+                        await self._children.deliver(item)
+                elif isinstance(item, LedgerOnly):
+                    note(activity_events(item.item))
+                else:
+                    async for ev in self._events_for(item, folder):
+                        ledger.note_event(ev)
+                        yield ev
+        finally:
+            # Also on an interrupt: the partial response's ledger must not
+            # end with a spawn_agent call nobody answered.
+            for sealed in self._seal() if self._seal is not None else ():
+                note(activity_events(sealed.item))
         await self._settle()
 
     async def _events_for(self, item: object, folder: TextFolder):

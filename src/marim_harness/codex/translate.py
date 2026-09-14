@@ -71,12 +71,56 @@ class Notice:
     message: str
 
 
+# --- collab (Codex-side sub-agents) ------------------------------------------
+# Codex's collab tools (``spawnAgent``, ``sendInput``, ``wait``, ``closeAgent``,
+# ...) show up on the PARENT thread as ``collabAgentToolCall`` items, and the
+# spawned agents' lifecycle as ``subAgentActivity`` pings. They are not tool
+# cards: ``codex/collab.py`` turns them into ``spawn_agent`` cards, notices
+# and child-thread adoption. The translator only names the wire shapes.
+# Every field is optional on the way in (version-tolerant): a missing
+# ``agentsStates`` is ``{}``, an unknown ``tool`` passes through as its string.
+
+
+@dataclass(frozen=True)
+class CollabCall:
+    """``collabAgentToolCall`` ``item/started``."""
+
+    item_id: str
+    tool: str  # spawnAgent | sendInput | resumeAgent | wait | closeAgent | ...
+    receivers: tuple[str, ...]  # receiverThreadIds (a spawn: the new thread)
+    prompt: str | None
+    model: str | None
+    effort: str | None
+    states: dict  # agentsStates: {thread id: {"status", "message"?}}
+
+
+@dataclass(frozen=True)
+class CollabDone:
+    """``collabAgentToolCall`` ``item/completed``."""
+
+    item_id: str
+    tool: str
+    receivers: tuple[str, ...]
+    status: str  # completed | failed | interrupted
+    states: dict
+    result: str
+    is_error: bool
+
+
+@dataclass(frozen=True)
+class AgentPing:
+    """``subAgentActivity``: a lifecycle ping for one spawned agent."""
+
+    item_id: str
+    thread_id: str  # agentThreadId
+    path: str  # agentPath, e.g. "/root/reviewer"
+    kind: str  # started | interacted | interrupted | completed
+
+
 _TOOL_NAMES = {
     "commandExecution": "bash",
     "fileChange": "apply_patch",
     "webSearch": "web_search",
-    "collabAgentToolCall": "codex_agent",
-    "subAgentActivity": "codex_agent",
     "plan": "update_plan",
 }
 
@@ -105,14 +149,6 @@ def _mcp_tool_call_args(item: dict) -> dict:
 
 def _web_search_args(item: dict) -> dict:
     return {"query": item.get("query", "")}
-
-
-def _agent_activity_args(item: dict) -> dict:
-    return {
-        k: item.get(k)
-        for k in ("prompt", "model", "receiverThreadIds", "agentPath", "kind")
-        if item.get(k) is not None
-    }
 
 
 def _plan_args(item: dict) -> dict:
@@ -153,8 +189,6 @@ _ARGS_BY_KIND: dict[str, Callable[[dict], dict]] = {
     "commandExecution": _command_execution_args,
     "mcpToolCall": _mcp_tool_call_args,
     "webSearch": _web_search_args,
-    "collabAgentToolCall": _agent_activity_args,
-    "subAgentActivity": _agent_activity_args,
     "plan": _plan_args,
     "fileChange": _file_change_args,
 }
@@ -175,6 +209,55 @@ def _result_text(item: dict) -> tuple[str, bool]:
         return "", item.get("status") == "failed"
     text = result if isinstance(result, str) else json.dumps(result)
     return text, item.get("status") == "failed"
+
+
+def _receivers(item: dict) -> tuple[str, ...]:
+    raw = item.get("receiverThreadIds")
+    return tuple(str(r) for r in raw) if isinstance(raw, list) else ()
+
+
+def _states(item: dict) -> dict:
+    states = item.get("agentsStates")
+    return dict(states) if isinstance(states, dict) else {}
+
+
+def _opt_str(item: dict, key: str) -> str | None:
+    value = item.get(key)
+    return str(value) if value is not None else None
+
+
+def collab_call(item: dict) -> CollabCall:
+    return CollabCall(
+        item_id=str(item.get("id")),
+        tool=str(item.get("tool") or ""),
+        receivers=_receivers(item),
+        prompt=_opt_str(item, "prompt"),
+        model=_opt_str(item, "model"),
+        effort=_opt_str(item, "reasoningEffort"),
+        states=_states(item),
+    )
+
+
+def collab_done(item: dict) -> CollabDone:
+    text, is_error = _result_text(item)
+    return CollabDone(
+        item_id=str(item.get("id")),
+        tool=str(item.get("tool") or ""),
+        receivers=_receivers(item),
+        status=str(item.get("status") or "completed"),
+        states=_states(item),
+        result=text,
+        is_error=is_error,
+    )
+
+
+def agent_ping(item: dict) -> AgentPing:
+    return AgentPing(
+        item_id=str(item.get("id")),
+        thread_id=str(item.get("agentThreadId") or ""),
+        path=str(item.get("agentPath") or ""),
+        kind=str(item.get("kind") or ""),
+    )
 
 
 class ItemTranslator:
@@ -203,23 +286,17 @@ class ItemTranslator:
 
     # --- items --------------------------------------------------------------
     def _started(self, params: dict) -> list[object]:
+        # The item kinds with a shape of their own dispatch via
+        # `_STARTED_BY_KIND` (below the class, like `_COMPLETED_BY_KIND`);
+        # everything else is a plain tool card or nothing.
         item = params.get("item") or {}
-        kind = item.get("type")
-        item_id = str(item.get("id"))
-        if kind == "fileChange":
-            return [ActivityStart(cid, "apply_patch", args) for cid, args in _changes(item)]
-        if kind == "plan":
-            text = str(item.get("text", ""))
-            return [
-                ActivityStart(item_id, "update_plan", {"text": text}),
-                ActivityEnd(item_id, text, False),
-            ]
-        if kind == "contextCompaction":
-            return [Notice("Codex compacted its context")]
+        special = _STARTED_BY_KIND.get(str(item.get("type")))
+        if special is not None:
+            return special(item)
         name = tool_name_for(item)
         if name is None:
             return []
-        return [ActivityStart(item_id, name, args_for(item))]
+        return [ActivityStart(str(item.get("id")), name, args_for(item))]
 
     def _completed(self, params: dict) -> list[object]:
         # Dispatch by item `type` via `_COMPLETED_BY_KIND` (defined below the
@@ -252,6 +329,14 @@ class ItemTranslator:
     def _completed_result(self, item: dict, item_id: str) -> list[object]:
         text, is_error = _result_text(item)
         return [ActivityEnd(item_id, text, is_error)]
+
+    def _completed_collab(self, item: dict, item_id: str) -> list[object]:
+        return [collab_done(item)]
+
+    def _completed_agent_ping(self, item: dict, item_id: str) -> list[object]:
+        # A ping is complete on arrival: `item/completed` repeats what
+        # `item/started` said (the router keys on the started one).
+        return []
 
     def _command_end(self, item: dict, item_id: str) -> ActivityEnd:
         buffered = "".join(self._output.pop(item_id, []))
@@ -295,6 +380,22 @@ class ItemTranslator:
 # as `_ARGS_BY_KIND`: a dict beats an if/elif/return chain past ruff's
 # PLR0911 ceiling. Handlers are unbound methods, called as `handler(self, ...)`
 # like `_METHODS` below.
+def _started_plan(item: dict) -> list[object]:
+    item_id, text = str(item.get("id")), str(item.get("text", ""))
+    start = ActivityStart(item_id, "update_plan", {"text": text})
+    return [start, ActivityEnd(item_id, text, False)]
+
+
+_STARTED_BY_KIND: dict[str, Callable[[dict], list[object]]] = {
+    "fileChange": lambda item: [
+        ActivityStart(cid, "apply_patch", args) for cid, args in _changes(item)
+    ],
+    "plan": _started_plan,
+    "contextCompaction": lambda item: [Notice("Codex compacted its context")],
+    "collabAgentToolCall": lambda item: [collab_call(item)],
+    "subAgentActivity": lambda item: [agent_ping(item)],
+}
+
 _COMPLETED_BY_KIND: dict[str, Callable[[ItemTranslator, dict, str], list[object]]] = {
     "agentMessage": ItemTranslator._completed_agent_message,
     "reasoning": ItemTranslator._completed_reasoning,
@@ -302,8 +403,8 @@ _COMPLETED_BY_KIND: dict[str, Callable[[ItemTranslator, dict, str], list[object]
     "fileChange": ItemTranslator._completed_file_change,
     "mcpToolCall": ItemTranslator._completed_result,
     "webSearch": ItemTranslator._completed_result,
-    "collabAgentToolCall": ItemTranslator._completed_result,
-    "subAgentActivity": ItemTranslator._completed_result,
+    "collabAgentToolCall": ItemTranslator._completed_collab,
+    "subAgentActivity": ItemTranslator._completed_agent_ping,
 }
 
 

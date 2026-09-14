@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from pydantic_ai.usage import RequestUsage
 
@@ -22,6 +23,9 @@ from ..config.context_report import ContextReport
 from ..config.external_cli import CliModelError
 from .server import CLOSED, CodexServer, ThreadHandle
 from .translate import ItemTranslator, TurnDone, TurnFailure, UsageUpdate
+
+if TYPE_CHECKING:
+    from .collab import CollabRouter
 
 _USAGE_KEYS = ("inputTokens", "outputTokens", "cachedInputTokens", "reasoningOutputTokens")
 
@@ -43,6 +47,12 @@ class TurnState:
     # mid-turn; None until the first update.
     context: ContextReport | None = None
     on_context: Callable[[ContextReport], None] | None = None
+    # Codex-side sub-agents (``codex/collab.py``): when set, notifications
+    # for the thread's adopted children are routed to their cards instead of
+    # being translated as the parent's own, and the parent's collab items
+    # become ``spawn_agent`` cards. Owned by the caller per THREAD (children
+    # outlive a turn), only referenced here per turn.
+    router: CollabRouter | None = None
 
 
 def text_input(text: str) -> dict:
@@ -98,6 +108,24 @@ def _fold(item: object, state: TurnState) -> object | None:
     return item
 
 
+def _outputs(method: str, params: dict, state: TurnState, turn_id: str) -> list[object]:
+    """What one notification yields: a child's traffic routed by the collab
+    router, or the parent's own translated items (folded into ``state`` and,
+    with a router, collab items turned into cards)."""
+    routed = state.router.route(method, params) if state.router else None
+    if routed is not None:
+        return routed
+    if _is_stale_completion(method, params, turn_id):
+        return []
+    out: list[object] = []
+    for item in state.translator.translate(method, params):
+        kept = _fold(item, state)
+        if kept is None:
+            continue
+        out.extend(state.router.route_item(kept) if state.router else (kept,))
+    return out
+
+
 def _note_context(item: UsageUpdate, state: TurnState) -> None:
     """Fold one usage update into the turn's context report. An update with
     no ``last`` (a start-of-turn snapshot) is skipped rather than reported
@@ -116,7 +144,11 @@ async def turn_events(
 ) -> AsyncIterator[object]:
     """Yield translated items (TextDelta/ThinkingDelta/ActivityStart/ActivityEnd/
     Notice) for turn ``turn_id`` until it completes. Usage and completion are
-    folded into ``state`` rather than yielded.
+    folded into ``state`` rather than yielded. With ``state.router`` set, the
+    adopted children's traffic is yielded as ``collab.Routed``/``LedgerOnly``
+    wrappers alongside the parent's bare items (children share the parent's
+    queue, so a busy child also keeps the idle timeout from firing while the
+    parent ``wait``s on it).
 
     ``turn_id`` is the value ``start_turn`` returned, passed explicitly rather
     than read back from ``handle.current_turn_id``: a fast turn can complete
@@ -130,12 +162,8 @@ async def turn_events(
             if method == CLOSED:
                 tail = str(params.get("stderr") or "").strip()
                 raise CliModelError(f"codex app-server exited mid-turn: {tail or 'no stderr'}")
-            if _is_stale_completion(method, params, turn_id):
-                continue
-            for item in state.translator.translate(method, params):
-                kept = _fold(item, state)
-                if kept is not None:
-                    yield kept
+            for out in _outputs(method, params, state, turn_id):
+                yield out
     except asyncio.TimeoutError as exc:
         with contextlib.suppress(Exception):
             await server.interrupt(handle)

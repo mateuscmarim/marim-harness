@@ -5,6 +5,9 @@ from typing import cast
 from marim_harness.codex.translate import (
     ActivityEnd,
     ActivityStart,
+    AgentPing,
+    CollabCall,
+    CollabDone,
     ItemTranslator,
     Notice,
     TextDelta,
@@ -179,17 +182,6 @@ def test_mcp_web_search_collab_plan_and_compaction():
     assert t.translate("item/started", {"item": ws}) == [
         ActivityStart("w1", "web_search", {"query": "python 3.14"})
     ]
-    collab = {
-        "type": "collabAgentToolCall",
-        "id": "k1",
-        "prompt": "review",
-        "model": "gpt-5.4-mini",
-        "receiverThreadIds": ["x"],
-        "status": "inProgress",
-    }
-    [start] = t.translate("item/started", {"item": collab})
-    start = cast(ActivityStart, start)
-    assert start.tool_name == "codex_agent" and start.args["prompt"] == "review"
     plan = {"type": "plan", "id": "p1", "text": "1. do\n2. done"}
     assert t.translate("item/started", {"item": plan}) == [
         ActivityStart("p1", "update_plan", {"text": "1. do\n2. done"}),
@@ -231,3 +223,90 @@ def test_turn_level_notifications():
     ]
     assert t.translate("warning", {"message": "slow"}) == [Notice("slow")]
     assert t.translate("thread/closed", {"threadId": "x"}) == []
+
+
+def test_collab_agent_tool_call_translates_to_collab_items():
+    """A ``collabAgentToolCall`` is NOT a tool card (no ``codex_agent`` any
+    more): started/completed become ``CollabCall``/``CollabDone`` for the
+    router (``codex/collab.py``) to turn into a ``spawn_agent`` card."""
+    t = _t()
+    collab = {
+        "type": "collabAgentToolCall",
+        "id": "k1",
+        "tool": "spawnAgent",
+        "prompt": "review the diff",
+        "model": "gpt-5.4-mini",
+        "reasoningEffort": "low",
+        "senderThreadId": "t1",
+        "receiverThreadIds": ["c1"],
+        "agentsStates": {"c1": {"status": "pendingInit"}},
+        "status": "inProgress",
+    }
+    assert t.translate("item/started", {"item": collab}) == [
+        CollabCall(
+            item_id="k1",
+            tool="spawnAgent",
+            receivers=("c1",),
+            prompt="review the diff",
+            model="gpt-5.4-mini",
+            effort="low",
+            states={"c1": {"status": "pendingInit"}},
+        )
+    ]
+    done = {
+        **collab,
+        "status": "completed",
+        "agentsStates": {"c1": {"status": "running"}},
+        "result": {"spawned": "c1"},
+    }
+    assert t.translate("item/completed", {"item": done}) == [
+        CollabDone(
+            item_id="k1",
+            tool="spawnAgent",
+            receivers=("c1",),
+            status="completed",
+            states={"c1": {"status": "running"}},
+            result='{"spawned": "c1"}',
+            is_error=False,
+        )
+    ]
+    failed = {**collab, "status": "failed", "error": {"message": "no slots"}}
+    [item] = t.translate("item/completed", {"item": failed})
+    item = cast(CollabDone, item)
+    assert item.is_error and item.result == "no slots" and item.status == "failed"
+    assert tool_name_for(collab) is None and args_for(collab) == {}
+
+
+def test_collab_items_tolerate_missing_optional_fields_and_unknown_tools():
+    t = _t()
+    bare = {"type": "collabAgentToolCall", "id": "k2", "tool": "frobnicate"}
+    assert t.translate("item/started", {"item": bare}) == [
+        CollabCall("k2", "frobnicate", (), None, None, None, {})
+    ]
+    assert t.translate("item/completed", {"item": bare}) == [
+        CollabDone("k2", "frobnicate", (), "completed", {}, "", False)
+    ]
+    # A malformed receivers/states payload degrades to empty, never raises.
+    odd = {**bare, "receiverThreadIds": "c1", "agentsStates": ["nope"]}
+    [call] = t.translate("item/started", {"item": odd})
+    call = cast(CollabCall, call)
+    assert call.receivers == () and call.states == {}
+
+
+def test_sub_agent_activity_pings_translate_once():
+    """``subAgentActivity`` is a lifecycle ping: ``item/started`` yields the
+    ``AgentPing``; its ``item/completed`` repeats the same payload and is
+    dropped so the router never sees a ping twice."""
+    t = _t()
+    ping = {
+        "type": "subAgentActivity",
+        "id": "a1",
+        "agentPath": "/root/reviewer",
+        "agentThreadId": "c1",
+        "kind": "interacted",
+    }
+    assert t.translate("item/started", {"item": ping}) == [
+        AgentPing("a1", "c1", "/root/reviewer", "interacted")
+    ]
+    assert t.translate("item/completed", {"item": ping}) == []
+    assert tool_name_for(ping) is None

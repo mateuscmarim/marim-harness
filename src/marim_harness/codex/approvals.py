@@ -131,7 +131,11 @@ def _as_item(method: str, params: dict) -> dict:
 class ApprovalBroker:
     """Answers Codex server requests for one thread. ``label`` prefixes the
     ApprovalPanel entry for a spawn (``worker: bash``) so the user can tell a
-    sub-agent's request from the main loop's."""
+    sub-agent's request from the main loop's. ``label_for`` (set after
+    construction by the thread's owner) extends that to the thread's adopted
+    collab children (``codex/collab.py``): they share this broker, and a
+    child's request is prefixed with its agent name (``agent reviewer``, or
+    ``worker / agent reviewer`` under a labelled spawn)."""
 
     def __init__(
         self,
@@ -148,6 +152,7 @@ class ApprovalBroker:
         self._request_approval = ui.request_approval
         self._ask_user = ui.ask_user
         self._label = label
+        self.label_for: Callable[[str], str | None] | None = None
         self._lock = asyncio.Lock()
         # The last reply this broker produced, including the "cancel" placeholder
         # set on the way out of a CancelledError. Recorded for callers/tests that
@@ -200,8 +205,9 @@ class ApprovalBroker:
         args = args_for(item)
         if params.get("reason"):
             args.setdefault("reason", str(params["reason"]))
-        if self._label:
-            args["label"] = self._label
+        label = self._prompt_label(params)
+        if label:
+            args["label"] = label
         call = ToolCallPart(
             tool_name=tool_name_for(item) or "codex",
             args=args,
@@ -209,6 +215,10 @@ class ApprovalBroker:
         )
         result = await self._request_approval(call)
         return _is_approved(result)
+
+    def _prompt_label(self, params: dict) -> str:
+        child = self.label_for(str(params.get("threadId") or "")) if self.label_for else None
+        return " / ".join(part for part in (self._label, child) if part)
 
     async def _user_input(self, params: dict) -> dict:
         questions = [_question(q) for q in params.get("questions") or []]

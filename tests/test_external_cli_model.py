@@ -99,6 +99,8 @@ def test_wire_cli_model_binds_all_seams(tmp_path):
     assert m.on_activity is harness.deps.ui.on_cli_activity
     assert m.on_subagent is harness.deps.ui.on_subagent_event
     assert m.on_subagent_model is harness.deps.ui.on_subagent_model
+    assert m.on_subagent_notice is harness.deps.ui.on_subagent_notice
+    assert m.on_subagent_usage is harness.deps.ui.on_subagent_usage
     assert m.request_approval is harness.deps.ui.request_approval
     assert m.ask_user is harness.deps.ui.ask_user
     assert m.scratchpad_getter is not None

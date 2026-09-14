@@ -588,3 +588,145 @@ async def test_resume_reopens_the_persisted_thread_and_continues(tmp_path: Path,
         and any(isinstance(p, UserPromptPart) and p.content == "original task" for p in m.parts)
         for m in msgs
     )
+
+
+# --- Codex-side sub-agents of a spawn (codex/collab.py) ---------------------------
+def _collab_steps(*, settle: bool) -> list[dict]:
+    """The spawn's Codex thread spawns its own agent (thread ``child-1``,
+    never registered by the fake — as Codex does), the child talks and
+    reports usage, then (optionally) a ``wait`` finds it completed."""
+    spawn = {
+        "id": "k1",
+        "type": "collabAgentToolCall",
+        "tool": "spawnAgent",
+        "prompt": "grep for it",
+        "model": "gpt-5.4-mini",
+        "receiverThreadIds": ["child-1"],
+        "agentsStates": {"child-1": {"status": "running"}},
+    }
+    steps = [
+        {"notify": "item/started", "params": {"item": {**spawn, "status": "inProgress"}}},
+        {"notify": "item/completed", "params": {"item": {**spawn, "status": "completed"}}},
+        {
+            "notify": "thread/started",
+            "params": {"thread": {"id": "child-1", "parentThreadId": "$THREAD"}},
+        },
+        {
+            "notify": "item/agentMessage/delta",
+            "params": {"threadId": "child-1", "itemId": "cm1", "delta": "found it"},
+        },
+        {
+            "notify": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "child-1",
+                "tokenUsage": {
+                    "total": {"inputTokens": 30, "outputTokens": 4},
+                    "last": {"inputTokens": 30, "outputTokens": 4},
+                },
+            },
+        },
+    ]
+    if settle:
+        wait = {"id": "k2", "type": "collabAgentToolCall", "tool": "wait"}
+        done = {**wait, "receiverThreadIds": ["child-1"]}
+        steps += [
+            {"notify": "item/started", "params": {"item": {**done, "status": "inProgress"}}},
+            {
+                "notify": "item/completed",
+                "params": {
+                    "item": {
+                        **done,
+                        "status": "completed",
+                        "agentsStates": {"child-1": {"status": "completed"}},
+                    }
+                },
+            },
+        ]
+    return steps + _report_turn("Done: it is in a.py")
+
+
+class _Sinks:
+    def __init__(self, runner) -> None:
+        self.events: list[tuple[str, object]] = []
+        self.models: list[tuple[str, str]] = []
+        self.usage: list[tuple[str, int]] = []
+
+        async def on_event(sid, event, usage):
+            self.events.append((sid, event))
+
+        async def on_model(sid, model):
+            self.models.append((sid, model))
+
+        async def on_usage(sid, usage):
+            self.usage.append((sid, usage.output_tokens))
+
+        runner.deps.ui.on_subagent_event = on_event
+        runner.deps.ui.on_subagent_model = on_model
+        runner.deps.ui.on_subagent_usage = on_usage
+
+    def kinds(self, sid: str) -> list[str]:
+        return [type(ev).__name__ for s, ev in self.events if s == sid]
+
+
+async def test_codex_spawn_renders_its_own_sub_agents_as_nested_cards(tmp_path: Path, monkeypatch):
+    """A ``spawnAgent`` inside a codex-cli spawn is a nested ``spawn_agent``
+    card on the spawn's stream; the child's traffic streams under the card's
+    id (the collab item id), and its transcript is persisted alongside the
+    spawn's so the sub-agents screen can replay it."""
+    from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
+
+    _login(monkeypatch, tmp_path, {"turns": [_collab_steps(settle=True)]})
+    _write_codex_agent(tmp_path)
+    store = _session_store(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store).subagents
+    sinks = _Sinks(runner)
+    out = await runner.run("codex-worker", "go", stream_id="s1")
+    assert "Done: it is in a.py" in out
+    # The spawn's own stream: the nested card's call + its settled return.
+    calls = [
+        ev for sid, ev in sinks.events if sid == "s1" and isinstance(ev, FunctionToolCallEvent)
+    ]
+    assert [c.part.tool_name for c in calls] == ["spawn_agent"]
+    assert calls[0].part.tool_call_id == "k1" and calls[0].part.args["task"] == "grep for it"
+    results = [
+        ev for sid, ev in sinks.events if sid == "s1" and isinstance(ev, FunctionToolResultEvent)
+    ]
+    assert [r.part.content for r in results] == ["found it"]
+    # The child's stream, keyed by the card id: its model once, text, usage.
+    assert sinks.models == [("s1", "codex-cli:default"), ("k1", "codex-cli:gpt-5.4-mini")]
+    assert "PartDeltaEvent" in sinks.kinds("k1")
+    assert ("k1", 4) in sinks.usage and ("s1", 5) in sinks.usage
+    # Persisted: the spawn's transcript holds the spawn_agent call + return
+    # and the child's transcript rides its own sidecar.
+    transcripts = TranscriptStore(store.path, store.session_id)
+    spawn_parts = [p for m in transcripts.read("s1") or [] for p in m.parts]
+    tool_parts = [p for p in spawn_parts if p.part_kind in ("tool-call", "tool-return")]
+    assert [p.part_kind for p in tool_parts] == ["tool-call", "tool-return"]
+    assert tool_parts[1].content == "found it"
+    child_parts = [p for m in transcripts.read("k1") or [] for p in m.parts]
+    assert [p.content for p in child_parts if p.part_kind == "text"] == ["found it"]
+
+
+async def test_child_still_running_when_the_spawn_finishes_is_closed(tmp_path: Path, monkeypatch):
+    """Unlike the main loop (where an open child outlives the turn and is
+    sealed in the ledger only), a spawn's thread is dropped when its one
+    turn ends — its children with it — so the nested card settles for real
+    and the transcript never ends on an unanswered spawn_agent call."""
+    from pydantic_ai.messages import FunctionToolResultEvent
+
+    from marim_harness.codex.collab import CLOSED_RESULT
+
+    _login(monkeypatch, tmp_path, {"turns": [_collab_steps(settle=False)]})
+    _write_codex_agent(tmp_path)
+    store = _session_store(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store).subagents
+    sinks = _Sinks(runner)
+    await runner.run("codex-worker", "go", stream_id="s1")
+    results = [
+        ev for sid, ev in sinks.events if sid == "s1" and isinstance(ev, FunctionToolResultEvent)
+    ]
+    assert [r.part.content for r in results] == [CLOSED_RESULT]
+    transcripts = TranscriptStore(store.path, store.session_id)
+    parts = [p for m in transcripts.read("s1") or [] for p in m.parts]
+    returns = [p for p in parts if p.part_kind == "tool-return"]
+    assert [r.content for r in returns] == [CLOSED_RESULT]

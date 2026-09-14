@@ -669,3 +669,106 @@ async def test_close_if_idle_releases_the_singleton_before_closing():
         assert server.saw_reset and server_mod._shared is None
     finally:
         server_mod._shared = None
+
+
+# --- collab child adoption (codex/collab.py) ----------------------------------
+
+
+async def test_adopt_thread_shares_queue_and_handler_and_routes_child_traffic():
+    """A child adopted under a parent is a registered thread whose
+    notifications land on the PARENT's queue (one consumer loop drains both)
+    and whose server requests reach the parent's approval broker."""
+    seen: list[tuple[str, dict]] = []
+
+    async def handler(method: str, params: dict) -> dict:
+        seen.append((method, params))
+        return {"decision": "accept"}
+
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, handler)
+    child = server.adopt_thread(parent, "c1")
+    assert child.parent_id == "t1"
+    assert child.events is parent.events
+    assert server.thread_ids == frozenset({"t1", "c1"})
+    assert not server.idle
+    await server._on_notification("item/agentMessage/delta", {"threadId": "c1", "delta": "hi"})
+    assert parent.events.get_nowait() == (
+        "item/agentMessage/delta",
+        {"threadId": "c1", "delta": "hi"},
+    )
+    reply = await server._on_server_request(
+        "item/commandExecution/requestApproval", {"threadId": "c1", "itemId": "i1"}
+    )
+    assert reply == {"decision": "accept"}
+    assert seen == [("item/commandExecution/requestApproval", {"threadId": "c1", "itemId": "i1"})]
+    # Idempotent: adopting again hands back the same handle.
+    assert server.adopt_thread(parent, "c1") is child
+
+
+async def test_child_turn_completed_updates_only_the_child_handle():
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, _decline)
+    parent.current_turn_id = "turn-p"
+    child = server.adopt_thread(parent, "c1")
+    child.current_turn_id = "turn-c"
+    await server._on_notification("turn/completed", {"threadId": "c1", "turn": {"id": "turn-c"}})
+    assert child.current_turn_id is None
+    assert parent.current_turn_id == "turn-p"
+    assert parent.events.get_nowait()[0] == "turn/completed"
+
+
+async def test_drop_thread_cascades_to_adopted_children():
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, _decline)
+    other = server._register({"id": "t2"}, _decline)
+    server.adopt_thread(parent, "c1")
+    grandchild_parent = server.adopt_thread(parent, "c2")
+    server.adopt_thread(grandchild_parent, "g1")
+    server.drop_thread(parent)
+    assert server.thread_ids == frozenset({"t2"})
+    # A dropped child's trailing traffic is dropped, not broadcast.
+    await server._on_notification("item/agentMessage/delta", {"threadId": "g1"})
+    assert other.events.empty()
+    assert parent.events.empty()
+
+
+async def test_thread_started_with_a_registered_parent_adopts_on_the_reader_task():
+    """Codex announces a collab child with ``thread/started`` carrying
+    ``parentThreadId``; the server adopts it right there so the child's
+    first item / approval request (dispatched before the consumer has seen
+    the parent's spawn item) is not dropped as an unknown thread."""
+
+    async def handler(method: str, params: dict) -> dict:
+        return {"decision": "accept"}
+
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, handler)
+    started = {"thread": {"id": "c1", "parentThreadId": "t1", "agentNickname": "scout"}}
+    await server._on_notification("thread/started", started)
+    assert server.thread_ids == frozenset({"t1", "c1"})
+    assert server._threads["c1"].parent_id == "t1" and server._threads["c1"].events is parent.events
+    # The announcement itself still lands on the parent's queue (the router
+    # reads the nickname off it), and the child's traffic follows.
+    assert parent.events.get_nowait() == ("thread/started", started)
+    await server._on_notification("item/agentMessage/delta", {"threadId": "c1", "delta": "x"})
+    assert parent.events.get_nowait()[1]["threadId"] == "c1"
+    # An unknown parent, or a thread already registered: nothing happens.
+    orphan = {"thread": {"id": "c2", "parentThreadId": "zz"}}
+    await server._on_notification("thread/started", orphan)
+    known = {"thread": {"id": "t1", "parentThreadId": "c1"}}
+    await server._on_notification("thread/started", known)
+    assert server.thread_ids == frozenset({"t1", "c1"})
+    assert server._threads["t1"].parent_id is None
+
+
+async def test_release_thread_drops_by_id_and_ignores_unknown_ids():
+    async def handler(method: str, params: dict) -> dict:
+        return {}
+
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, handler)
+    server.adopt_thread(parent, "c1")
+    server.release_thread("nope")
+    assert server.thread_ids == frozenset({"t1", "c1"})
+    server.release_thread("c1")
+    assert server.thread_ids == frozenset({"t1"})
