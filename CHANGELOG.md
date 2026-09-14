@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-14
+
 ### Added
 
 - **`codex-cli`: Codex's own sub-agents are first-class cards.** When
