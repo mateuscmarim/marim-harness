@@ -118,6 +118,23 @@ async def test_request_returns_text_and_usage(tmp_path):
     assert "effort" not in turn["params"]
 
 
+@pytest.mark.parametrize("model_id", [None, ""])
+async def test_blank_model_id_leaves_the_model_to_codex(tmp_path, model_id):
+    """`MARIM_MODEL=` set but blank reaches the constructor as "" — the same
+    "use Codex's own default" as None, and it must go out as null, not as
+    `model: ""` (Codex answers 400 "The '' model is not supported")."""
+    m = _model(tmp_path, {"turns": [_hello_turn()]}, model_id=model_id)
+    try:
+        resp = await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert m.model_name == "default" and resp.model_name == "default"
+    assert m.ephemeral_clone(cwd=str(tmp_path)).model_name == "default"
+    log = read_request_log(tmp_path)
+    for method in ("thread/start", "turn/start"):
+        assert next(r for r in log if r["method"] == method)["params"].get("model") is None
+
+
 async def test_thread_is_reused_across_turns_and_reported(tmp_path):
     refs: list[str] = []
     m = _model(tmp_path, {"turns": [_hello_turn("a"), _hello_turn("b")]})

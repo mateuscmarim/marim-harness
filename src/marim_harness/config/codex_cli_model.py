@@ -121,7 +121,11 @@ class CodexCliModel(ExternalCliModel):
         server: CodexServer | None = None,
     ) -> None:
         super().__init__()
-        self._model_id = model_id
+        # An empty id (`MARIM_MODEL=` set but blank) means "Codex's own
+        # default" exactly like None does; sent verbatim it reaches the
+        # app-server as `model: ""`, which Codex rejects with 400 "The ''
+        # model is not supported" (seen on the PR #128 live probe).
+        self._model_id = model_id or None
         self.ephemeral = ephemeral
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
