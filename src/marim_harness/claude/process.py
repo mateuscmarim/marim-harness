@@ -538,8 +538,12 @@ class ClaudeProcess:
         """Let a turn the CLI is running on its own finish before marim sends
         one: the CLI serializes them anyway, and a ``result`` arriving with a
         marim turn open would be routed to — and end — the wrong turn. Bounded
-        by the silence timeout; a turn that outlives it is failed here so its
-        consumer is not stranded."""
+        by the silence timeout; a turn that outlives it is *interrupted* like
+        a silent marim turn would be, so that it really ends on the CLI's side
+        too — finishing only the local handle would leave the CLI's eventual
+        ``result`` to land in, and end, the next marim turn. The interrupt's
+        aborted ``result`` (or the CLOSED of a CLI that ignored it and was
+        killed) closes the handle, so its consumer is not stranded."""
         handle = self._own_turn
         if handle is None or not handle.open:
             return
@@ -547,14 +551,8 @@ class ClaudeProcess:
         try:
             await asyncio.wait_for(handle.closed.wait(), timeout)
         except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(
-                "claude's own turn did not finish in %.0fs; sending the next turn", timeout
-            )
-            handle.events.put_nowait(
-                {"type": "result", "subtype": "error_during_execution", "is_error": True}
-            )
-            handle.finish()
-            self._own_turn = None
+            logger.warning("claude's own turn did not finish in %.0fs; interrupting it", timeout)
+            await self.interrupt(handle)
 
     async def send_turn(self, text: str) -> TurnHandle:
         """Open a turn and send its user message. A dead process still returns

@@ -495,9 +495,11 @@ async def test_send_turn_waits_for_the_cli_own_turn_to_finish(tmp_path: Path):
     assert second[0]["type"] == "user" and second[-1]["result"] == "two"
 
 
-async def test_cli_own_turn_that_hangs_is_failed_before_the_next_turn(tmp_path: Path):
-    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "x"}, {"sleep": 30}]}
-    scenario = {"turns": [_spawn_turn(own_turn)]}
+async def test_cli_own_turn_that_hangs_is_interrupted_before_the_next_turn(tmp_path: Path):
+    """The CLI must really stop its own turn, not just marim's view of it:
+    otherwise its late ``result`` would end the next marim turn instead."""
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "x"}, {"await_interrupt": True}]}
+    scenario = {"turns": [_spawn_turn(own_turn), [{"text": "Two."}]]}
     process = _process(tmp_path, scenario, silence_timeout=0.3)
     await process.start()
     try:
@@ -510,7 +512,28 @@ async def test_cli_own_turn_that_hangs_is_failed_before_the_next_turn(tmp_path: 
         assert time.monotonic() - started < 3.0
         own_objs = await _drain_turn(process, own)
         assert own_objs[-1]["type"] == "result" and own_objs[-1]["is_error"] is True
-        assert handle.open is True
+        assert own_objs[-1]["terminal_reason"] == "aborted_streaming"
+        objs = [obj async for obj in turn_objects(process, handle)]
+        assert [o["type"] for o in objs][-1] == "result" and not objs[-1].get("is_error")
+        assert process.alive is True
+    finally:
+        await process.aclose()
+
+
+async def test_cli_own_turn_that_ignores_the_interrupt_is_killed(tmp_path: Path):
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "x"}, {"sleep": 30}]}
+    scenario = {"turns": [_spawn_turn(own_turn)]}
+    process = _process(tmp_path, scenario, silence_timeout=0.3)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: process.has_unsolicited)
+        own = process.take_unsolicited()
+        assert own is not None
+        handle = await process.send_turn("two")
+        own_objs = await _drain_turn(process, own)
+        assert own_objs[-1]["type"] == CLOSED
+        assert process.alive is False and handle.open is False
     finally:
         await process.aclose()
 
