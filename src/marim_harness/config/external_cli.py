@@ -96,6 +96,19 @@ class ExternalCliModel(Model):
         base keeps nothing."""
         return None
 
+    def release_conversation(self) -> None:
+        """Let go of the provider-side conversation this model is driving —
+        WITHOUT closing the model. Called by the harness whenever the session
+        store is rebound under it (a session switch, ``/new``, ``/clear``): a
+        live ``claude`` process or codex thread belongs to the conversation
+        the user just LEFT, and the next turn must instead resume whatever
+        ``session_ref_getter`` now says (or start cold when it says nothing).
+        Left in place, the next prompt would continue the old conversation
+        and the CLI's reply would persist the old conversation's id over the
+        new session's ref. Sync, like the harness's switch path; an
+        implementation schedules any async teardown. The base holds nothing."""
+        return None
+
     async def compact_remote(self) -> None:
         """Ask the CLI to compact its own context (after marim compacts its
         copy). No-op by default."""

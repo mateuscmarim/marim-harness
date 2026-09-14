@@ -73,6 +73,15 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Fixed
 
+- **Switching sessions under `claude-cli`/`codex-cli` kept driving the old
+  conversation.** A session switch, `/new` or `/clear` rebound marim's
+  session store but left the adapter's live `claude` process or codex thread
+  in place, so the next prompt continued the conversation the user had just
+  left — and the CLI's reply persisted the old conversation's id over the new
+  session's ref. The harness now tells the model to release its provider-side
+  conversation at every store rebind (`ExternalCliModel.release_conversation`),
+  so the next turn resumes what the incoming session recorded, or starts
+  cold.
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
   bidirectional transport every `result` carries the process's *running*
   `total_cost_usd`, not the turn's cost, and marim billed each turn the

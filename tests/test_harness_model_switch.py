@@ -18,10 +18,14 @@ class _Closable(ExternalCliModel):
     def __init__(self) -> None:
         super().__init__()
         self.closed = 0
+        self.released = 0
         self.adopted: list[object] = []
 
     def adopt(self, previous) -> None:
         self.adopted.append(previous)
+
+    def release_conversation(self) -> None:
+        self.released += 1
 
     @property
     def model_name(self) -> str:
@@ -87,7 +91,35 @@ async def test_set_model_lets_the_new_model_adopt_the_old_before_closing_it(tmp_
     assert new.adopted == [old] and old.closed == 1 and new.closed == 0
 
 
-def test_base_adopt_keeps_nothing():
+@pytest.mark.anyio
+async def test_every_store_rebind_releases_the_cli_conversation(tmp_path):
+    """A switch, /new and /clear each rebind the session store; the live
+    provider-side conversation belongs to the session being left, so the
+    model is told to let go before anything else (on a switch: before
+    _apply_saved_model, so a same-provider model change has nothing stale to
+    adopt)."""
+    from marim_harness.session import SessionManager
+
+    model = _Closable()
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store_a = manager.create("A")
+    h = _make_harness(model, _make_deps(tmp_path / "ws"), store=store_a, manager=manager)
+    h.session.persist(force=True)
+    store_b = manager.create("B")
+    store_b.path.parent.mkdir(parents=True, exist_ok=True)
+    store_b.path.write_text("{}")
+
+    h.switch_session(store_b.session_id)
+    assert model.released == 1
+    h.new_session("C")
+    assert model.released == 2
+    h.reset()
+    assert model.released == 3
+    # Nothing here switched the model, so nothing closed it.
+    assert model.closed == 0 and h.current_model is model
+
+
+def test_base_release_conversation_and_adopt_keep_nothing():
     class _Plain(ExternalCliModel):
         @property
         def model_name(self) -> str:
@@ -97,6 +129,7 @@ def test_base_adopt_keeps_nothing():
             raise NotImplementedError
 
     assert _Plain().adopt(_Plain()) is None
+    assert _Plain().release_conversation() is None
 
 
 @pytest.mark.anyio

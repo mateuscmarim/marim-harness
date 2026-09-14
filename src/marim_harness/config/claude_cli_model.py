@@ -29,8 +29,11 @@ Mode, model and thinking reach the process as control requests rather
 than launch flags: before each turn ``_sync_controls`` sends whatever differs
 from what the process last acknowledged (``claude/controls.py``), so a
 ``/mode``, ``/model`` or ``/think`` switch takes effect on the next turn
-without a respawn. A same-provider ``/model`` switch hands the live process
-over to the new model object (``adopt``) instead of closing it.
+without a respawn. A session switch, ``/new`` or ``/clear`` drops the live
+process (``release_conversation``) so the next turn follows the rebound
+store's ref instead of continuing the conversation the user left. A
+same-provider ``/model`` switch hands the live process over to the new
+model object (``adopt``) instead of closing it.
 
 Cost: the ``result``'s ``usage`` is per turn but its ``total_cost_usd`` is
 CUMULATIVE over the process (verified live on 2.1.270: 0.0109 → 0.0137 →
@@ -1055,6 +1058,27 @@ class ClaudeCliModel(ExternalCliModel):
         self.context_report, previous.context_report = previous.context_report, None
         self.quota_hint, previous.quota_hint = previous.quota_hint, None
         self._context_window, self._prompt_model = previous._context_window, previous._prompt_model
+
+    def release_conversation(self) -> None:
+        """Drop the live process (see the base): the store was rebound, so the
+        process — and everything read off it: the broker, the context/quota
+        readings, the cost baseline — describes a conversation this session
+        no longer is. The close is scheduled, not awaited (the harness's
+        switch path is sync); without a running loop there is nothing alive
+        to close (a process only exists inside the loop that spawned it)."""
+        process, self._process = self._process, None
+        self._broker = None
+        self.context_report = self.quota_hint = None
+        self._context_window = self._prompt_model = None
+        self._cost = CostMeter()
+        if process is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(process.aclose())
+        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     async def _after_turn(self, process: ClaudeProcess, handle: TurnHandle) -> None:
         """Every exit path of a turn: a turn still open (the consumer abandoned

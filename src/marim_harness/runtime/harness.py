@@ -763,8 +763,22 @@ class Harness:
 
     def reset(self) -> None:
         self.session.reset()
+        self._release_cli_conversation()
         self.checkpoints.clear()
         self._clear_job_context()
+
+    def _release_cli_conversation(self) -> None:
+        """The session store was just rebound (a switch, ``/new``, ``/clear``):
+        an external-CLI model's live provider-side conversation — a ``claude``
+        process, a codex thread — belongs to the session we LEFT. Tell it to
+        let go so the next turn resumes from the incoming store's ref (or
+        starts cold) instead of continuing the old conversation and writing
+        its id over the new session's ref. Runs BEFORE ``_apply_saved_model``
+        on a switch, so a same-provider model change there has no stale
+        process to ``adopt``. A no-op for every other provider."""
+        model = self.current_model
+        if isinstance(model, ExternalCliModel):
+            model.release_conversation()
 
     def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
         """Take ownership of an externally acquired claim (the CLI launch path
@@ -844,6 +858,7 @@ class Harness:
 
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
+        self._release_cli_conversation()
         # Ownership follows the view: claim the fresh session, release the one
         # we're leaving.
         self._claim_active_session()
@@ -966,6 +981,7 @@ class Harness:
             raise
         # COMMITTED from here on — see switch_session's contract. Everything
         # below is best-effort by construction.
+        self._release_cli_conversation()
         self._restore_session_settings()
         return count
 

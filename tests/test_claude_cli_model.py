@@ -1604,6 +1604,50 @@ async def test_ephemeral_clones_send_no_controls(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_release_conversation_makes_the_next_turn_follow_the_rebound_store(
+    tmp_path, monkeypatch
+):
+    """A session switch rebinds the store under the adapter. Without the
+    release the live process — session A's Claude conversation — would take
+    B's first prompt, and A's id would be persisted over B's ref. With it,
+    the next turn resumes what the store now says (here B) on a fresh
+    process, and every reading taken off the old process is gone."""
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "session_id": "A",
+            "known_sessions": ["B"],
+            "turns": [[{"text": "one"}], [{"text": "two"}]],
+        },
+    )
+    ref: dict[str, str | None] = {"v": None}
+    model.session_ref_getter = lambda: ref["v"]
+    refs: list[str] = []
+    model.on_session_ref = refs.append
+    try:
+        await _stream_text(model, _user("first"))
+        assert model.session_id == "A"
+        ref["v"] = SESSION_REF_PREFIX + "B"  # the harness switched to session B
+        model.release_conversation()
+        assert model._process is None and model.context_report is None
+        await asyncio.sleep(0.05)  # the scheduled close
+        await _stream_text(model, _user("second"))
+    finally:
+        await model.aclose()
+    argvs = read_claude_argvs(tmp_path)
+    assert len(argvs) == 2 and argvs[1][argvs[1].index("--resume") + 1] == "B"
+    assert "--resume" not in argvs[0]
+
+
+@pytest.mark.anyio
+async def test_release_conversation_with_no_process_is_a_no_op(tmp_path, monkeypatch):
+    model = _model(tmp_path, monkeypatch, {})
+    model.release_conversation()  # nothing spawned yet: nothing to schedule
+    assert model._process is None
+
+
+@pytest.mark.anyio
 async def test_adopt_moves_the_live_process_to_the_new_model(tmp_path, monkeypatch):
     old = _model(tmp_path, monkeypatch, {"session_id": "S9", "turns": [[{"text": "one"}]]})
     await old.request(_user("a"), None, ModelRequestParameters())
