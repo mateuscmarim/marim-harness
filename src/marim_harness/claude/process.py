@@ -204,6 +204,7 @@ class ClaudeProcess:
         self._opts = options
         self._on_request = on_request
         self._on_unsolicited = on_unsolicited
+        self.on_observation: Callable[[dict], None] | None = None
         self.silence_timeout = silence_timeout
         self._idle_timeout = idle_timeout
         self._proc: asyncio.subprocess.Process | None = None
@@ -478,6 +479,7 @@ class ClaudeProcess:
         return {"type": CLOSED, "stderr": self.last_stderr, "returncode": code}
 
     def _deliver_closed(self) -> None:
+        self._observe(self._closed_object())
         turn = self._turn
         if turn is not None and turn.open:
             turn.events.put_nowait(self._closed_object())
@@ -526,6 +528,13 @@ class ClaudeProcess:
                 await proc.wait()
 
     # --- turns ---------------------------------------------------------------
+    def _observe(self, obj: dict) -> None:
+        if self.on_observation is not None:
+            try:
+                self.on_observation(obj)
+            except Exception:
+                logger.warning("claude job observation failed", exc_info=True)
+
     def _on_event(self, obj: dict) -> None:
         kind = obj.get("type")
         if kind == CLOSED:
@@ -541,6 +550,7 @@ class ClaudeProcess:
             self.session_id = str(obj.get("session_id") or self.session_id or "") or None
             self.init_info = obj
         self._track_background(obj)
+        self._observe(obj)
         turn = self._turn
         if turn is None or not turn.open:
             self._route_unsolicited(obj)

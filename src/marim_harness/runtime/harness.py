@@ -778,9 +778,13 @@ class Harness:
         its id over the new session's ref. Runs BEFORE ``_apply_saved_model``
         on a switch, so a same-provider model change there has no stale
         process to ``adopt``. A no-op for every other provider."""
+        # Only after a successful rebind: failed switches keep their live observers.
+        # Invalidate them before asynchronous process teardown can deliver late events.
+        self.deps.jobs.discard_observed()
         model = self.current_model
         if isinstance(model, ExternalCliModel):
             model.release_conversation()
+            self.wire_cli_model(model)
 
     def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
         """Take ownership of an externally acquired claim (the CLI launch path
@@ -1089,6 +1093,7 @@ class Harness:
         model.mode_getter = lambda: self.mode.value
         model.cwd = str(self.deps.workspace.root)
         model.on_activity = self.deps.ui.on_cli_activity
+        model.job_registry = self.deps.jobs
         model.on_subagent = self.deps.ui.on_subagent_event
         model.on_subagent_model = self.deps.ui.on_subagent_model
         model.on_subagent_notice = self.deps.ui.on_subagent_notice
@@ -1105,6 +1110,19 @@ class Harness:
         )
         model.on_session_ref = session.set_cli_thread_id if session is not None else None
         model.on_backend_turn = self._on_backend_turn
+        store = session.store if session is not None else None
+        model.on_jobs_settled = lambda: self._persist_cli_jobs(store)
+
+    def _persist_cli_jobs(self, store) -> None:
+        # Like a native background completion: the next controller persist
+        # banks jobs when an approval round owns dirty, unresumable history.
+        # A retired CLI must not persist into a session switched in meanwhile.
+        if self.session.store is not store or self.deps.approval_round_active:
+            return
+        try:
+            self.session.persist(force=True)
+        except Exception:
+            logger.warning("CLI job history persist failed", exc_info=True)
 
     def _on_backend_turn(self, note: str) -> None:
         """The CLI backend ran a turn of its own (claude-cli reacting to a

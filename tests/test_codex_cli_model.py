@@ -1202,9 +1202,11 @@ async def test_stream_renders_a_codex_spawn_as_a_first_class_card(tmp_path):
     sinks, and the ``wait`` that finds it completed settles the card with the
     child's last message."""
     from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+    from marim_harness.jobs import JobRegistry
     from marim_harness.runtime.cli_activity import expand_cli_activity
 
     m = _model(tmp_path, {"turns": [_collab_turn()]})
+    m.job_registry = JobRegistry()
     screen = _Screen()
     screen.bind(m)
     try:
@@ -1212,6 +1214,10 @@ async def test_stream_renders_a_codex_spawn_as_a_first_class_card(tmp_path):
     finally:
         await m.aclose()
     # The parent's channel: exactly one spawn_agent call + its return.
+    [job] = m.job_registry.list()
+    assert job.status == "done" and job.result == "child here"
+    assert job.prompt == "review the diff"
+    assert m.job_registry.take_finished_digest() == ""
     assert [type(e) for e in screen.cards] == [FunctionToolCallEvent, FunctionToolResultEvent]
     call, result = screen.cards
     assert call.part.tool_name == "spawn_agent" and call.part.tool_call_id == "k1"
@@ -1252,6 +1258,7 @@ async def test_child_still_running_at_turn_end_is_sealed_in_the_ledger_only(tmp_
     turn re-opens it (``resumed``) and settles it for real."""
     from marim_harness.codex.collab import DETACHED_RESULT
     from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+    from marim_harness.jobs import JobRegistry
 
     wait = {
         "id": "k2",
@@ -1278,13 +1285,18 @@ async def test_child_still_running_at_turn_end_is_sealed_in_the_ledger_only(tmp_
         {"notify": "item/agentMessage/delta", "params": {"itemId": "m3", "delta": "ok"}},
     ]
     m = _model(tmp_path, {"turns": [_collab_turn(settle=False), second]})
+    m.job_registry = JobRegistry()
     screen = _Screen()
     screen.bind(m)
     try:
         first = await _drain(m)
+        [job] = m.job_registry.list()
+        assert job.status == "running"
         assert m._router is not None and m._router.open_children == {"child-1"}
         cards_after_first = len(screen.cards)
         resp = await _drain(m, "and?")
+        assert m.job_registry.list() == [job]
+        assert job.status == "done" and job.result == "final answer"
     finally:
         await m.aclose()
     # Turn 1: the live card got only the call; the ledger got call + detached return.

@@ -121,6 +121,7 @@ class _Child:
     last_text_id: str | None = None
     last_text: list[str] = field(default_factory=list)
     settled: bool = False  # the card's ActivityEnd went out
+    status: str = "running"  # precise backend outcome; a display bool loses interruptions
     ledger_open: bool = False  # the current turn's ledger has an open call
 
 
@@ -156,6 +157,10 @@ class CollabRouter:
     def open_children(self) -> frozenset[str]:
         """Thread ids of the adopted children whose cards are not settled."""
         return frozenset(tid for tid, child in self._by_thread.items() if not child.settled)
+
+    def status_for(self, stream_id: str) -> str | None:
+        child = self._by_stream.get(stream_id)
+        return child.status if child is not None else None
 
     def label_for(self, thread_id: str) -> str | None:
         """The approval-panel prefix for a child's request (``agent <name>``),
@@ -223,7 +228,7 @@ class CollabRouter:
         out: list[object] = []
         for child in reversed(list(self._by_stream.values())):
             if not child.settled:
-                out.extend(self._settle(child, result, False))
+                out.extend(self._settle(child, result, False, status="notFound"))
         return out
 
     # --- child traffic ----------------------------------------------------------
@@ -313,6 +318,7 @@ class CollabRouter:
         (back to running, never a second card) and the ledger gets the call
         that the agent's next completion will answer."""
         child.settled = False
+        child.status = "running"
         child.ledger_open = child.container is None
         args = {**child.args, "resumed": True}
         return self._on_container(child.container, ActivityStart(child.stream_id, SPAWN_TOOL, args))
@@ -387,7 +393,7 @@ class CollabRouter:
         if not child.settled:
             message = state.get("message") if isinstance(state, dict) else None
             content = "".join(child.last_text) or (str(message) if message else "") or fallback
-            out.extend(self._settle(child, content, status in _FAILED))
+            out.extend(self._settle(child, content, status in _FAILED, status=status))
         if status in _GONE:
             out.extend(self._forget(child))
         return out
@@ -403,7 +409,9 @@ class CollabRouter:
         out = self._emit(child, Notice(f"agent {item.path or child.label} {item.kind}"))
         if item.kind in _PING_SETTLES and not child.settled:
             content = "".join(child.last_text) or f"agent {item.kind}"
-            out.extend(self._settle(child, content, item.kind == "interrupted"))
+            out.extend(
+                self._settle(child, content, item.kind == "interrupted", status=item.kind)
+            )
         return out
 
     # --- bookkeeping ------------------------------------------------------------
@@ -430,7 +438,10 @@ class CollabRouter:
         for extra in receivers[1:]:
             logger.debug("codex collab: extra receiver %s of %s not tracked", extra, tid)
 
-    def _settle(self, child: _Child, content: str, is_error: bool) -> list[object]:
+    def _settle(
+        self, child: _Child, content: str, is_error: bool, *, status: str | None = None
+    ) -> list[object]:
+        child.status = status or ("errored" if is_error else "completed")
         child.settled = True
         child.ledger_open = False
         return self._on_container(child.container, ActivityEnd(child.stream_id, content, is_error))
@@ -446,7 +457,7 @@ class CollabRouter:
         for grandchild in reversed(nested):
             out.extend(self._forget(grandchild))  # its own spawns first: deepest closes first
             if not grandchild.settled:
-                out.extend(self._settle(grandchild, GONE_RESULT, False))
+                out.extend(self._settle(grandchild, GONE_RESULT, False, status="notFound"))
         if child.thread_id is not None:
             self._by_thread.pop(child.thread_id, None)
             self._release(child.thread_id)

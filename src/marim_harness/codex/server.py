@@ -27,6 +27,7 @@ import importlib.metadata
 import logging
 import os
 import signal
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -105,6 +106,18 @@ class ThreadHandle:
     # approval request the child sends before the consumer has dequeued the
     # announcement can still be labelled (``CollabRouter.label_for``).
     label: str | None = None
+    # A root thread's read-only observer receives its descendants too, before
+    # queueing. It therefore sees off-turn completions without consuming them.
+    on_observation: Callable[[str, dict], None] | None = None
+
+    def observe(self, method: str, params: dict) -> None:
+        if self.on_observation is not None:
+            try:
+                self.on_observation(method, params)
+            except Exception:
+                logger.warning(
+                    "codex job observation failed thread=%s", self.thread_id, exc_info=True
+                )
 
     def note_turn_completed(self, params: dict) -> None:
         """Bookkeeping for ``turn/completed``.
@@ -342,6 +355,7 @@ class CodexServer:
                     await asyncio.wait_for(asyncio.shield(self._stderr_task), 0.5)
             tail = "\n".join(self._stderr_tail)
             for handle in list(self._threads.values()):
+                handle.observe(CLOSED, {"stderr": tail})
                 handle.current_turn_id = None
                 handle.events.put_nowait((CLOSED, {"stderr": tail}))
 
@@ -421,6 +435,10 @@ class CodexServer:
             return
         if method == "turn/completed":
             handle.note_turn_completed(params)
+        observer = handle
+        while observer.parent_id in self._threads:
+            observer = self._threads[observer.parent_id]
+        observer.observe(method, params)
         handle.events.put_nowait((method, params))
 
     async def _on_server_request(self, method: str, params: dict) -> dict:
@@ -559,6 +577,7 @@ class CodexServer:
         """Deregister ``handle`` and every child adopted under it, so a
         dropped parent's sub-agents cannot keep feeding a queue nobody drains
         (or pin the shared server open through ``idle``)."""
+        handle.observe(CLOSED, {})
         self._threads.pop(handle.thread_id, None)
         for child in [h for h in self._threads.values() if h.parent_id == handle.thread_id]:
             self.drop_thread(child)

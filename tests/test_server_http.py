@@ -946,6 +946,130 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     assert agent_body["duration_secs"] == 7.5
 
 
+async def _observed_codex_handle(host):
+    from marim_harness.codex.server import ThreadHandle
+    from marim_harness.config.codex_cli_model import CodexCliModel
+    from marim_harness.runtime.backend_jobs import CodexJobObserver
+
+    async def decline(_method, _params):
+        return {"decision": "denied"}
+
+    model = CodexCliModel(None)
+    host.harness.wire_cli_model(model)
+    assert model.job_registry is host.harness.deps.jobs
+    return ThreadHandle(
+        thread_id="cli-parent",
+        events=asyncio.Queue(),
+        request_handler=decline,
+        on_observation=CodexJobObserver(model.job_registry, "cli-parent", model.on_jobs_settled),
+    )
+
+
+async def _feed_codex_observations(handle, notifications):
+    for method, params in notifications:
+        handle.observe(method, params)
+    # Let scheduled wake/persistence callbacks run before crossing back to HTTP.
+    await asyncio.sleep(0)
+
+
+async def _observed_job_events(host, after_seq):
+    subscription = host.bus.attach(after_seq=after_seq)
+    try:
+        return [
+            await subscription.next_event(timeout=1)
+            for _ in range(host.bus.last_seq - after_seq)
+        ]
+    finally:
+        subscription.close()
+
+
+@pytest.mark.parametrize("outcome", ["done", "failed", "cancelled"])
+def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_supervisor, outcome):
+    """Raw backend events update the real host, API and jobs.changed bus while idle.
+
+    No transcript consumer drains the handle, and no provider call runs after
+    the initial fixture turn. This catches registering cards only in the live
+    rendering path, or treating parent turn completion as child completion.
+    """
+    from marim_harness.session import SessionManager
+
+    test_client, tmp_path, supervisor, loop_holder = client_with_supervisor
+    ws_id, sid, project = _setup_workspace_and_session(test_client, tmp_path)
+    base = f"/v1/workspaces/{ws_id}/sessions/{sid}"
+    _mount_idle_host(test_client, base)
+    host = supervisor.peek(ws_id, sid)
+    assert host is not None
+    loop = loop_holder["loop"]
+    handle = asyncio.run_coroutine_threadsafe(_observed_codex_handle(host), loop).result(timeout=5)
+    cursor = host.bus.last_seq
+    spawn = {
+        "type": "collabAgentToolCall",
+        "id": "cli-spawn",
+        "tool": "spawnAgent",
+        "receiverThreadIds": ["cli-child"],
+        "prompt": "Implement and verify file download support.",
+        "status": "inProgress",
+    }
+    initial = [
+        ("item/started", {"threadId": "cli-parent", "item": spawn}),
+        ("item/started", {"threadId": "cli-parent", "item": spawn}),
+        ("turn/completed", {"threadId": "cli-parent", "turn": {"status": "completed"}}),
+    ]
+    asyncio.run_coroutine_threadsafe(_feed_codex_observations(handle, initial), loop).result(
+        timeout=5
+    )
+    listed = test_client.get(f"{base}/jobs", headers=AUTH)
+    assert listed.status_code == 200
+    [running] = listed.json()["jobs"]
+    assert running["status"] == "running" and running["backend_owned"] is True
+    assert running["stream_id"] == "cli-spawn" and running["started_at"]
+    job_url = f"{base}/jobs/{running['id']}"
+    refused = test_client.post(f"{job_url}/cancel", headers=AUTH)
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "backend_managed"
+    assert test_client.get(job_url, headers=AUTH).json()["status"] == "running"
+
+    report = "Detailed implementation report\n" + "verified result\n" * 40
+    terminal_item = {
+        **spawn,
+        "status": "completed",
+        "agentsStates": {"cli-child": {"status": "completed" if outcome == "done" else "errored"}},
+    }
+    if outcome == "cancelled":
+        terminal_item = {
+            "type": "subAgentActivity", "id": "cli-spawn",
+            "agentThreadId": "cli-child", "kind": "interrupted",
+        }
+    terminal_method = "item/started" if outcome == "cancelled" else "item/completed"
+    terminal = (terminal_method, {"threadId": "cli-parent", "item": terminal_item})
+    notifications = [
+        ("item/agentMessage/delta", {"threadId": "cli-child", "itemId": "report", "delta": report}),
+        terminal,
+        terminal,
+    ]
+    asyncio.run_coroutine_threadsafe(
+        _feed_codex_observations(handle, notifications), loop
+    ).result(timeout=5)
+    response = test_client.get(job_url, headers=AUTH)
+    assert response.status_code == 200
+    detail = response.json()
+    assert (detail["status"], detail["result"], detail["prompt"]) == (
+        outcome, report, spawn["prompt"]
+    )
+    assert detail["finished_at"]
+    assert test_client.get(base, headers=AUTH).json()["status"] == "idle"
+    assert not host.harness.deps.jobs.has_finished_pending()
+    assert host.harness.deps.jobs.take_finished_digest() == ""
+    events = asyncio.run_coroutine_threadsafe(_observed_job_events(host, cursor), loop).result(
+        timeout=5
+    )
+    assert [event.type for event in events] == ["jobs.changed", "jobs.changed"]
+    # Idle completion is metadata-only: the unchanged transcript version must
+    # not make session persistence skip the job result until the next turn.
+    [saved] = SessionManager(project).persisted_jobs(sid)
+    assert (saved["id"], saved["status"], saved["backend_owned"]) == (running["id"], outcome, True)
+
+
 def test_jobs_list_on_a_cold_session_returns_its_persisted_history(client):
     """Phase 4b: a session with no live host still answers ``GET jobs`` with
     the settled rows its file carries (``jobs``, the export the in-process

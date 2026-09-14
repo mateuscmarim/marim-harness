@@ -26,6 +26,7 @@ def job_to_dto(job: Job, meta: dict | None) -> dict:
         "kind": job.kind,
         "label": job.label,
         "status": job.status,
+        "backend_owned": job.backend_owned,
         "started_at": job.started_at,
         "finished_at": job.finished_at,
         "stream_id": job.stream_id,

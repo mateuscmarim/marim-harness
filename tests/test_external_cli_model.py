@@ -97,6 +97,8 @@ def test_wire_cli_model_binds_all_seams(tmp_path):
     assert m.mode_getter is not None and m.mode_getter() == harness.mode.value
     assert m.cwd == str(harness.deps.workspace.root)
     assert m.on_activity is harness.deps.ui.on_cli_activity
+    assert m.job_registry is harness.deps.jobs
+    assert m.on_jobs_settled is not None
     assert m.on_subagent is harness.deps.ui.on_subagent_event
     assert m.on_subagent_model is harness.deps.ui.on_subagent_model
     assert m.on_subagent_notice is harness.deps.ui.on_subagent_notice
@@ -117,6 +119,49 @@ def test_wire_cli_model_ignores_other_models(tmp_path):
     plain = _Plain()
     harness.wire_cli_model(plain)  # no attribute errors, nothing set
     assert not hasattr(plain, "mode_getter")
+
+
+def test_observed_job_persist_defers_dirty_history_and_ignores_rebound_store(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    harness = _make_harness(_text_model(), _make_deps(tmp_path))
+    model = _Fake()
+    harness.wire_cli_model(model)
+    persist = Mock()
+    monkeypatch.setattr(harness.session, "persist", persist)
+    harness.deps.approval_round_active = True
+    model.on_jobs_settled()
+    persist.assert_not_called()
+    harness.deps.approval_round_active = False
+    model.on_jobs_settled()
+    persist.assert_called_once_with(force=True)
+    persist.reset_mock()
+    monkeypatch.setattr(harness.session, "store", object())
+    model.on_jobs_settled()
+    persist.assert_not_called()
+
+
+def test_releasing_conversation_invalidates_old_jobs_and_rebinds_persistence(tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from marim_harness.runtime.backend_jobs import ClaudeJobObserver
+
+    model = _Fake()
+    harness = _make_harness(model, _make_deps(tmp_path))
+    harness.wire_cli_model(model)
+    old = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
+    old.start("old-agent", {})
+    monkeypatch.setattr(harness.session, "store", object())
+    harness._release_cli_conversation()
+    old.start("late-agent", {})
+    old.close()
+    assert harness.deps.jobs.list() == []
+    persist = Mock()
+    monkeypatch.setattr(harness.session, "persist", persist)
+    current = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
+    current.start("new-agent", {})
+    current.finish("new-agent", "new report", "done")
+    persist.assert_called_once_with(force=True)
 
 
 def test_base_ephemeral_clone_raises_when_a_subclass_forgets_to_override():
