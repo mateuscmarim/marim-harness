@@ -148,7 +148,9 @@ def test_remember_tool_returns_error_string_on_unwritable_dir(tmp_path: Path):
     marim_dir.mkdir()
     marim_dir.chmod(0o500)  # read-only: creating .marim/memory underneath fails
     ctx = SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(memory_root=None, project_memory_root=None, root=tmp_path)
+        )
     )
     try:
         result = remember(ctx, title="X", description="d", body="b")

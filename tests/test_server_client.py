@@ -80,7 +80,12 @@ def server(tmp_path, monkeypatch):
     serve the client library's ``websockets`` connection)."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
-    async def factory(workspace: Path, session_id: str, mode):
+    async def factory(
+        workspace: Path,
+        session_id: str,
+        mode,
+        project_memory_root: Path | None = None,
+    ):
         from marim_harness.session import SessionManager
 
         manager = SessionManager(workspace)
