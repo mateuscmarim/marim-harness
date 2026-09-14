@@ -98,6 +98,10 @@ async def test_tui_notice_splits_text_and_deduplicates_restored_identity(tmp_pat
         )
         await app.stream.on_wire(wire_from_event(second))
         assert len(log.query(NoticeMessage)) == 2
+        assert [str(w.render()) for w in log.query(NoticeMessage)] == [
+            "· same message",
+            "· same message",
+        ]
 
 
 @pytest.mark.anyio
@@ -335,6 +339,7 @@ async def test_attached_tui_restores_and_deduplicates_notice_through_remote_feed
         )
         assert len(app.query(NoticeMessage)) == 2
         assert app.history_messages == link.messages
+        assert _texts(app, NoticeMessage) == ["· remote lifecycle", "· remote lifecycle"]
 
 
 @pytest.mark.anyio
