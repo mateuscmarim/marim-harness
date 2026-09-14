@@ -48,6 +48,7 @@ from ..tools.provider import ToolGroups, ToolProvider
 from ..workspace.catalog import make_supports_images
 from ..workspace.scratchpad import ensure_scratchpad
 from ..workspace.snapshot import GitSnapshotter
+from .backend_jobs import CliJobPersistence, drain_task
 from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
 )
@@ -633,6 +634,7 @@ class Harness:
         self.mcp = collab.mcp
         self.lsp = collab.lsp
         self.session = collab.session
+        self.cli_job_persistence = CliJobPersistence()
         self.checkpoints = collab.checkpoints
         self.hooks = collab.hooks
         self.subagents = collab.subagents
@@ -1117,13 +1119,10 @@ class Harness:
         model.on_jobs_settled = lambda: self._persist_cli_jobs(store)
 
     def _persist_cli_jobs(self, store) -> None:
-        # Like a native background completion: the next controller persist
-        # banks jobs when an approval round owns dirty, unresumable history.
-        # A retired CLI must not persist into a session switched in meanwhile.
-        if self.session.store is not store or self.deps.approval_round_active:
-            return
         try:
-            self.session.persist(force=True)
+            write = self.session.jobs_writer(store, self.deps.jobs.observation_epoch)
+            if write is not None:
+                self.cli_job_persistence.submit(write)
         except Exception:
             logger.warning("CLI job history persist failed", exc_info=True)
 
@@ -1324,15 +1323,6 @@ class Harness:
             lsp = getattr(self, "lsp", None)
             if lsp is not None:
                 await lsp.aclose()
-            # An external-CLI model holds provider-side state — claude-cli a
-            # long-lived `claude` subprocess, codex-cli this harness's thread on
-            # the process-wide app-server (`marim serve` holds many SessionHosts
-            # over one app-server, so codex drops only ITS thread and lets the
-            # server close itself once nothing else is registered — see
-            # `CodexCliModel.aclose`/`close_shared_server_if_idle`). A no-op for
-            # every other provider.
-            if isinstance(self.current_model, ExternalCliModel):
-                await self.current_model.aclose()
         finally:
             # A discarded Harness must not leak the session it was driving.
             # release_claim() is idempotent and a no-op for the daemon (its
@@ -1343,7 +1333,22 @@ class Harness:
             # above and — left as a trailing statement — would skip the release
             # entirely, stranding the claim until the process exits and leaving
             # every other process refused on a session nobody is driving.
-            self.release_claim()
+            try:
+                await self._close_cli_jobs()
+            finally:
+                self.release_claim()
+
+    async def _close_cli_jobs(self) -> None:
+        # Even if earlier teardown failed/cancelled, close the transport before
+        # draining: its final events may enqueue writes. Cancellation must wait
+        # for both phases, or a live reader/worker could write after claim release.
+        try:
+            if isinstance(self.current_model, ExternalCliModel):
+                # Codex drops only this harness's thread on its shared server;
+                # Claude closes its owned subprocess. Other providers are inert.
+                await drain_task(asyncio.create_task(self.current_model.aclose()))
+        finally:
+            await self.cli_job_persistence.flush()
 
     async def disable_server(self, name: str) -> None:
         self.mcp.disable_server(name, self.deps.workspace.root)

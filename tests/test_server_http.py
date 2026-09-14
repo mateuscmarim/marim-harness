@@ -968,7 +968,7 @@ async def _observed_codex_handle(host):
 async def _feed_codex_observations(handle, notifications):
     for method, params in notifications:
         handle.observe(method, params)
-    # Let scheduled wake/persistence callbacks run before crossing back to HTTP.
+    # Let scheduled wake callbacks run before crossing back to HTTP.
     await asyncio.sleep(0)
 
 
@@ -1069,6 +1069,9 @@ def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_s
     assert [event.type for event in events] == ["jobs.changed", "jobs.changed"]
     # Idle completion is metadata-only: the unchanged transcript version must
     # not make session persistence skip the job result until the next turn.
+    asyncio.run_coroutine_threadsafe(host.harness.cli_job_persistence.flush(), loop).result(
+        timeout=5
+    )
     [saved] = SessionManager(project).persisted_jobs(sid)
     assert (saved["id"], saved["status"], saved["backend_owned"]) == (running["id"], outcome, True)
 

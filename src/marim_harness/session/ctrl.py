@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from itertools import count
 from typing import TYPE_CHECKING, SupportsIndex
 
 if TYPE_CHECKING:
@@ -175,6 +176,8 @@ class SessionController:
         # Serializes concurrent persist() writers — see persist() for why an
         # unserialized abandoned writer can clobber a newer write.
         self._persist_lock = threading.Lock()
+        self._write_generations = count(1)
+        self._written_generation = 0
         # ``history`` is a property; the underlying list lives in ``_history``.
         # The setter bumps ``history_version`` so the persist cache can detect
         # no-op writes — set both fields before the first assignment below.
@@ -331,6 +334,7 @@ class SessionController:
                 version = self.history_version
                 if not force and version == self._last_persisted_version:
                     return
+                generation = next(self._write_generations)
                 elapsed = (time.monotonic() - self._segment_start) if self._segment_start else 0.0
                 # Snapshot the history list (not deep-copy the messages —
                 # just freeze the list's own length) right before it's handed
@@ -368,6 +372,35 @@ class SessionController:
                     jobs=jobs_snapshot,
                 )
                 self._last_persisted_version = version
+                self._written_generation = generation
+
+    def jobs_writer(self, store: SessionStore | None, epoch: int) -> Callable[[], None] | None:
+        """Capture jobs on-loop, returning an ordered, session-bound off-loop write.
+
+        Issued generations order snapshots against full persists. Only SUCCESSFUL
+        writes supersede older work: a failed full save must not suppress the
+        only pending durable record of a completion. The worker never reads live
+        history or jobs, and the captured store cannot follow a session switch.
+        """
+        if store is None or self.store is not store or self.deps.approval_round_active:
+            return None
+        generation = next(self._write_generations)
+        jobs = self.deps.jobs.export_settled()
+
+        def write() -> None:
+            with self._persist_lock:
+                if (
+                    self.store is not store
+                    or self.deps.jobs.observation_epoch != epoch
+                    or generation <= self._written_generation
+                ):
+                    logger.debug("CLI job snapshot superseded: session=%s", store.session_id)
+                    return
+                if store.save_jobs(jobs):
+                    self._written_generation = generation
+                    logger.debug("CLI job snapshot persisted: session=%s", store.session_id)
+
+        return write
 
     @property
     def saved_model_id(self) -> str | None:

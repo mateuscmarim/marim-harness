@@ -121,47 +121,64 @@ def test_wire_cli_model_ignores_other_models(tmp_path):
     assert not hasattr(plain, "mode_getter")
 
 
-def test_observed_job_persist_defers_dirty_history_and_ignores_rebound_store(tmp_path, monkeypatch):
+async def test_observed_job_persist_defers_dirty_history_and_ignores_rebound_store(
+    tmp_path, monkeypatch
+):
     from unittest.mock import Mock
 
-    harness = _make_harness(_text_model(), _make_deps(tmp_path))
+    from marim_harness.session import SessionManager
+
+    manager = SessionManager(tmp_path)
+    store = manager.create("original")
+    harness = _make_harness(_text_model(), _make_deps(tmp_path), store=store, manager=manager)
     model = _Fake()
     harness.wire_cli_model(model)
-    persist = Mock()
-    monkeypatch.setattr(harness.session, "persist", persist)
+    save_jobs = Mock(return_value=True)
+    monkeypatch.setattr(store, "save_jobs", save_jobs)
     harness.deps.approval_round_active = True
     model.on_jobs_settled()
-    persist.assert_not_called()
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_not_called()
     harness.deps.approval_round_active = False
     model.on_jobs_settled()
-    persist.assert_called_once_with(force=True)
-    persist.reset_mock()
-    monkeypatch.setattr(harness.session, "store", object())
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_called_once_with([])
+    save_jobs.reset_mock()
+    monkeypatch.setattr(harness.session, "store", manager.create("incoming"))
     model.on_jobs_settled()
-    persist.assert_not_called()
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_not_called()
 
 
-def test_releasing_conversation_invalidates_old_jobs_and_rebinds_persistence(tmp_path, monkeypatch):
+async def test_releasing_conversation_invalidates_old_jobs_and_rebinds_persistence(
+    tmp_path, monkeypatch
+):
     from unittest.mock import Mock
 
     from marim_harness.runtime.backend_jobs import ClaudeJobObserver
+    from marim_harness.session import SessionManager
 
     model = _Fake()
-    harness = _make_harness(model, _make_deps(tmp_path))
+    manager = SessionManager(tmp_path)
+    harness = _make_harness(
+        model, _make_deps(tmp_path), store=manager.create("original"), manager=manager
+    )
     harness.wire_cli_model(model)
     old = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
     old.start("old-agent", {})
-    monkeypatch.setattr(harness.session, "store", object())
+    incoming = manager.create("incoming")
+    monkeypatch.setattr(harness.session, "store", incoming)
     harness._release_cli_conversation()
     old.start("late-agent", {})
     old.close()
     assert harness.deps.jobs.list() == []
-    persist = Mock()
-    monkeypatch.setattr(harness.session, "persist", persist)
+    save_jobs = Mock(return_value=True)
+    monkeypatch.setattr(incoming, "save_jobs", save_jobs)
     current = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
     current.start("new-agent", {})
     current.finish("new-agent", "new report", "done")
-    persist.assert_called_once_with(force=True)
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_called_once_with(harness.deps.jobs.export_settled())
 
 
 def test_base_ephemeral_clone_raises_when_a_subclass_forgets_to_override():

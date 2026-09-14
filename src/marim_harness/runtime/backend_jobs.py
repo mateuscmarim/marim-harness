@@ -8,11 +8,54 @@ These observers neither adopt threads nor execute/cancel backend work.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Callable
 
 from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent, ToolReturnPart
 
 from ..jobs import Job, JobRegistry, Status
+
+logger = logging.getLogger(__name__)
+
+
+async def drain_task(task: asyncio.Task) -> None:
+    """Cancellation cannot release session ownership while disk I/O still runs."""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+class CliJobPersistence:
+    """One tracked writer; bursts retain only their newest pending snapshot."""
+
+    def __init__(self) -> None:
+        self._pending: Callable[[], None] | None = None
+        self._task: asyncio.Task | None = None
+
+    def submit(self, write: Callable[[], None]) -> None:
+        loop = asyncio.get_running_loop()
+        self._pending = write
+        if self._task is None or self._task.done():
+            self._task = loop.create_task(self._run())
+
+    async def _run(self) -> None:
+        while self._pending is not None:
+            write, self._pending = self._pending, None
+            try:
+                await drain_task(asyncio.create_task(asyncio.to_thread(write)))
+            except Exception:
+                logger.warning("CLI job history persist failed", exc_info=True)
+
+    async def flush(self) -> None:
+        if self._task is not None:
+            await drain_task(self._task)
 
 
 class AgentJobMirror:

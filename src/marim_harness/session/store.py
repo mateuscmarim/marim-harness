@@ -280,6 +280,21 @@ class SessionStore:
         with file_lock(self.path):
             atomic_write_text(self.path, json.dumps(payload))
 
+    def save_jobs(self, jobs: list[dict]) -> bool:
+        """Patch only jobs in an existing resumable baseline, never recreate /clear.
+
+        Called off-loop with an immutable export, ordered against full persists
+        by the controller. Never serialize its possibly dirty live history.
+        """
+        with file_lock(self.path):
+            try:
+                data = json.loads(self.path.read_text())
+            except FileNotFoundError:
+                return False
+            data["jobs"] = jobs
+            atomic_write_text(self.path, json.dumps(data))
+        return True
+
     def save_meta(self) -> None:
         """Patch this session's on-disk name/auto-named/model header without
         rewriting the messages array.
@@ -366,7 +381,10 @@ class SessionStore:
         )
 
     def clear(self) -> None:
-        self.path.unlink(missing_ok=True)
+        # Order /clear after any in-flight read-modify-write so a jobs patch
+        # cannot replace the baseline again after it has been removed.
+        with file_lock(self.path):
+            self.path.unlink(missing_ok=True)
 
 
 class SessionManager:
