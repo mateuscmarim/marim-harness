@@ -82,6 +82,12 @@ pre-1.0, minor versions may contain breaking changes.
   conversation at every store rebind (`ExternalCliModel.release_conversation`),
   so the next turn resumes what the incoming session recorded, or starts
   cold.
+- **A bare-id `/model` switch orphaned the CLI thread ref.** `/model sonnet`
+  under a `claude-cli` (or `codex-cli`) default provider carries no provider
+  prefix, and the session read its first segment as the provider — so every
+  same-provider switch cleared the persisted thread ref and the next resume
+  started cold. The harness now tells the session which provider the new
+  model runs on.
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
   bidirectional transport every `result` carries the process's *running*
   `total_cost_usd`, not the turn's cost, and marim billed each turn the

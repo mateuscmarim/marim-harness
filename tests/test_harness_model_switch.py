@@ -92,6 +92,24 @@ async def test_set_model_lets_the_new_model_adopt_the_old_before_closing_it(tmp_
 
 
 @pytest.mark.anyio
+async def test_a_bare_id_switch_on_the_same_cli_keeps_the_persisted_thread_ref(tmp_path):
+    """`/model sonnet` under a CLI default provider is a bare id: the harness
+    tells the session which provider the new model runs on, so the ref the
+    adopted process will keep answering to is not orphaned on disk."""
+    from marim_harness.session import SessionManager
+
+    old, new = _Closable(), _Closable()
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    h = _make_harness(old, _make_deps(tmp_path / "ws"), store=manager.create("A"), manager=manager)
+    h.model_source = _Source({"old": old, "new": new, "other": _dummy()})
+    h.session.set_cli_thread_id("fake-cli:T1")
+    h.set_model("new")
+    assert h.session.saved_cli_thread_id == "fake-cli:T1"
+    h.set_model("other")  # a non-CLI model: the thread is orphaned
+    assert h.session.saved_cli_thread_id is None
+
+
+@pytest.mark.anyio
 async def test_every_store_rebind_releases_the_cli_conversation(tmp_path):
     """A switch, /new and /clear each rebind the session store; the live
     provider-side conversation belongs to the session being left, so the

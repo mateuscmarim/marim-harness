@@ -1042,7 +1042,11 @@ class Harness:
         self.model_label = self.model_source.label(model_id)
         self.session.update_model(model)
         if persist:
-            self.session.set_model(model_id)
+            # The provider decides whether the persisted CLI thread ref
+            # survives the switch; the id alone can't (a bare `sonnet`
+            # under a claude-cli default provider has no prefix to read).
+            provider = model.provider_id if isinstance(model, ExternalCliModel) else None
+            self.session.set_model(model_id, provider=provider)
         # Re-wire the late-bound hooks if the new model is an ExternalCliModel,
         # so switching TO such a provider at runtime honors live /mode, the
         # workspace cwd, and the TUI side-channels.
