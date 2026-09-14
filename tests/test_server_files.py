@@ -125,7 +125,8 @@ def test_unavailable_paths_have_indistinguishable_sanitized_errors(downloads, ki
     }
     assert str(root.parent) not in response.text
     assert str(root.parent) not in "\n".join(
-        record.getMessage() for record in caplog.records
+        record.getMessage()
+        for record in caplog.records
         if record.name.startswith("marim_harness.server")
     )
 
@@ -244,12 +245,15 @@ async def test_cancelled_file_open_closes_late_descriptor(downloads, monkeypatch
         return download
 
     monkeypatch.setattr(http, "open_workspace_file", delayed_open)
-    request = Request({
-        "type": "http", "app": client.app,
-        "headers": [(b"authorization", b"Bearer test-token")],
-        "query_string": b"path=file.txt",
-        "path_params": {"ws": "test", "sid": base.split("/")[-2]},
-    })
+    request = Request(
+        {
+            "type": "http",
+            "app": client.app,
+            "headers": [(b"authorization", b"Bearer test-token")],
+            "query_string": b"path=file.txt",
+            "path_params": {"ws": "test", "sid": base.split("/")[-2]},
+        }
+    )
     task = asyncio.create_task(http.get_session_file(request))
     try:
         assert await asyncio.to_thread(started.wait, 2)

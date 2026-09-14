@@ -57,7 +57,8 @@ def _open_descriptor(root: Path, parts: tuple[str, ...]) -> int:
         # NONBLOCK prevents a malicious FIFO from hanging the request before
         # fstat can reject it; it has no effect on regular-file reads.
         return os.open(
-            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+            parts[-1],
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
             dir_fd=directory,
         )
     finally:
