@@ -730,3 +730,92 @@ async def test_child_still_running_when_the_spawn_finishes_is_closed(tmp_path: P
     parts = [p for m in transcripts.read("s1") or [] for p in m.parts]
     returns = [p for p in parts if p.part_kind == "tool-return"]
     assert [r.content for r in returns] == [CLOSED_RESULT]
+
+
+def _follow_up(item_id: str, tool: str, prompt: str | None = None, **states) -> list[dict]:
+    """A collab follow-up on ``child-1`` (start + completion, the completion
+    carrying ``agentsStates`` when given)."""
+    call = {"id": item_id, "type": "collabAgentToolCall", "tool": tool}
+    if prompt is not None:
+        call["prompt"] = prompt
+    call["receiverThreadIds"] = ["child-1"]
+    done = {**call, "status": "completed"}
+    if states:
+        done["agentsStates"] = {"child-1": states}
+    return [
+        {"notify": "item/started", "params": {"item": {**call, "status": "inProgress"}}},
+        {"notify": "item/completed", "params": {"item": done}},
+    ]
+
+
+async def test_child_put_back_to_work_in_the_same_turn_reopens_its_call_in_the_transcript(
+    tmp_path: Path, monkeypatch
+):
+    """A settled child that the spawn ``sendInput``s again produces a second
+    settle; the re-opened ``spawn_agent`` call that precedes it (ledger-only
+    for the main loop) must land in the spawn's transcript — its persisted
+    record — or that second return would answer nothing."""
+    steps = _collab_steps(settle=True)
+    report = _report_turn("Done: it is in a.py")
+    body = steps[: len(steps) - len(report)]
+    body += _follow_up("k3", "sendInput", "now fix it", status="running")
+    body += [
+        {
+            "notify": "item/agentMessage/delta",
+            "params": {"threadId": "child-1", "itemId": "cm2", "delta": "fixed it"},
+        }
+    ]
+    body += _follow_up("k4", "wait", status="completed")
+    _login(monkeypatch, tmp_path, {"turns": [body + report]})
+    _write_codex_agent(tmp_path)
+    store = _session_store(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store).subagents
+    sinks = _Sinks(runner)
+    out = await runner.run("codex-worker", "go", stream_id="s1")
+    assert "Done: it is in a.py" in out
+    transcripts = TranscriptStore(store.path, store.session_id)
+    parts = [p for m in transcripts.read("s1") or [] for p in m.parts]
+    tool_parts = [p for p in parts if p.part_kind in ("tool-call", "tool-return")]
+    assert [p.part_kind for p in tool_parts] == [
+        "tool-call",
+        "tool-return",
+        "tool-call",
+        "tool-return",
+    ]
+    assert [p.tool_call_id for p in tool_parts] == ["k1"] * 4
+    assert tool_parts[2].args["resumed"] is True
+    assert [p.content for p in tool_parts if p.part_kind == "tool-return"] == [
+        "found it",
+        "fixed it",
+    ]
+    # The live nested card saw no second call event: it already exists.
+    assert sinks.kinds("s1").count("FunctionToolCallEvent") == 1
+    assert sinks.kinds("s1").count("FunctionToolResultEvent") == 2
+
+
+async def test_children_are_closed_when_the_spawn_turn_aborts(tmp_path: Path, monkeypatch):
+    """The app-server dying mid-turn (likewise an idle timeout or a
+    cancellation) fails the spawn; its nested card must still settle — it
+    would otherwise spin forever in the UI and sit unanswered in the
+    checkpointed transcript — with a result that says the turn aborted."""
+    from pydantic_ai.messages import FunctionToolResultEvent
+
+    from marim_harness.subagents.codex_spawn import ABORTED_RESULT
+
+    steps = _collab_steps(settle=False)
+    body = steps[: len(steps) - len(_report_turn("x"))] + [{"exit": 3}]
+    _login(monkeypatch, tmp_path, {"turns": [body]})
+    _write_codex_agent(tmp_path)
+    store = _session_store(tmp_path)
+    runner = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store).subagents
+    sinks = _Sinks(runner)
+    out = await runner.run("codex-worker", "go", stream_id="s1")
+    assert "failed" in out.lower()
+    results = [
+        ev for sid, ev in sinks.events if sid == "s1" and isinstance(ev, FunctionToolResultEvent)
+    ]
+    assert [r.part.content for r in results] == [ABORTED_RESULT]
+    transcripts = TranscriptStore(store.path, store.session_id)
+    parts = [p for m in transcripts.read("s1") or [] for p in m.parts]
+    returns = [p for p in parts if p.part_kind == "tool-return"]
+    assert [r.content for r in returns] == [ABORTED_RESULT]

@@ -317,7 +317,8 @@ spawn).
   continues next turn)` return at the end of each turn, so a history never
   ends on an unanswered call. A `backend: codex-cli` *spawn* is one turn,
   so its children die with its thread: their cards close with `still
-  running when the spawn finished (thread closed)`.
+  running when the spawn finished (thread closed)` (`… was aborted …` when
+  the spawn itself failed mid-turn).
 - **Persistence.** The spawn call and its result persist with the turn
   (`GET .../history`, TUI replay, provider switch) as an ordinary
   `spawn_agent` tool call. A `backend: codex-cli` spawn also persists each

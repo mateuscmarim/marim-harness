@@ -100,6 +100,11 @@ class ThreadHandle:
     # the parent whose ``events`` queue and ``request_handler`` this child
     # shares. ``drop_thread(parent)`` drops every handle pointing at it.
     parent_id: str | None = None
+    # The agent name Codex announced for an adopted child (``thread/started``
+    # ``agentNickname``/``agentRole``), recorded on the reader task so an
+    # approval request the child sends before the consumer has dequeued the
+    # announcement can still be labelled (``CollabRouter.label_for``).
+    label: str | None = None
 
     def note_turn_completed(self, params: dict) -> None:
         """Bookkeeping for ``turn/completed``.
@@ -169,6 +174,12 @@ def thread_id_for(method: str, params: dict) -> str | None:
     return str(tid) if tid else None
 
 
+def thread_label(thread: dict) -> str:
+    """The agent name a ``thread/started`` Thread object carries for a collab
+    child (nickname, else role); empty for a top-level thread."""
+    return str(thread.get("agentNickname") or thread.get("agentRole") or "")
+
+
 def _drop_none(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if v is not None}
 
@@ -211,6 +222,12 @@ class CodexServer:
         """Threads registered with the LIVE process (cleared on respawn), so a
         model can tell a stale handle from a usable one."""
         return frozenset(self._threads)
+
+    def thread_label(self, thread_id: str) -> str | None:
+        """The announced agent name of an adopted child, if Codex sent one
+        (``ThreadHandle.label``); None for unknown or top-level threads."""
+        handle = self._threads.get(thread_id)
+        return handle.label if handle is not None else None
 
     @property
     def idle(self) -> bool:
@@ -473,12 +490,17 @@ class CodexServer:
         approval request) can be dispatched before the consumer has dequeued
         the spawn item; without this, that early traffic would be dropped as
         an unknown thread (deterministically so against the scripted fake).
-        Idempotent with the router's later adopt."""
+        Idempotent with the router's later adopt — and either way the
+        announced agent name lands on the child's handle here, so a request
+        in that same window is labelled rather than a bare ``agent``."""
         thread = params.get("thread") or {}
         child_id, parent_id = str(thread.get("id") or ""), str(thread.get("parentThreadId") or "")
         parent = self._threads.get(parent_id) if parent_id else None
-        if parent is not None and child_id and child_id not in self._threads:
-            self.adopt_thread(parent, child_id)
+        if parent is None or not child_id:
+            return
+        handle = self.adopt_thread(parent, child_id)
+        if handle.parent_id == parent.thread_id:  # not a top-level thread left alone
+            handle.label = thread_label(thread) or handle.label
 
     def adopt_thread(self, parent: ThreadHandle, child_id: str) -> ThreadHandle:
         """Register a thread Codex spawned on the parent's behalf (a collab

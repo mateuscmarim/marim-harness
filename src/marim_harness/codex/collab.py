@@ -42,7 +42,7 @@ from dataclasses import dataclass, field
 
 from pydantic_ai.usage import RunUsage
 
-from .server import CodexServer, ThreadHandle, thread_id_for
+from .server import CodexServer, ThreadHandle, thread_id_for, thread_label
 from .transcript import ItemTranscript
 from .translate import (
     ActivityEnd,
@@ -127,7 +127,9 @@ class CollabRouter:
     """Stateful router for one parent thread (see module docstring).
 
     ``adopt``/``release`` are the server hooks (``adopt_thread`` /
-    ``drop_thread`` for the child id) so the router itself stays pure."""
+    ``drop_thread`` for the child id) so the router itself stays pure;
+    ``announced`` reads the agent name the server recorded when it adopted
+    the child on the reader task (``CodexServer.thread_label``)."""
 
     def __init__(
         self,
@@ -135,15 +137,17 @@ class CollabRouter:
         *,
         adopt: Callable[[str], object],
         release: Callable[[str], object],
+        announced: Callable[[str], str | None] | None = None,
     ) -> None:
         self._parent = parent_thread_id
         self._adopt = adopt
         self._release = release
+        self._announced = announced
         self._by_stream: dict[str, _Child] = {}
         self._by_thread: dict[str, _Child] = {}
-        # thread/started metadata seen for a thread before its spawn item
-        # mapped it (only possible when the thread was adopted first).
-        self._stash: dict[str, str] = {}
+        # The thread/started Thread object seen for a thread before its spawn
+        # item mapped it (only possible when the thread was adopted first).
+        self._stash: dict[str, dict] = {}
 
     @property
     def open_children(self) -> frozenset[str]:
@@ -153,13 +157,18 @@ class CollabRouter:
     def label_for(self, thread_id: str) -> str | None:
         """The approval-panel prefix for a child's request (``agent <name>``),
         None for the parent's own. Any other thread reaching the parent's
-        broker is an adopted child — one whose spawn item this router has
-        not dequeued yet gets the bare ``agent`` (the server adopts on
-        ``thread/started``, ahead of the consumer)."""
+        broker is an adopted child. The broker asks on the reader task, so
+        the request can precede this router dequeuing the child's
+        ``thread/started`` (or even its spawn item): the name then comes
+        from what the server recorded when it adopted the child there
+        (``announced``); a child Codex never named gets the bare ``agent``."""
         if thread_id == self._parent:
             return None
         child = self._by_thread.get(thread_id)
-        name = child.label if child is not None else self._stash.get(thread_id)
+        name = child.label if child is not None else None
+        name = name or thread_label(self._stash.get(thread_id) or {})
+        if not name and self._announced is not None:
+            name = self._announced(thread_id)
         return f"agent {name}" if name else "agent"
 
     # --- entry points -----------------------------------------------------------
@@ -365,7 +374,7 @@ class CollabRouter:
         child.args["thread_id"] = tid
         self._by_thread[tid] = child
         if tid in self._stash:
-            child.label = self._stash.pop(tid)
+            self._note_thread(child, self._stash.pop(tid))
         self._adopt(tid)
         for extra in receivers[1:]:
             logger.debug("codex collab: extra receiver %s of %s not tracked", extra, tid)
@@ -393,19 +402,30 @@ class CollabRouter:
     def _stash_thread(self, tid: str, params: dict) -> None:
         thread = params.get("thread") or {}
         if str(thread.get("parentThreadId") or "") == self._parent:
-            self._stash[tid] = _thread_label(thread)
+            self._stash[tid] = thread
 
     def _note_thread(self, child: _Child, thread: dict) -> None:
-        child.label = _thread_label(thread) or child.label
+        """What the child's ``thread/started`` says about it: its name, and
+        the model actually running it — ``spawnAgent.model`` is optional, and
+        without this a child spawned on the parent's default would badge as
+        ``codex-cli:default``. Codex announces the thread before the child's
+        first item, so this lands ahead of the badge (``_emit``)."""
+        child.label = thread_label(thread) or child.label
+        model = str(thread.get("model") or "")
+        if model:
+            child.model = model
+            child.args["model"] = model
 
 
 def router_for(server: CodexServer, handle: ThreadHandle) -> CollabRouter:
     """A router for ``handle`` whose adopt/release hooks register the children
-    on ``server`` under it (so dropping the parent drops them too)."""
+    on ``server`` under it (so dropping the parent drops them too) and whose
+    early-request labels come from the server's own adoption record."""
     return CollabRouter(
         handle.thread_id,
         adopt=lambda cid: server.adopt_thread(handle, cid),
         release=server.release_thread,
+        announced=server.thread_label,
     )
 
 
@@ -451,7 +471,3 @@ class ChildStreams:
         for event in tx.feed(item):
             if sinks.on_event is not None:
                 await sinks.on_event(sid, event, routed.usage)
-
-
-def _thread_label(thread: dict) -> str:
-    return str(thread.get("agentNickname") or thread.get("agentRole") or "")

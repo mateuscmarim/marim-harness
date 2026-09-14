@@ -1276,7 +1276,9 @@ async def test_child_approval_is_brokered_with_the_agents_label(tmp_path):
                 "thread": {"id": "child-1", "parentThreadId": "$THREAD", "agentNickname": "scout"}
             },
         },
-        {"sleep": 0.1},  # let the consumer dequeue the spawn item before the child asks
+        # No pause: the child may well ask before the consumer has dequeued
+        # the announcement (the fake fires in a burst) — the label then comes
+        # from what the server recorded when it adopted the child.
         {
             "request": "item/commandExecution/requestApproval",
             "params": {

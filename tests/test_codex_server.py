@@ -761,6 +761,34 @@ async def test_thread_started_with_a_registered_parent_adopts_on_the_reader_task
     assert server._threads["t1"].parent_id is None
 
 
+async def test_thread_started_records_the_agent_name_on_the_child_handle():
+    """The announced nickname (else role) is kept on the child's handle,
+    whether the announcement adopted the child or the router already had
+    — that is what labels an approval request the child sends before the
+    consumer dequeued the announcement. Unknown/top-level threads have no
+    label."""
+
+    async def handler(method: str, params: dict) -> dict:
+        return {}
+
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, handler)
+    announced = {"thread": {"id": "c1", "parentThreadId": "t1", "agentNickname": "scout"}}
+    await server._on_notification("thread/started", announced)
+    assert server.thread_label("c1") == "scout"
+    server.adopt_thread(parent, "c2")  # the router got there first
+    by_role = {"thread": {"id": "c2", "parentThreadId": "t1", "agentRole": "worker"}}
+    await server._on_notification("thread/started", by_role)
+    assert server.thread_label("c2") == "worker"
+    # A nameless re-announcement keeps the label; a parent handle never gets one.
+    nameless = {"thread": {"id": "c2", "parentThreadId": "t1"}}
+    await server._on_notification("thread/started", nameless)
+    assert server.thread_label("c2") == "worker"
+    upside_down = {"thread": {"id": "t1", "parentThreadId": "c1", "agentNickname": "x"}}
+    await server._on_notification("thread/started", upside_down)
+    assert server.thread_label("t1") is None and server.thread_label("nope") is None
+
+
 async def test_release_thread_drops_by_id_and_ignores_unknown_ids():
     async def handler(method: str, params: dict) -> dict:
         return {}

@@ -371,3 +371,47 @@ def test_close_open_settles_every_open_card_for_real_grandchild_first():
         ActivityEnd("k1", CLOSED_RESULT, False),
     ]
     assert r.open_children == frozenset() and r.close_open() == [] and r.seal_open() == []
+
+
+def test_label_for_falls_back_to_the_servers_adoption_record():
+    """An approval request is labelled on the reader task, which can run
+    ahead of this router dequeuing the child's ``thread/started`` (or even
+    its spawn item): the name then comes from what the server recorded when
+    it adopted the child there; a child nobody named is a bare ``agent``."""
+    announced = {"c1": "scout"}
+    r = CollabRouter("t1", adopt=lambda _: None, release=lambda _: None, announced=announced.get)
+    assert r.label_for("t1") is None
+    assert r.label_for("c1") == "agent scout"  # not even spawned yet, as seen from here
+    assert r.label_for("c2") == "agent"
+    r.route_item(_spawn())
+    assert r.label_for("c1") == "agent scout"  # spawned, thread/started not yet dequeued
+    meta = {"thread": {"id": "c1", "parentThreadId": "t1", "agentNickname": "scout-2"}}
+    r.route("thread/started", meta)
+    assert r.label_for("c1") == "agent scout-2"  # the dequeued announcement wins
+
+
+def test_thread_started_model_badges_a_child_spawned_on_the_default_model():
+    """``spawnAgent.model`` is optional; the child's ``thread/started``
+    names the model actually running it, so the badge (and the persisted
+    args) say that instead of ``default`` — in either arrival order."""
+    hooks = _Hooks()
+    r = hooks.router()
+    # Spawn item first, then the announcement, then the first child item.
+    [start] = r.route_item(_spawn(model=None))
+    assert cast(ActivityStart, start).args["model"] is None
+    meta = {"thread": {"id": "c1", "parentThreadId": "t1", "model": "gpt-5.4"}}
+    assert r.route("thread/started", meta) == []
+    [routed] = r.route(*_child_msg("c1", "m1", "hi"))
+    assert cast(Routed, routed).model == "codex-cli:gpt-5.4"
+    assert cast(ActivityStart, start).args["model"] == "gpt-5.4"
+    # Announcement first (the server adopted it ahead of the consumer).
+    meta2 = {"thread": {"id": "c2", "parentThreadId": "t1", "model": "gpt-5.4-mini"}}
+    assert r.route("thread/started", meta2) == []
+    r.route_item(_spawn("k2", ("c2",), model=None))
+    [routed] = r.route(*_child_msg("c2", "m2", "hi"))
+    assert cast(Routed, routed).model == "codex-cli:gpt-5.4-mini"
+    # The request's own model is superseded by what actually runs.
+    r.route_item(_spawn("k3", ("c3",), model="gpt-5.4-mini"))
+    r.route("thread/started", {"thread": {"id": "c3", "parentThreadId": "t1", "model": "o5"}})
+    [routed] = r.route(*_child_msg("c3", "m3", "hi"))
+    assert cast(Routed, routed).model == "codex-cli:o5"
