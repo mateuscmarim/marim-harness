@@ -117,3 +117,63 @@ at start AND an exact completion notice; no tests were removed or skipped.
 
 All new assertions exercise the listed notice, ordering, context, retry or routing obligations.
 Full transport-to-client proof remains T4/T6/T8.
+
+## T4
+
+Fourteen lifecycle delivery tests pass, including both fake backends through Harness, host, event bus and disk history. Final 93 targeted and earlier 187 regression tests passed. Owned Ruff passes and full Pyright 0 errors. No existing tests changed.
+
+| Assertion evidence | Result |
+| --- | --- |
+| tests/test_lifecycle_delivery.py:31 `assert isinstance(wire, SessionNotice)` | PASS |
+| tests/test_lifecycle_delivery.py:32 `assert wire.id == "notice-1"` | PASS |
+| tests/test_lifecycle_delivery.py:33 `assert wire.message == notice.message` | PASS |
+| tests/test_lifecycle_delivery.py:35 `assert isinstance(old, SessionNotice)` | PASS |
+| tests/test_lifecycle_delivery.py:36 `assert old.id is None` | PASS |
+| tests/test_lifecycle_delivery.py:55 `assert event.data == notice.to_payload()` | PASS |
+| tests/test_lifecycle_delivery.py:56 `assert event.seq < terminal.seq` | PASS |
+| tests/test_lifecycle_delivery.py:57 `assert not any(e.type == "compaction.finished" for e in events)` | PASS |
+| tests/test_lifecycle_delivery.py:58 `assert terminal.data["output"] == "beforeafter"` | PASS |
+| tests/test_lifecycle_delivery.py:72 `assert await run_headless(harness, "go", output_format, out=out, err=err) == 0` | PASS |
+| tests/test_lifecycle_delivery.py:73 `assert err.getvalue() == "notice only\n"` | PASS |
+| tests/test_lifecycle_delivery.py:74 `assert "notice only" not in out.getvalue()` | PASS |
+| tests/test_lifecycle_delivery.py:75 `assert "answer" in out.getvalue()` | PASS |
+| tests/test_lifecycle_delivery.py:91 `assert [type(w) for w in log.children] == [` | PASS |
+| tests/test_lifecycle_delivery.py:100 `assert len(log.query(NoticeMessage)) == 2` | PASS |
+| tests/test_lifecycle_delivery.py:113 `assert order_response_parts(parts) == parts` | PASS |
+| tests/test_lifecycle_delivery.py:118 `assert isinstance(mounted[1], NoticeMessage)` | PASS |
+| tests/test_lifecycle_delivery.py:124 `assert isinstance(mounted[-1], NoticeMessage)` | PASS |
+| tests/test_lifecycle_delivery.py:126 `assert len(mounted) == 4` | PASS |
+| tests/test_lifecycle_delivery.py:140 `assert len(app.stream.backend_tasks) == 1` | PASS |
+| tests/test_lifecycle_delivery.py:142 `assert widget.status == "failed"` | PASS |
+| tests/test_lifecycle_delivery.py:143 `assert widget.result_text == "testing (interrupted)"` | PASS |
+| tests/test_lifecycle_delivery.py:144 `assert widget.args == {"description": "testing"}` | PASS |
+| tests/test_lifecycle_delivery.py:145 `assert app.stream.subagents == []` | PASS |
+| tests/test_lifecycle_delivery.py:161 `assert remainder is None` | PASS |
+| tests/test_lifecycle_delivery.py:163 `assert routed.stream_id == "child"` | PASS |
+| tests/test_lifecycle_delivery.py:164 `assert isinstance(routed.event, BackendNotice)` | PASS |
+| tests/test_lifecycle_delivery.py:166 `assert isinstance(message, ModelResponse)` | PASS |
+| tests/test_lifecycle_delivery.py:167 `assert message.parts[0].content == ""` | PASS |
+| tests/test_lifecycle_delivery.py:168 `assert notice_from_part(message.parts[0])["id"] == routed.event.id` | PASS |
+| tests/test_lifecycle_delivery.py:169 `assert demux.route(obj) == ([], None)` | PASS |
+| tests/test_lifecycle_delivery.py:185 `assert sid == "child"` | PASS |
+| tests/test_lifecycle_delivery.py:186 `assert isinstance(notice, BackendNotice)` | PASS |
+| tests/test_lifecycle_delivery.py:188 `assert notice_from_part(message.parts[0])["id"] == notice.id == "same-id"` | PASS |
+| tests/test_lifecycle_delivery.py:203 `assert host.pending_asks() == before` | PASS |
+| tests/test_lifecycle_delivery.py:204 `assert host.pending_asks()[0]["id"] == ask.id` | PASS |
+| tests/test_lifecycle_delivery.py:205 `assert not ask.future.done()` | PASS |
+| tests/test_lifecycle_delivery.py:206 `assert not any(e.type in ("ask.resolved", "turn.finished") for e in events)` | PASS |
+| tests/test_lifecycle_delivery.py:224 `assert notice_from_part(message.parts[0])["id"] == "private-id"` | PASS |
+| tests/test_lifecycle_delivery.py:225 `assert message.parts[1].content == "still working"` | PASS |
+| tests/test_lifecycle_delivery.py:226 `assert "codex-cli" in caplog.text` | PASS |
+| tests/test_lifecycle_delivery.py:227 `assert "private" not in caplog.text` | PASS |
+| tests/test_lifecycle_delivery.py:268 `assert notice.seq < terminal.seq` | PASS |
+| tests/test_lifecycle_delivery.py:269 `assert notice.data["backend"] == f"{backend}-cli"` | PASS |
+| tests/test_lifecycle_delivery.py:270 `assert notice.data["message"] not in terminal.data["output"]` | PASS |
+| tests/test_lifecycle_delivery.py:271 `assert terminal.data["output"].replace("\n", "") == "beforeafter"` | PASS |
+| tests/test_lifecycle_delivery.py:272 `assert not any(e.type == "compaction.finished" for e in events)` | PASS |
+| tests/test_lifecycle_delivery.py:275 `assert persisted == [notice.data]` | PASS |
+| tests/test_lifecycle_delivery.py:278 `assert any(` | PASS |
+| tests/test_lifecycle_delivery.py:282 `assert any(` | PASS |
+
+Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
+Feature-wide AC mapping and adversarial checks follow in validation.md.

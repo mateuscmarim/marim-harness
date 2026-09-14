@@ -25,6 +25,7 @@ from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
     AskPending,
     AskResolved,
+    BackendTaskChanged,
     CompactionFinished,
     CompactionStarted,
     JobsChanged,
@@ -211,7 +212,7 @@ async def _handle_session_mode_changed(app: "HarnessApp", _wire: SessionModeChan
 
 
 async def _handle_session_notice(app: "HarnessApp", wire: SessionNotice) -> None:
-    app.session.on_notice(wire.message)
+    await app.stream.on_wire(wire)
 
 
 async def _handle_session_renamed(app: "HarnessApp", wire: SessionRenamed) -> None:
@@ -361,6 +362,7 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     SessionTtft: _handle_session_ttft,
     SessionModeChanged: _handle_session_mode_changed,
     SessionNotice: _handle_session_notice,
+    BackendTaskChanged: _handle_session_notice,
     SessionRenamed: _handle_session_renamed,
     TasksChanged: _handle_tasks_changed,
     JobsChanged: _handle_jobs_changed,

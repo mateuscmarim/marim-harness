@@ -100,8 +100,8 @@ T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8
 **Reuses**: Existing activity/notice/Room seams described in design.md.
 **Tools**: Repository shell and file tools; coding-guardrails, test-driven-development, verification-before-completion. No connector access required.
 **Done when**:
-- [ ] Verified: same-turn wire delivery, stderr separation, history/live deduplication, no mirror resync.
-- [ ] Relevant gate passes with exact test outcomes recorded in evidence.md.
+- [x] Verified: same-turn wire delivery, stderr separation, history/live deduplication, no mirror resync.
+- [x] Relevant gate passes with exact test outcomes recorded in evidence.md.
 **Tests**: integration
 **Gate**: full
 **Commit**: `feat(cli): session notice delivery and replay`

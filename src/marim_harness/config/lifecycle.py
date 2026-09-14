@@ -4,14 +4,34 @@ from __future__ import annotations
 
 import logging
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import TextIO
 from uuid import uuid4
 
 from pydantic_ai.messages import TextPart
 
 logger = logging.getLogger(__name__)
 NOTICE_KEY = "backend_notice"
+_NOTICE_OUTPUT: ContextVar[TextIO | None] = ContextVar("backend_notice_output", default=None)
+
+
+@contextmanager
+def notice_output(output: TextIO) -> Iterator[None]:
+    """Scope headless diagnostics without redirecting other sessions' stderr."""
+    token = _NOTICE_OUTPUT.set(output)
+    try:
+        yield
+    finally:
+        _NOTICE_OUTPUT.reset(token)
+
+
+@dataclass(frozen=True)
+class BackendObservation:
+    inventory: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -64,11 +84,24 @@ async def deliver_notice(
         if callback is not None:
             await callback([notice])
         else:
-            print(notice.message, file=sys.stderr, flush=True)
+            print(notice.message, file=_NOTICE_OUTPUT.get() or sys.stderr, flush=True)
     except Exception as exc:
         logger.warning(
             "backend notice delivery failed backend=%s cause=%s", notice.backend, type(exc).__name__
         )
+
+
+async def deliver_child_notice(notice, stream_id, on_event, on_notice=None, usage=None) -> None:
+    """Reuse the best-effort boundary while keeping notices on their child stream."""
+
+    async def callback(events):
+        if on_event is not None:
+            await on_event(stream_id, notice, usage)
+        elif on_notice is not None:
+            await on_notice(stream_id, notice.message)
+
+    sink = callback if on_event is not None or on_notice is not None else None
+    await deliver_notice(notice, sink)
 
 
 def nonnegative_int(value: object) -> int | None:

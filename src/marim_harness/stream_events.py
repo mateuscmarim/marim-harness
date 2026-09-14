@@ -20,6 +20,8 @@ from pydantic_ai.messages import (
 )
 
 from .binary_safe import has_binary_content, render_binary_safe
+from .claude.lifecycle import BackendTask
+from .config.lifecycle import BackendNotice, BackendObservation
 from .images import store_image
 
 
@@ -90,6 +92,18 @@ def status_from_part(part) -> str:
 def event_to_dict(event) -> dict | None:
     """Map a Pydantic AI streaming event to a JSON-serializable dict, or None to
     skip events we don't surface."""
+    if isinstance(event, BackendObservation):
+        return {"type": "backend_state", "inventory": event.inventory, "telemetry": event.telemetry}
+    if isinstance(event, BackendNotice):
+        return {"type": "notice", **event.to_payload()}
+    if isinstance(event, BackendTask):
+        return {
+            "type": "backend_task",
+            "id": event.task_id,
+            "backend": event.backend,
+            "description": event.description,
+            "status": event.status,
+        }
     if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
         return {"type": "text", "text": event.part.content or ""}
     if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):

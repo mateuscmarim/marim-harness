@@ -58,7 +58,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -107,7 +107,7 @@ from .external_cli import (
     ExternalCliModel,
     TextFolder,
 )
-from .lifecycle import BackendNotice, deliver_notice, notice_part
+from .lifecycle import BackendNotice, BackendObservation, deliver_notice, notice_part
 from .quota import QuotaHint
 
 if TYPE_CHECKING:
@@ -549,7 +549,7 @@ def _is_lifecycle_object(obj: dict) -> bool:
         return True
     if str(obj.get("subtype", "")).startswith("task_") and not obj.get("task_id"):
         return False
-    return obj.get("type") == "system" and obj.get("subtype") in {
+    return obj.get("type") == "system" and str(obj.get("subtype")) in {
         "compact_boundary",
         "notification",
         "permission_denied",
@@ -1213,10 +1213,16 @@ class ClaudeCliModel(ExternalCliModel):
             "vcs_revision": self.lifecycle.vcs_revision,
         }
 
+    def _observation(self) -> BackendObservation:
+        return BackendObservation(dict(self.backend_inventory), dict(self.backend_telemetry))
+
     def _consume_lifecycle(self, chunk: LifecycleChunk) -> list:
         if chunk.obj.get("type") == CLOSED:
             return self.lifecycle.close()
+        before = self._observation()
         events = self.lifecycle.consume(chunk.obj)
+        if self._observation() != before:
+            events.append(self._observation())
         for event in events:
             if isinstance(event, BackendNotice) and event.kind == "compaction":
                 used = event.data.get("post_tokens")
@@ -1253,7 +1259,6 @@ class ClaudeCliModel(ExternalCliModel):
         self.lifecycle.begin_turn()
         done: DoneChunk | None = None
         parts: list = []
-        self.lifecycle.begin_turn()
         folded = _FoldedText()  # assistant prose + folded ▸ tool lines (no UI here)
         objs = _turn_stream(process, handle, first)
         try:
@@ -1261,6 +1266,8 @@ class ClaudeCliModel(ExternalCliModel):
                 async for chunk in stream:
                     if isinstance(chunk, (InitChunk, PromptUsageChunk)):
                         self._note(chunk)
+                        if isinstance(chunk, InitChunk) and chunk.inventory:
+                            await self._display_tasks([self._observation()])
                     elif isinstance(chunk, DoneChunk):
                         done = chunk
                     elif isinstance(chunk, LifecycleChunk):
@@ -1273,6 +1280,8 @@ class ClaudeCliModel(ExternalCliModel):
                                 await deliver_notice(
                                     event, self.on_activity, ephemeral=self.ephemeral
                                 )
+                            else:
+                                await self._display_tasks([event])
                     else:
                         folded.add(chunk)
             if done is not None and done.complete:
@@ -1315,6 +1324,7 @@ class ClaudeCliModel(ExternalCliModel):
             _ts=datetime.now(tz=timezone.utc),
             _on_note=self._note,
             _on_lifecycle=self._consume_lifecycle,
+            _observation=self._observation,
             _ephemeral=self.ephemeral,
             _finish=lambda done: self._settle_turn(done, own=handle.own),
             _details=self._response_details,
@@ -1422,6 +1432,8 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     # raises into the stream — mirrors CodexStreamedResponse._after).
     _on_note: Callable[[InitChunk | PromptUsageChunk], None] | None = None
     _on_lifecycle: Callable[[LifecycleChunk], list] | None = None
+    _observation: Callable[[], BackendObservation] | None = None
+    _lifecycle: ClaudeLifecycle = field(default_factory=ClaudeLifecycle)
     _ephemeral: bool = False
     _finish: Callable[[DoneChunk], RequestUsage] | None = None
     _details: Callable[[], dict | None] | None = None
@@ -1462,24 +1474,29 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         shell_ids: set[str] = set()
         async for obj in self._objs:
             if obj.get("type") == "system":
-                if obj.get("task_type") == "local_bash":
-                    shell_ids.add(str(obj.get("task_id")))
                 yield obj
-                if str(obj.get("task_id")) in shell_ids:
-                    continue
-                routed, _ = demux.route(obj)
-                for r in routed:
-                    await self._deliver_routed(r, activity, folder)
+                await self._route_system(obj, demux, shell_ids, activity, folder)
                 continue
             if obj.get("type") == "stream_event":
                 if not obj.get("parent_tool_use_id"):
                     yield obj
                 continue
             routed, remainder = demux.route(obj)
+            if self._on_subagent is None:
+                remainder = obj  # Preserve headless folded spawn/tool lines.
             for r in routed:
                 await self._deliver_routed(r, activity, folder)
             if remainder is not None:
                 yield remainder
+
+    async def _route_system(self, obj, demux, shell_ids, activity, folder) -> None:
+        if obj.get("task_type") == "local_bash":
+            shell_ids.add(str(obj.get("task_id")))
+        if str(obj.get("task_id")) in shell_ids:
+            return
+        routed, _ = demux.route(obj)
+        for r in routed:
+            await self._deliver_routed(r, activity, folder)
 
     async def _deliver_routed(
         self, r, activity: Callable[[list], Awaitable[None]] | None, folder: TextFolder
@@ -1493,7 +1510,18 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         elif self._on_subagent is not None:
             if r.model and self._on_subagent_model is not None:
                 await self._on_subagent_model(r.stream_id, r.model)
-            await self._on_subagent(r.stream_id, r.event, r.usage)
+            try:
+                await self._on_subagent(r.stream_id, r.event, r.usage)
+            except Exception:
+                if not isinstance(r.event, BackendNotice):
+                    raise
+                logger.warning("claude child notice delivery failed")
+        elif isinstance(r.event, BackendNotice):
+            await deliver_notice(
+                replace(r.event, message=f"[{r.stream_id}] {r.event.message}"),
+                None,
+                ephemeral=self._ephemeral,
+            )
 
     def _finalize_done(self, done: DoneChunk | None) -> None:
         """Mirror ``request()``: a stream that ends without a proper ``result``
@@ -1526,6 +1554,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                 yield ev
         elif isinstance(chunk, (InitChunk, PromptUsageChunk)) and self._on_note is not None:
             self._on_note(chunk)
+            if isinstance(chunk, InitChunk) and chunk.inventory and self._observation is not None:
+                await self._display_observation(self._observation())
+
+    async def _display_observation(self, event: object) -> None:
+        if self._on_activity is not None and not self._ephemeral:
+            try:
+                await self._on_activity([event])
+            except Exception as exc:
+                logger.warning("claude lifecycle display failed cause=%s", type(exc).__name__)
 
     async def _get_event_iterator(self):
         if self._objs is None:
@@ -1542,7 +1579,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
         )
-        objs = self._demuxed_objs(activity, folder) if self._on_subagent is not None else self._objs
+        objs = self._demuxed_objs(activity, folder)
         thinking = _ThinkingParts(self._parts_manager)
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk
@@ -1570,9 +1607,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
 
     async def _emit_lifecycle(self, chunk, ledger, folder, thinking) -> None:
         events = (
-            self._on_lifecycle(chunk)
-            if self._on_lifecycle
-            else ClaudeLifecycle().consume(chunk.obj)
+            self._on_lifecycle(chunk) if self._on_lifecycle else self._lifecycle.consume(chunk.obj)
         )
         for event in events:
             if isinstance(event, BackendNotice):

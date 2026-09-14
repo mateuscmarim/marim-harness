@@ -12,7 +12,6 @@ transcript never has to import the model layer.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -32,9 +31,8 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 
+from ..config.lifecycle import BackendNotice, notice_part
 from .translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
-
-logger = logging.getLogger(__name__)
 
 
 # `item` takes `ActivityStart | ActivityEnd` in practice, but stays annotated
@@ -115,8 +113,12 @@ class ItemTranscript:
                 )
             )
             return activity_events(item)
-        if isinstance(item, Notice):
-            logger.info("codex: %s", item.message)
+        if isinstance(item, (Notice, BackendNotice)):
+            notice = item.normalized() if isinstance(item, Notice) else item
+            self._open_text = None
+            self._response()
+            self._parts.append(notice_part(notice.to_payload()))
+            return [notice]
         return []
 
     def _text(self, item: TextDelta) -> list[Any]:

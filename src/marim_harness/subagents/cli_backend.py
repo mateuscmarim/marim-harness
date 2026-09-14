@@ -50,9 +50,11 @@ from ..claude.env import (
 )
 from ..claude.env import DEFAULT_CLI_TIMEOUT as _DEFAULT_CLI_TIMEOUT  # noqa: F401 — re-exported
 from ..claude.env import cli_timeout as _cli_timeout
+from ..claude.lifecycle import ClaudeLifecycle
 from ..claude.process import ClaudeProcess, ProcessOptions, turn_objects
 from ..claude.protocol import CLOSED
 from ..config.external_cli import CliModelError
+from ..config.lifecycle import BackendNotice, deliver_child_notice, notice_part
 
 if TYPE_CHECKING:
     from ..claude.approvals import ClaudeApprovalBroker
@@ -232,6 +234,7 @@ class CliStreamTranslator:
         self._index = 0
         self._call_names: dict[str, str] = {}
         self._messages: list = []
+        self._lifecycle = ClaudeLifecycle()
 
     def translate(self, obj: dict) -> list:
         kind = obj.get("type")
@@ -239,6 +242,11 @@ class CliStreamTranslator:
             return self._assistant(obj)
         if kind == "user":
             return self._user(obj)
+        if kind == "system":
+            notices = [n for n in self._lifecycle.consume(obj) if isinstance(n, BackendNotice)]
+            for notice in notices:
+                self._messages.append(ModelResponse(parts=[notice_part(notice.to_payload())]))
+            return notices
         return []
 
     def _assistant(self, obj: dict) -> list:
@@ -550,7 +558,9 @@ class ClaudeCliRunner:
             state.output = obj.get("result", "") or ""
             return
         for event in translator.translate(obj):
-            if self._on_event is not None and stream_id:
+            if isinstance(event, BackendNotice):
+                await deliver_child_notice(event, stream_id, self._on_event, self._on_notice)
+            elif self._on_event is not None and stream_id:
                 await self._on_event(stream_id, event, None)
 
     def _finalize(
@@ -589,5 +599,9 @@ class ClaudeCliRunner:
             return
         if routed.model and self._on_model is not None:
             await self._on_model(routed.stream_id, routed.model)
-        if self._on_event is not None:
+        if isinstance(routed.event, BackendNotice):
+            await deliver_child_notice(
+                routed.event, routed.stream_id, self._on_event, self._on_notice, routed.usage
+            )
+        elif self._on_event is not None:
             await self._on_event(routed.stream_id, routed.event, routed.usage)
