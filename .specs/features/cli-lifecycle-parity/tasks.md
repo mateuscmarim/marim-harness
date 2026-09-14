@@ -148,8 +148,8 @@ T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8
 **Reuses**: Existing activity/notice/Room seams described in design.md.
 **Tools**: Repository shell and file tools; coding-guardrails, test-driven-development, verification-before-completion. No connector access required.
 **Done when**:
-- [ ] Verified: optional result details retained and older entries preserve exact totals.
-- [ ] Relevant gate passes with exact test outcomes recorded in evidence.md.
+- [x] Verified: optional result details retained and older entries preserve exact totals.
+- [x] Relevant gate passes with exact test outcomes recorded in evidence.md.
 **Tests**: unit
 **Gate**: quick
 **Commit**: `feat(cli): backend result stats component`

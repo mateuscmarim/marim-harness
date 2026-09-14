@@ -11,7 +11,7 @@ from pydantic_ai.usage import RunUsage
 
 from ..usage import resolve_cost
 from .ledger import StatsLedger
-from .types import TurnEvent
+from .types import TurnEvent, normalize_backend_result
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +39,13 @@ class LedgerStatsRecorder:
         session_id: str,
         get_model_id: Callable[[], str | None],
         get_duration_seconds: Callable[[], float | None],
+        get_backend_result: Callable[[], object] | None = None,
     ) -> None:
         self._ledger = ledger
         self._session_id = session_id
         self._get_model_id = get_model_id
         self._get_duration = get_duration_seconds
+        self._get_backend_result = get_backend_result
 
     def set_session_id(self, session_id: str) -> None:
         """Repoint this recorder at a different session (session switch/new/
@@ -55,9 +57,10 @@ class LedgerStatsRecorder:
         try:
             inp = int(delta.input_tokens or 0)
             out = int(delta.output_tokens or 0)
-            if inp + out == 0:
-                return
             model = self._get_model_id()
+            backend_result = self._backend_result(model)
+            if inp + out == 0 and backend_result is None:
+                return
             cost, exact = resolve_cost(delta, model)
             now = datetime.now(timezone.utc)
             event = TurnEvent(
@@ -74,7 +77,22 @@ class LedgerStatsRecorder:
                 cost_usd=cost,
                 cost_is_exact=bool(exact),
                 session_duration_seconds=self._get_duration(),
+                backend_result=backend_result,
             )
             self._ledger.append(event)
         except Exception:
             logger.exception("stats recorder failed; dropping event")
+
+    def _backend_result(self, model: str | None) -> dict | None:
+        if self._get_backend_result is None:
+            return None
+        try:
+            return normalize_backend_result(self._get_backend_result())
+        except Exception as exc:
+            # Optional metadata must not drop the existing spend record.
+            logger.warning(
+                "%s backend result stats refresh failed (%s)",
+                model or "unknown",
+                type(exc).__name__,
+            )
+            return None

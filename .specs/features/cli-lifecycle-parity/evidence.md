@@ -221,3 +221,26 @@ Inventory, telemetry, command and HTTP/client/stat regressions: 177 passed. Dyna
 
 Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
 Feature-wide AC mapping and adversarial checks follow in validation.md.
+
+## T7
+
+Normalized result stats and backward-compatible ledger reads passed in 177-test regression suite; zero-token result retention tested with initial red gate. Ruff and Pyright pass; cost totals untouched.
+
+| Assertion evidence | Result |
+| --- | --- |
+| tests/test_lifecycle_stats.py:34 `assert event.backend_result == {` | PASS |
+| tests/test_lifecycle_stats.py:40 `assert (event.input_tokens, event.output_tokens, event.cost_usd) == (100, 20, 0.25)` | PASS |
+| tests/test_lifecycle_stats.py:41 `assert event.cost_is_exact` | PASS |
+| tests/test_lifecycle_stats.py:45 `assert restored is not None and restored.backend_result is None` | PASS |
+| tests/test_lifecycle_stats.py:46 `assert (restored.input_tokens, restored.output_tokens, restored.cost_usd) == (100, 20, 0.25)` | PASS |
+| tests/test_lifecycle_stats.py:47 `assert (` | PASS |
+| tests/test_lifecycle_stats.py:53 `assert "PRIVATE" not in ledger.workspace_path.read_text()` | PASS |
+| tests/test_lifecycle_stats.py:71 `assert event.input_tokens == 20 and event.backend_result is None` | PASS |
+| tests/test_lifecycle_stats.py:72 `assert "backend result stats refresh failed" in caplog.text` | PASS |
+| tests/test_lifecycle_stats.py:73 `assert "PRIVATE" not in caplog.text` | PASS |
+| tests/test_lifecycle_stats.py:86 `assert '"backend_result":{"num_turns":3}' in path.read_text()` | PASS |
+| tests/test_lifecycle_stats.py:100 `assert event.backend_result == {"permission_denials": [{"tool_name": "Bash"}]}` | PASS |
+| tests/test_lifecycle_stats.py:101 `assert event.input_tokens == event.output_tokens == 0` | PASS |
+
+Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
+Feature-wide AC mapping and adversarial checks follow in validation.md.
