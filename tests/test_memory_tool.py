@@ -166,9 +166,7 @@ def test_forget_deletes_memory_and_index_line(tmp_path: Path):
     )
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
-            workspace=SimpleNamespace(
-                memory_root=None, project_memory_root=None, root=tmp_path
-            )
+            workspace=SimpleNamespace(memory_root=None, project_memory_root=None, root=tmp_path)
         )
     )
     result = forget(ctx, name="Build tool")
@@ -182,9 +180,7 @@ def test_forget_missing_memory_returns_notice(tmp_path: Path):
 
     ctx = SimpleNamespace(
         deps=SimpleNamespace(
-            workspace=SimpleNamespace(
-                memory_root=None, project_memory_root=None, root=tmp_path
-            )
+            workspace=SimpleNamespace(memory_root=None, project_memory_root=None, root=tmp_path)
         )
     )
     result = forget(ctx, name="never-saved")

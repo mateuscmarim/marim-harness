@@ -169,9 +169,7 @@ class SessionSupervisor:
                 mode = _persisted_mode(Path(record.path), session_id)
             claim = self._claim_session(Path(record.path), session_id)
             try:
-                project_memory_root = (
-                    self._chat_memory_dir if record.kind == "chat" else None
-                )
+                project_memory_root = self._chat_memory_dir if record.kind == "chat" else None
                 harness = await self._factory(
                     Path(record.path), session_id, mode, project_memory_root
                 )

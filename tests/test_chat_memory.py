@@ -52,9 +52,7 @@ def test_default_harness_factory_forwards_project_memory_root(monkeypatch):
     monkeypatch.setattr(bootstrap, "build_harness", fake_build_harness)
     shared = Path("/tmp/chatmem")
     asyncio.run(
-        supervisor_mod.default_harness_factory(
-            Path("."), "s1", None, project_memory_root=shared
-        )
+        supervisor_mod.default_harness_factory(Path("."), "s1", None, project_memory_root=shared)
     )
     assert captured["project_memory_root"] == shared
 
@@ -67,9 +65,7 @@ def test_build_harness_sets_project_memory_root(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(bootstrap, "make_titler", lambda model: None)
 
     shared = tmp_path / "chat-memory"
-    harness = bootstrap.build_harness(
-        tmp_path / "ws", mode=Mode.ask, project_memory_root=shared
-    )
+    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask, project_memory_root=shared)
 
     assert harness.deps.workspace.project_memory_root == shared
 
@@ -123,9 +119,7 @@ def test_supervisor_remaps_chat_memory_dir_only_for_chat_workspaces(tmp_path: Pa
     asyncio.run(exercise())
 
 
-def test_project_memory_override_drives_tools_and_instruction_preload(
-    tmp_path: Path, monkeypatch
-):
+def test_project_memory_override_drives_tools_and_instruction_preload(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     workspace = tmp_path / "workspace"
     shared = tmp_path / "chat-memory"
@@ -158,9 +152,7 @@ def test_project_memory_override_drives_tools_and_instruction_preload(
     )
 
     ctx = SimpleNamespace(
-        deps=Deps(
-            workspace=WorkspaceConfig(root=workspace, project_memory_root=shared)
-        )
+        deps=Deps(workspace=WorkspaceConfig(root=workspace, project_memory_root=shared))
     )
     assert memory_tools.resolve_scope(ctx, "project").root == shared
     assert memory_tools.resolve_scope(ctx, "global").root == user_global.root
