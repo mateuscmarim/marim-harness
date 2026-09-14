@@ -153,6 +153,27 @@ the process (documented as resetting on a fresh or resumed session and on a
 mid-session `/clear`), so marim bills each turn the increase since the
 previous result and starts over whenever it launches a new process.
 
+Claude's own Agent sub-agents run in the background: the turn that spawns one
+ends as soon as it is launched (its spawn card stays open, and a resumed
+history records the call as "reports later", not as cut short), and when the
+agent finishes while no turn is open Claude Code reacts on its own — it
+injects the report into its history and runs a model turn nobody asked for.
+marim buffers that turn and plays it as an *autonomous* turn (trigger
+`autonomous`, an empty prompt) as soon as the session is idle: the card
+settles with the agent's report, the reaction renders as its own transcript
+entry, marim's history stays aligned with Claude's, and nothing is sent to
+the CLI for it. This bypasses the wake policy on purpose — it costs no marim
+model call and there is no decision to make, the turn already ran. A typed
+turn submitted first goes out first; the buffered one plays right after. The
+idle reaper stretches its clock tenfold while a background agent is still
+running (closing the process would kill it and lose the report; the
+stretched clock only bounds an agent that never reports, since a closed
+process resumes by id anyway) and starts the normal one when the report
+lands. Two things do not cover this: a `backend: claude-cli` *spawn*
+closes its process when its own turn ends, so a background agent inside a
+spawn is lost with it; and a headless/aux clone has no session to play the
+turn into, so its reaction stays in Claude's history only.
+
 No API key is read for this provider — the CLI owns its own subscription auth.
 The model picker's `claude-cli` catalog is the CLI's own `/model` menu, read
 from its stream-json handshake: it lists whatever aliases and models the

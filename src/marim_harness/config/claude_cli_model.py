@@ -40,6 +40,16 @@ CUMULATIVE over the process (verified live on 2.1.270: 0.0109 → 0.0137 →
 0.0162 across three turns), and a resumed process restarts at zero. Charging
 it per turn double-counts the ledger, so ``CostMeter`` bills the delta since
 the previous result and resets whenever a process is spawned.
+
+Background sub-agents: Claude's Agent tool returns at once and the sub-agent
+runs on; when it reports back while no turn is open, the CLI runs a turn of
+its own on the notification (``claude/process.py``'s module docstring). The
+process buffers that turn and ``on_backend_turn`` tells the harness, which
+queues an *autonomous* marim turn (empty typed text); ``_open_turn`` serves
+that turn from the buffered handle instead of sending anything, so Claude's
+reaction lands in marim's history exactly where it sits in Claude's own. The
+sub-agent demux is one per process (not per turn) for the same reason: the
+notification that settles a spawn card can arrive turns after the spawn.
 """
 
 from __future__ import annotations
@@ -76,6 +86,7 @@ from ..claude.process import (
 )
 from ..claude.protocol import CLOSED, ControlError, ProcessClosed
 from ..claude.quota import quota_from_usage
+from ..runtime.context import strip_turn_context
 from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
 from .context_report import CONTEXT_REPORT_KEY, ContextReport, prompt_tokens
@@ -93,6 +104,8 @@ if TYPE_CHECKING:
 
     from pydantic_ai.messages import ModelMessage, ModelRequest
     from pydantic_ai.settings import ModelSettings
+
+    from ..subagents.cli_demux import CliSubagentDemux
 
 logger = logging.getLogger(__name__)
 
@@ -278,6 +291,15 @@ class CostMeter:
         delta = total - self._billed_micro if total >= self._billed_micro else total
         self._billed_micro = total
         return delta / 1_000_000
+
+    def behind(self, cumulative_usd: float | None) -> bool:
+        """True when ``cumulative_usd`` is older than the baseline: a result
+        produced BEFORE the one last billed. Only a turn the CLI ran on its
+        own can be served that late (a typed turn went out while it sat
+        buffered), and then its spend is already on the ledger — the typed
+        turn's delta covered it. Billing it through ``charge`` would read the
+        lower total as a reset and bill the whole thing a second time."""
+        return cumulative_usd is not None and round(cumulative_usd * 1_000_000) < self._billed_micro
 
 
 # Claude tool_use -> the single arg worth showing on the activity line. Tools not
@@ -792,6 +814,41 @@ def _log_steer_failure(task: asyncio.Task) -> None:
         logger.debug("claude steer failed", exc_info=exc)
 
 
+def backend_turn_note(opening: list[dict]) -> str:
+    """The turn-context note for marim's autonomous turn over a turn Claude
+    Code ran on its own, from the objects that turn opened with. It names the
+    sub-agent reports (``task_notification``: status + summary) the CLI reacted
+    to, so the persisted marim history says why an assistant message follows
+    a turn nobody typed; Claude itself never sees it (its own history already
+    carries the notification)."""
+    reports = [
+        obj
+        for obj in opening
+        if obj.get("type") == "system" and obj.get("subtype") == "task_notification"
+    ]
+    if not reports:
+        return (
+            "[Claude Code ran a turn of its own (a background sub-agent reported "
+            "back); its response follows.]"
+        )
+    lines = []
+    for obj in reports:
+        status = str(obj.get("status") or "completed")
+        summary = " ".join(str(obj.get("summary") or "").split()) or "(no summary)"
+        lines.append(f"sub-agent {obj.get('tool_use_id') or '?'} {status}: {summary}")
+    return (
+        "[background sub-agent reports Claude Code reacted to on its own; "
+        "its response follows:\n" + "\n".join(lines) + "]"
+    )
+
+
+def _is_autonomous(messages: list[ModelMessage]) -> bool:
+    """True for a turn nobody typed: the newest prompt is a turn-context
+    envelope around an empty typed text (the harness's autonomous / digest
+    turns) — the kind that consumes a turn the CLI already ran."""
+    return not strip_turn_context(latest_user_text(messages)).strip()
+
+
 def _is_missing_session(obj: dict) -> bool:
     """True when a ``--resume`` start died because the CLI no longer has the
     session (probe s8: stderr ``No conversation found with session ID: …``,
@@ -838,6 +895,10 @@ class ClaudeCliModel(ExternalCliModel):
         self._context_window: int | None = None
         self._prompt_model: str | None = None
         self._cost = CostMeter()
+        # The sub-agent demux lives as long as the process: a background
+        # spawn's card is opened in one turn and settled by a notification
+        # that can arrive turns later (in the CLI's own turn on it).
+        self._demux: CliSubagentDemux | None = None
 
     def ephemeral_clone(self, *, cwd: str) -> ClaudeCliModel:
         """A stateless, read-only copy for one-shot aux agents (titler/summarizer).
@@ -906,6 +967,10 @@ class ClaudeCliModel(ExternalCliModel):
 
     # --- process lifecycle --------------------------------------------------------
     async def _spawn(self, *, resume_id: str | None, system: str | None) -> ClaudeProcess:
+        # Imported here, not at module top: cli_demux imports cli_backend,
+        # which imports this module's chunk types.
+        from ..subagents.cli_demux import CliSubagentDemux
+
         self._broker = self._make_broker()
         process = ClaudeProcess(
             self._options(resume_id=resume_id, system=system),
@@ -913,14 +978,26 @@ class ClaudeCliModel(ExternalCliModel):
             silence_timeout=cli_timeout(),
             # Aux clones close after every call, so they never idle.
             idle_timeout=0.0 if self.ephemeral else cli_idle_timeout(),
+            on_unsolicited=self._on_unsolicited,
         )
         await process.start()
         self._process = process
+        self._demux = CliSubagentDemux()
         # A new process — fresh or resumed — restarts the CLI's running cost
         # total at zero; the meter must follow or the first result is billed
         # against the old process's total.
         self._cost.reset()
         return process
+
+    def _on_unsolicited(self, opening: list[dict]) -> None:
+        """The process saw Claude open a turn of its own: tell the harness so
+        it queues the autonomous marim turn that consumes it (`_open_turn`).
+        Unbound (headless one-shot, an aux clone) the turn stays buffered:
+        the next turn marim sends waits it out, and its text shows nowhere in
+        marim — Claude's own history keeps it, so the conversation itself
+        stays coherent."""
+        if self.on_backend_turn is not None:
+            self.on_backend_turn(backend_turn_note(opening))
 
     async def _ensure_process(self, messages: list) -> tuple[ClaudeProcess, bool]:
         """The process to run this turn on and whether it RESUMES a Claude
@@ -966,6 +1043,16 @@ class ClaudeCliModel(ExternalCliModel):
         self, messages: list, model_settings: ModelSettings | None
     ) -> tuple[ClaudeProcess, TurnHandle, dict]:
         process, resumed = await self._ensure_process(messages)
+        # An autonomous turn exists to show a turn Claude already ran on its
+        # own (a background sub-agent's report): serve it from the buffered
+        # handle and send nothing — the CLI's history already moved on, and
+        # the controls below govern what marim SENDS, so they wait for the
+        # next sent turn. A typed turn leaves the buffer alone; the
+        # autonomous turn queued for it runs next. (An autonomous turn with
+        # nothing buffered — a finished-jobs digest — is sent like any other.)
+        buffered = process.take_unsolicited() if _is_autonomous(messages) else None
+        if buffered is not None:
+            return process, buffered, await next_turn_object(process, buffered)
         await self._sync_controls(process, model_settings)
         text = latest_user_text(messages) if resumed else flatten_history(messages)
         handle = await process.send_turn(text)
@@ -1105,7 +1192,7 @@ class ClaudeCliModel(ExternalCliModel):
         if chunk.session_id and not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + chunk.session_id)
 
-    def _settle_turn(self, done: DoneChunk) -> RequestUsage:
+    def _settle_turn(self, done: DoneChunk, *, own: bool = False) -> RequestUsage:
         """The turn's usage with its per-turn cost billed (``CostMeter``), and
         the context report's window refreshed from the result.
 
@@ -1115,7 +1202,14 @@ class ClaudeCliModel(ExternalCliModel):
         ledger for good. Leaving the baseline where it was makes the next
         successful turn carry the failed one's cost — attributed late, but
         the session total stays equal to the CLI's own running total, which
-        is the number the ledger is meant to reproduce."""
+        is the number the ledger is meant to reproduce.
+
+        ``own`` marks a turn the CLI ran by itself, served from the buffer.
+        Played after a typed turn that went out first, its result is older
+        than the last one billed: the cost is on the ledger already and the
+        window is staler than the one shown, so both are left alone."""
+        if own and self._cost.behind(done.cumulative_cost_usd):
+            return charge_cost(done.usage, 0.0)
         window = done.context_windows.get(self._prompt_model or "") or done.context_window
         if window:
             self._context_window = window
@@ -1182,7 +1276,7 @@ class ClaudeCliModel(ExternalCliModel):
             # construction-time value — so a multi-turn history doesn't carry
             # identical, stale timestamps across every ModelResponse.
             timestamp=datetime.now(tz=timezone.utc),
-            usage=self._settle_turn(done),
+            usage=self._settle_turn(done, own=handle.own),
             provider_name="claude-cli",
             provider_details=self._response_details(),
         )
@@ -1205,12 +1299,13 @@ class ClaudeCliModel(ExternalCliModel):
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
             _on_note=self._note,
-            _finish=self._settle_turn,
+            _finish=lambda done: self._settle_turn(done, own=handle.own),
             _details=self._response_details,
             _after=lambda: self._refresh_quota(process),
             _on_activity=self.on_activity,
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
+            _demux=self._demux,
         )
         try:
             yield stream
@@ -1301,6 +1396,8 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     _on_activity: Callable[[list], Awaitable[None]] | None = None
     _on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
     _on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
+    # The model's process-lifetime demux (None → one for this turn only).
+    _demux: CliSubagentDemux | None = None
 
     async def _demuxed_objs(
         self, activity: Callable[[list], Awaitable[None]] | None, folder: TextFolder
@@ -1315,13 +1412,19 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         ToolUseChunk would, so the prose after it starts a fresh text part
         below the card (live and in the persisted split alike).
 
+        The demux is the model's, shared across the process's turns: a
+        background spawn's ``task_notification`` settles a card opened in an
+        earlier turn (its return then rides in THIS turn's ledger; the
+        persisted expansion drops a return with no call in the same response,
+        so the earlier turn keeps its synthesized launch note).
+
         ``stream_event`` objects bypass the demux: it only knows whole
         assistant/user messages. The main turn's deltas pass straight through;
         a child's (tagged ``parent_tool_use_id``) are dropped — the child's
         whole assistant message reaches its card via the demux anyway."""
         from ..subagents.cli_demux import CliSubagentDemux
 
-        demux = CliSubagentDemux()
+        demux = self._demux or CliSubagentDemux()
         assert self._objs is not None
         async for obj in self._objs:
             if obj.get("type") == "stream_event":

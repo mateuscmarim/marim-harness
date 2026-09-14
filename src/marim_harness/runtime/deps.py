@@ -285,6 +285,12 @@ class UIHooks:
     # failed flag is explicit because the engine knows which exit it took;
     # the UI never re-sniffs result text.
     on_workflow_done: "Callable[[str, str, bool], None] | None" = None
+    # () -> None. An external CLI backend (claude-cli) ran a turn of its own
+    # — its reaction to a background sub-agent's report — and the harness has
+    # already stashed the turn-context note for it: the host queues one
+    # autonomous turn, which the model serves from the buffered backend turn
+    # instead of sending a prompt. None headless (the turn stays buffered).
+    on_backend_turn: "Callable[[], None] | None" = None
     detach_fanout: bool = False
     interactive: bool = False
     notifier: "Notifier | None" = None

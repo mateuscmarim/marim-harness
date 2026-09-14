@@ -71,6 +71,11 @@ class ExternalCliModel(Model):
         # after a resume, written whenever the CLI reports a new one.
         self.session_ref_getter: Callable[[], str | None] | None = None
         self.on_session_ref: Callable[[str], None] | None = None
+        # The backend ran a turn marim never sent (claude-cli: its reaction
+        # to a background sub-agent's report). Called with the turn-context
+        # note for the autonomous marim turn that should consume it; the
+        # harness stashes the note and asks its host to queue that turn.
+        self.on_backend_turn: Callable[[str], None] | None = None
 
     @property
     def system(self) -> str:

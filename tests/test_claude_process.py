@@ -365,3 +365,225 @@ async def test_missing_binary_raises_cli_model_error(tmp_path: Path):
     with pytest.raises(CliModelError) as exc:
         await process.start()
     assert "claude" in str(exc.value)
+
+
+# --- turns the CLI runs on its own (background sub-agents) -------------------
+
+_NOTIFICATION = {
+    "type": "system",
+    "subtype": "task_notification",
+    "tool_use_id": "tu1",
+    "status": "completed",
+    "summary": "pong",
+}
+
+
+def _spawn_turn(after_turn: dict | list | None = None) -> list[dict]:
+    """A turn that launches a background Agent and ends before it reports."""
+    steps: list[dict] = [
+        {"tool_use": {"id": "tu1", "name": "Agent", "input": {"description": "Explore"}}},
+        {
+            "raw": {
+                "type": "system",
+                "subtype": "task_started",
+                "tool_use_id": "tu1",
+                "is_backgrounded": True,
+            }
+        },
+        {"tool_result": {"id": "tu1", "content": "Async agent launched successfully"}},
+        {"text": "Launched."},
+    ]
+    if after_turn is not None:
+        steps.append({"after_turn": after_turn})
+    return steps
+
+
+async def _wait_for(predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "condition never held"
+        await asyncio.sleep(0.02)
+
+
+async def _drain_turn(process: ClaudeProcess, handle) -> list[dict]:
+    return [obj async for obj in turn_objects(process, handle)]
+
+
+async def test_cli_own_turn_is_buffered_and_reported(tmp_path: Path):
+    """The notification lands with no turn open, the CLI runs a turn on it:
+    both are buffered on one unsolicited handle (notification first, then the
+    init and the reaction) and the hook sees the opening objects."""
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "Agent completed: pong"}]}
+    openings: list[list[dict]] = []
+    process = _process(tmp_path, {"turns": [_spawn_turn(own_turn)]}, on_unsolicited=openings.append)
+    await process.start()
+    try:
+        first = await _collect(process, "summarize")
+        assert first[-1]["result"] == "Launched."
+        await _wait_for(lambda: process.has_unsolicited)
+        handle = process.take_unsolicited()
+        assert handle is not None and process.take_unsolicited() is None
+        objs = await _drain_turn(process, handle)
+    finally:
+        await process.aclose()
+    assert objs[0] == _NOTIFICATION
+    assert objs[1]["type"] == "system" and objs[1]["subtype"] == "init"
+    assert objs[-1]["type"] == "result" and objs[-1]["result"] == "Agent completed: pong"
+    assert process.background_tasks == frozenset()
+    assert [[o.get("subtype") for o in opening] for opening in openings] == [
+        ["task_notification", "init"]
+    ]
+    assert process.turn_open is False
+
+
+async def test_notification_without_a_reaction_rides_into_the_next_turn(tmp_path: Path):
+    """A notification the CLI never reacts to is not a turn: it waits in the
+    prelude and is the first object of the next turn marim sends, so the
+    demux settles the card before the new prose."""
+    openings: list[list[dict]] = []
+    scenario = {"turns": [_spawn_turn({"prelude": [_NOTIFICATION]}), [{"text": "two"}]]}
+    process = _process(tmp_path, scenario, on_unsolicited=openings.append)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: not process.background_tasks)
+        assert process.has_unsolicited is False
+        second = await _collect(process, "again")
+    finally:
+        await process.aclose()
+    assert second[0] == _NOTIFICATION
+    assert second[1]["type"] == "user" and second[-1]["result"] == "two"
+    assert openings == []
+
+
+async def test_stray_objects_with_no_turn_open_are_dropped(tmp_path: Path):
+    """Only lifecycle events wait between turns: a stray result/assistant
+    replay must not pollute the next turn (it would end it early)."""
+    stray = {"type": "result", "subtype": "success", "result": "stale", "is_error": False}
+    scenario = {"turns": [[{"text": "a"}, {"after_turn": {"prelude": [stray]}}], [{"text": "b"}]]}
+    process = _process(tmp_path, scenario)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await asyncio.sleep(0.2)
+        assert process.has_unsolicited is False
+        second = await _collect(process, "two")
+    finally:
+        await process.aclose()
+    assert second[0]["type"] == "user" and second[-1]["result"] == "b"
+
+
+async def test_send_turn_waits_for_the_cli_own_turn_to_finish(tmp_path: Path):
+    """A marim turn sent while the CLI's own turn streams would receive that
+    turn's result and end early: `send_turn` lets it finish first."""
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"sleep": 0.4}, {"text": "reaction"}]}
+    scenario = {"turns": [_spawn_turn(own_turn), [{"text": "two"}]]}
+    process = _process(tmp_path, scenario)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: process.has_unsolicited)
+        own = process.take_unsolicited()
+        assert own is not None and own.open is True
+        handle = await process.send_turn("two")
+        assert own.open is False  # finished before the user message went out
+        second = await _drain_turn(process, handle)
+        own_objs = await _drain_turn(process, own)
+    finally:
+        await process.aclose()
+    assert own_objs[-1]["result"] == "reaction"
+    assert second[0]["type"] == "user" and second[-1]["result"] == "two"
+
+
+async def test_cli_own_turn_that_hangs_is_interrupted_before_the_next_turn(tmp_path: Path):
+    """The CLI must really stop its own turn, not just marim's view of it:
+    otherwise its late ``result`` would end the next marim turn instead."""
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "x"}, {"await_interrupt": True}]}
+    scenario = {"turns": [_spawn_turn(own_turn), [{"text": "Two."}]]}
+    process = _process(tmp_path, scenario, silence_timeout=0.3)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: process.has_unsolicited)
+        own = process.take_unsolicited()
+        assert own is not None
+        started = time.monotonic()
+        handle = await process.send_turn("two")
+        assert time.monotonic() - started < 3.0
+        own_objs = await _drain_turn(process, own)
+        assert own_objs[-1]["type"] == "result" and own_objs[-1]["is_error"] is True
+        assert own_objs[-1]["terminal_reason"] == "aborted_streaming"
+        objs = [obj async for obj in turn_objects(process, handle)]
+        assert [o["type"] for o in objs][-1] == "result" and not objs[-1].get("is_error")
+        assert process.alive is True
+    finally:
+        await process.aclose()
+
+
+async def test_cli_own_turn_that_ignores_the_interrupt_is_killed(tmp_path: Path):
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "x"}, {"sleep": 30}]}
+    scenario = {"turns": [_spawn_turn(own_turn)]}
+    process = _process(tmp_path, scenario, silence_timeout=0.3)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: process.has_unsolicited)
+        own = process.take_unsolicited()
+        assert own is not None
+        handle = await process.send_turn("two")
+        own_objs = await _drain_turn(process, own)
+        assert own_objs[-1]["type"] == CLOSED
+        assert process.alive is False and handle.open is False
+    finally:
+        await process.aclose()
+
+
+async def test_death_during_the_cli_own_turn_delivers_closed(tmp_path: Path):
+    own_turn = {
+        "prelude": [_NOTIFICATION],
+        "steps": [{"text": "x"}, {"exit": {"code": 2, "stderr": "boom"}}],
+    }
+    process = _process(tmp_path, {"turns": [_spawn_turn(own_turn)]})
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await _wait_for(lambda: process.has_unsolicited)
+        own = process.take_unsolicited()
+        assert own is not None
+        objs = await asyncio.wait_for(_drain_turn(process, own), 5.0)
+    finally:
+        await process.aclose()
+    assert objs[-1]["type"] == CLOSED and objs[-1]["returncode"] == 2
+    assert process.background_tasks == frozenset()
+
+
+async def test_idle_reaper_holds_while_a_background_agent_runs(tmp_path: Path):
+    """An idle close would kill the running sub-agent and lose its report:
+    the normal clock starts only when its notification lands."""
+    scenario = {"turns": [_spawn_turn({"delay": 0.6, "prelude": [_NOTIFICATION]})]}
+    process = _process(tmp_path, scenario, idle_timeout=0.2)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await asyncio.sleep(0.4)
+        assert process.alive is True and process.background_tasks == frozenset({"tu1"})
+        await asyncio.wait_for(process.closed.wait(), 3.0)
+    finally:
+        await process.aclose()
+    assert process.alive is False and process.background_tasks == frozenset()
+
+
+async def test_idle_hold_for_an_agent_that_never_reports_is_bounded(tmp_path: Path):
+    """A sub-agent whose notification never comes must not pin the process
+    forever: the hold is the idle timeout stretched, not switched off."""
+    scenario = {"turns": [_spawn_turn()]}
+    process = _process(tmp_path, scenario, idle_timeout=0.1)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        await asyncio.sleep(0.4)
+        assert process.alive is True and process.background_tasks == frozenset({"tu1"})
+        await asyncio.wait_for(process.closed.wait(), 3.0)
+    finally:
+        await process.aclose()
+    assert process.alive is False

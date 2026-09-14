@@ -17,7 +17,12 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RequestUsage
 
 from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
-from marim_harness.runtime.cli_activity import MISSING_RESULT_NOTE, expand_cli_activity
+from marim_harness.runtime.cli_activity import (
+    BACKGROUND_SPAWN_NOTE,
+    MISSING_RESULT_NOTE,
+    expand_cli_activity,
+    unanswered_note,
+)
 from marim_harness.runtime.controller import TurnController
 from marim_harness.runtime.harness import HarnessConfig, build_collaborators
 from marim_harness.tools.provider import BuiltinToolProvider
@@ -279,3 +284,19 @@ async def test_flush_resumable_expands_the_captured_partial_turn(tmp_path):
         ("request", [("tool-return", "t1")]),
     ]
     assert tc.session.history[-1].parts[0].content == MISSING_RESULT_NOTE
+
+
+def test_unanswered_background_spawn_is_not_an_interrupted_call():
+    """Claude Code's Agent runs in the background: the turn ends before it
+    reports, so its spawn_agent call is legitimately unanswered. The
+    synthesized return says so instead of claiming the turn was cut short."""
+    ledger = [
+        {"kind": "call", "id": "tu1", "name": "spawn_agent", "args": {"task": "explore"}},
+        {"kind": "part", "index": 0},
+    ]
+    out = expand_cli_activity([_resp([TextPart(content="Launched.")], ledger)])
+    ret = out[1].parts[0]
+    assert isinstance(ret, ToolReturnPart)
+    assert ret.tool_name == "spawn_agent" and ret.tool_call_id == "tu1"
+    assert ret.content == BACKGROUND_SPAWN_NOTE and ret.outcome == "success"
+    assert unanswered_note("bash") == MISSING_RESULT_NOTE

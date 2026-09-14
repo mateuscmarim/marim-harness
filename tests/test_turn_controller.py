@@ -569,3 +569,19 @@ async def test_harness_manual_compact_delegates_to_controller(tmp_path):
     harness.turn_controller.manual_compact = fake  # type: ignore[method-assign]
     assert await harness.manual_compact(instructions="hi") is True
     assert seen == {"instructions": "hi"}
+
+
+def test_note_backend_turn_stacks_on_the_pending_digest(tmp_path):
+    """A CLI backend's own turn rides the same slot as the jobs digest, after
+    whatever is already waiting, so neither note displaces the other."""
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tc = _make_tc(FunctionModel(fn), tmp_path)
+    tc.note_backend_turn("[first]")
+    assert tc._pending_jobs_digest == "[first]"
+    tc.note_backend_turn("[second]")
+    assert tc._pending_jobs_digest == "[first]\n\n[second]"
+    tc.clear_pending_jobs_digest()
+    assert tc._pending_jobs_digest is None

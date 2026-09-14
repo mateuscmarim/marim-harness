@@ -73,6 +73,22 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Fixed
 
+- **`claude-cli`: a background Agent's report was lost and its card spun
+  forever.** Claude Code runs its Agent sub-agents in the background: the
+  spawning turn ends at launch, and when the agent finishes while no turn
+  is open the CLI reacts on its own — it injects the report into its
+  history and runs a model turn nobody asked for. marim dropped every
+  object that arrived with no turn open, so the spawn card never settled,
+  the reaction was never shown, and the two histories diverged (Claude
+  would later insist it had "posted the summary above"). The process now
+  buffers that turn and marim plays it as an autonomous turn as soon as the
+  session is idle: the card settles, the reaction renders as its own
+  transcript entry, and nothing is re-sent to the CLI. A typed turn
+  submitted first goes out first (the CLI's own turn is let finish before
+  marim sends one), a report the CLI never reacts to still settles its card
+  at the start of the next turn, the idle reaper holds (bounded) while a
+  background agent runs, and a resumed history records the unanswered spawn as
+  "reports later" rather than as an interrupted call.
 - **Switching sessions under `claude-cli`/`codex-cli` kept driving the old
   conversation.** A session switch, `/new` or `/clear` rebound marim's
   session store but left the adapter's live `claude` process or codex thread

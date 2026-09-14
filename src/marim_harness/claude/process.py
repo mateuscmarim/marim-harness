@@ -16,6 +16,17 @@ by asking the process which turn is "current": on a loaded machine the CLI's
 terminal ``result`` can be read, routed and the turn closed *before*
 ``send_turn`` even returns to its caller, so any lookup through process state
 would race.
+
+Claude Code also runs turns marim never asked for. Its Agent tool launches
+sub-agents in the background (``system/task_started`` with
+``is_backgrounded``); when one finishes while no turn is open, the CLI
+injects the ``task_notification`` into its own history and runs a model turn
+on it — a fresh ``system/init``, the assistant's reaction, a ``result`` —
+with no user message from marim in between (probed 2026-09-13). Those
+objects are buffered on an *unsolicited* ``TurnHandle`` (``take_unsolicited``
+hands it to the consumer that runs marim's matching autonomous turn) instead
+of being dropped, and the idle reaper holds off while a background sub-agent
+is still running — closing the process would kill it.
 """
 
 from __future__ import annotations
@@ -26,7 +37,7 @@ import logging
 import os
 import signal
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -80,6 +91,20 @@ ISOLATION_ARGV: tuple[str, ...] = (
 # sees them thinks it is nested and refuses or misroutes.
 _STRIPPED_ENV = ("CLAUDE_CODE_SSE_PORT", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
 
+# Objects the CLI emits between turns (a task notification, a background-tasks
+# status patch) are kept for the next turn to see; a CLI that chattered for
+# ever with nobody consuming would otherwise grow the buffer without bound.
+_PRELUDE_LIMIT = 64
+# While a background sub-agent runs the idle clock is stretched by this factor
+# rather than stopped: Claude Code always ends an agent with a notification, so
+# the hold is only ever a bound on a report that will never come.
+_BACKGROUND_HOLD_FACTOR = 10
+
+# The callback fired when the CLI opens a turn of its own: receives the
+# objects the turn opened with (any inter-turn prelude — the task
+# notification that triggered it — plus its ``system/init``).
+UnsolicitedHandler = Callable[[list[dict]], None]
+
 
 @dataclass(frozen=True)
 class ProcessOptions:
@@ -124,6 +149,9 @@ class TurnHandle:
     events: asyncio.Queue[dict] = field(default_factory=asyncio.Queue)
     open: bool = True
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+    # True for a turn the CLI ran on its own (see the module docstring): its
+    # consumer may serve it after later turns were already accounted for.
+    own: bool = False
 
     def finish(self) -> None:
         self.open = False
@@ -165,9 +193,11 @@ class ClaudeProcess:
         on_request: RequestHandler | None = None,
         silence_timeout: float = 0.0,
         idle_timeout: float = 0.0,
+        on_unsolicited: UnsolicitedHandler | None = None,
     ) -> None:
         self._opts = options
         self._on_request = on_request
+        self._on_unsolicited = on_unsolicited
         self.silence_timeout = silence_timeout
         self._idle_timeout = idle_timeout
         self._proc: asyncio.subprocess.Process | None = None
@@ -177,6 +207,18 @@ class ClaudeProcess:
         self._idle_task: asyncio.Task[None] | None = None
         self._stderr_tail: deque[str] = deque(maxlen=_STDERR_LINES)
         self._turn: TurnHandle | None = None
+        # Turns the CLI ran on its own (see the module docstring): `_own_turn`
+        # is the one currently streaming (routing goes there, taken or not),
+        # `_unsolicited` the ones not yet handed to a consumer, oldest first.
+        # Objects that arrived between turns without opening one (a
+        # notification the CLI did not react to yet) wait in the prelude for
+        # whichever turn opens next. `_background` is the set of sub-agents
+        # still running in the background — while it is non-empty the idle
+        # clock runs `_BACKGROUND_HOLD_FACTOR` times longer.
+        self._own_turn: TurnHandle | None = None
+        self._unsolicited: deque[TurnHandle] = deque()
+        self._prelude: deque[dict] = deque(maxlen=_PRELUDE_LIMIT)
+        self._background: set[str] = set()
         # Bumped on every control_request handler entry AND exit, so the turn's
         # silence clock can tell that a prompt was open at some point inside a
         # window even when it has already closed again (see next_turn_object).
@@ -223,6 +265,23 @@ class ClaudeProcess:
     @property
     def turn_open(self) -> bool:
         return self._turn is not None and self._turn.open
+
+    @property
+    def background_tasks(self) -> frozenset[str]:
+        """tool_use ids of the CLI's sub-agents still running in the background."""
+        return frozenset(self._background)
+
+    @property
+    def has_unsolicited(self) -> bool:
+        """True while a turn the CLI ran on its own waits to be consumed."""
+        return bool(self._unsolicited)
+
+    def take_unsolicited(self) -> TurnHandle | None:
+        """The oldest turn the CLI ran on its own (finished or still
+        streaming), for the consumer that runs marim's autonomous turn over
+        it; None when there is none. Read it like any other handle — through
+        ``next_turn_object``/``turn_objects``."""
+        return self._unsolicited.popleft() if self._unsolicited else None
 
     @property
     def pid(self) -> int | None:
@@ -365,6 +424,17 @@ class ClaudeProcess:
             turn.events.put_nowait(self._closed_object())
             turn.finish()
         self._turn = None
+        # A CLI-initiated turn cut short by the exit ends the same way, so its
+        # (future) consumer sees a failed turn rather than a queue nothing
+        # ever finishes. Finished ones stay consumable: their text is real.
+        own = self._own_turn
+        if own is not None and own.open:
+            own.events.put_nowait(self._closed_object())
+            own.finish()
+        self._own_turn = None
+        # The sub-agents died with the process; the resumed CLI carries the
+        # notifications it did see in its own history.
+        self._background.clear()
 
     async def aclose(self) -> None:
         self._cancel_idle()
@@ -410,17 +480,92 @@ class ClaudeProcess:
             # wants the id can read `process.session_id` the moment it arrives.
             self.session_id = str(obj.get("session_id") or self.session_id or "") or None
             self.init_info = obj
+        self._track_background(obj)
         turn = self._turn
         if turn is None or not turn.open:
-            # A late async sub-agent notification or a stray replay. The CLI
-            # stays alive, so dropping it costs the next turn nothing.
-            logger.debug("claude object with no open turn dropped: %s", kind)
+            self._route_unsolicited(obj)
             return
         turn.events.put_nowait(obj)
         if kind == "result":
             turn.finish()
             self._turn = None
             self._arm_idle()
+
+    def _track_background(self, obj: dict) -> None:
+        """Keep ``_background`` current: a backgrounded ``task_started`` adds
+        the sub-agent, its ``task_notification`` (any status) removes it."""
+        if obj.get("type") != "system":
+            return
+        tid = str(obj.get("tool_use_id") or "")
+        subtype = obj.get("subtype")
+        if subtype == "task_started" and obj.get("is_backgrounded") and tid:
+            self._background.add(tid)
+        elif subtype == "task_notification":
+            self._background.discard(tid)
+
+    def _route_unsolicited(self, obj: dict) -> None:
+        """An object with no turn open. A ``system/init`` opens a turn the CLI
+        is running on its own; anything before one waits in the prelude and
+        opens *with* it (or rides into the next turn marim sends — a
+        notification the CLI never reacted to still settles its card there).
+        The turn ends at its ``result`` like any other."""
+        handle = self._own_turn
+        if handle is None or not handle.open:
+            if obj.get("type") != "system":
+                # Not a lifecycle event and not a turn: a stray replay. The
+                # CLI stays alive, so dropping it costs the next turn nothing.
+                logger.debug("claude object with no open turn dropped: %s", obj.get("type"))
+                return
+            if obj.get("subtype") != "init":
+                self._prelude.append(obj)
+                # No turn is open, so the clock is (re)armed for the new
+                # state: the last sub-agent's notification with no turn to
+                # follow it ends the hold `_arm_idle` kept.
+                self._arm_idle()
+                return
+            handle = self._open_own_turn(obj)
+        handle.events.put_nowait(obj)
+        if obj.get("type") == "result":
+            handle.finish()
+            self._own_turn = None
+            self._arm_idle()
+
+    def _open_own_turn(self, init: dict) -> TurnHandle:
+        """A ``system/init`` with no turn open: the CLI started one of its own.
+        The prelude opens it (queued ahead of the init, in arrival order)."""
+        # A turn is running: the idle clock a notification-only prelude may
+        # have started must not fire underneath it.
+        self._cancel_idle()
+        opening = [*self._prelude, init]
+        self._prelude.clear()
+        handle = self._own_turn = TurnHandle(own=True)
+        self._unsolicited.append(handle)
+        for pre in opening[:-1]:
+            handle.events.put_nowait(pre)
+        logger.info("claude opened a turn of its own (%d objects in prelude)", len(opening) - 1)
+        if self._on_unsolicited is not None:
+            self._on_unsolicited(opening)
+        return handle
+
+    async def _await_unsolicited(self) -> None:
+        """Let a turn the CLI is running on its own finish before marim sends
+        one: the CLI serializes them anyway, and a ``result`` arriving with a
+        marim turn open would be routed to — and end — the wrong turn. Bounded
+        by the silence timeout; a turn that outlives it is *interrupted* like
+        a silent marim turn would be, so that it really ends on the CLI's side
+        too — finishing only the local handle would leave the CLI's eventual
+        ``result`` to land in, and end, the next marim turn. The interrupt's
+        aborted ``result`` (or the CLOSED of a CLI that ignored it and was
+        killed) closes the handle, so its consumer is not stranded."""
+        handle = self._own_turn
+        if handle is None or not handle.open:
+            return
+        timeout = self.silence_timeout if self.silence_timeout > 0 else None
+        try:
+            await asyncio.wait_for(handle.closed.wait(), timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("claude's own turn did not finish in %.0fs; interrupting it", timeout)
+            await self.interrupt(handle)
 
     async def send_turn(self, text: str) -> TurnHandle:
         """Open a turn and send its user message. A dead process still returns
@@ -431,9 +576,16 @@ class ClaudeProcess:
         # next, and overwriting `self._turn` here would silently strand the
         # previous handle's consumer on a queue nothing ever finishes.
         assert not self.turn_open, "send_turn while a turn is open"
+        await self._await_unsolicited()
         self._cancel_idle()
         handle = TurnHandle()
         self._turn = handle
+        # Whatever arrived between turns (a sub-agent's notification the CLI
+        # has not reacted to) is this turn's to see first, so the demux
+        # settles the card before the new prose starts.
+        for pre in self._prelude:
+            handle.events.put_nowait(pre)
+        self._prelude.clear()
         if self._client is None or self.closed.is_set():
             self._deliver_closed()
             return handle
@@ -524,8 +676,17 @@ class ClaudeProcess:
     def _arm_idle(self) -> None:
         if self._idle_timeout <= 0:
             return
+        delay = self._idle_timeout
+        if self._background:
+            # A sub-agent is still working in the background; an idle close
+            # would kill it and its report would never arrive. The normal
+            # clock starts when its notification lands (or when the CLI's
+            # turn on that notification ends); the stretched one only bounds
+            # a notification that never comes, since a closed process resumes
+            # by id on the next turn anyway.
+            delay *= _BACKGROUND_HOLD_FACTOR
         self._cancel_idle()
-        self._idle_task = asyncio.get_running_loop().create_task(self._idle_close())
+        self._idle_task = asyncio.get_running_loop().create_task(self._idle_close(delay))
 
     def _cancel_idle(self) -> None:
         task = self._idle_task
@@ -535,8 +696,8 @@ class ClaudeProcess:
         if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
 
-    async def _idle_close(self) -> None:
-        await asyncio.sleep(self._idle_timeout)
+    async def _idle_close(self, delay: float) -> None:
+        await asyncio.sleep(delay)
         # Set BEFORE the first await inside the close: from here on `alive` is
         # False, so a turn that starts concurrently waits this close out and
         # respawns instead of cancelling it half-done. (Everything between the
@@ -544,9 +705,7 @@ class ClaudeProcess:
         # where a turn can see the reaper as neither armed nor closing.)
         self._closing = True
         self._close_done.clear()
-        logger.info(
-            "claude idle for %.0fs; closing (the next turn resumes by id)", self._idle_timeout
-        )
+        logger.info("claude idle for %.0fs; closing (the next turn resumes by id)", delay)
         try:
             await self.aclose()
         finally:
