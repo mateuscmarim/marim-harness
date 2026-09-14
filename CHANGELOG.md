@@ -10,6 +10,23 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **`/mode`, `/model` and `/think` reach Claude Code.** Under the
+  `claude-cli` main provider the three switches are now sent to the live
+  process as control requests before the next turn instead of being
+  emulated or documented as no-ops: `plan` runs Claude in its own plan mode
+  (`set_permission_mode`; marim's broker keeps denying every mutating tool
+  on top, and Claude's `ExitPlanMode` is answered with "the user switches
+  with `/mode`"), `auto`/`ask` run it in Claude's `default` mode where it
+  keeps asking marim; a same-provider `/model` switch is one `set_model` on
+  the process you already have (no close + `--resume` respawn, the context
+  and quota readings carry over) and a rejected id fails that turn with the
+  CLI's message instead of running on the wrong model; `/think` is sent as
+  a thinking-token budget plus an effort level (`set_max_thinking_tokens` +
+  `apply_flag_settings {effortLevel}`), so both token-budget and
+  adaptive-thinking Claude models honour it (the latter cannot switch
+  thinking off, so `off` is their lowest effort). Each is sent once per process
+  and again only when it changes; the model picker's claude-cli entries are
+  now annotated as thinking-capable.
 - **The CLI backends report their own context.** Under `claude-cli` and
   `codex-cli` the status bar's `ctx` field now shows the backend's real
   numbers — the prompt size of its most recent model request (system

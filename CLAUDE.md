@@ -44,10 +44,12 @@ Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env
 `anthropic/claude-sonnet-4-6`. `claude-cli` runs the conversation on one long-lived bidirectional `claude`
 process (`claude/` package: `protocol.py` stream-json client, `process.py`
 turn/idle/interrupt lifecycle, `approvals.py` `can_use_tool` → Mode/panel/
-ask_user, `env.py` knobs) on a Claude subscription — marim acts as a launcher
-(Claude runs its own tools/LSP/MCP), but marim's `auto`/`ask`/`plan`,
-approval panel, `ask_user`, steer and interrupt DO apply through the control
-protocol. Claude's own Agent/Task sub-agents are demuxed out of the stream
+ask_user, `controls.py` mode/model/thinking → control requests, `env.py`
+knobs) on a Claude subscription — marim acts as a launcher (Claude runs its
+own tools/LSP/MCP), but marim's `auto`/`ask`/`plan`, approval panel,
+`ask_user`, steer and interrupt DO apply through the control protocol, and
+`/mode`, `/model` and `/think` are sent to the live process as control
+requests before the next turn (a same-provider `/model` keeps the process). Claude's own Agent/Task sub-agents are demuxed out of the stream
 (`subagents/cli_demux.py`) and rendered as first-class cards in the sub-agents
 screen, for both the main-loop provider and `backend: claude-cli` spawns. The
 session id persists as `claude-cli:<id>` on `SessionStore.cli_thread_id` and
@@ -222,8 +224,10 @@ to avoid import cycles.
   level persists on `SessionStore.thinking` and lives on `Harness.thinking_level_id`
   (read lazily by the controller closure and the sub-agent runner, so `/think`
   switches without a rebuild). Seeded by `MARIM_THINKING` / `--think`; TUI
-  `/think` command + Settings row. Under the `claude-cli` main provider it's a
-  documented no-op (marim's `ModelSettings` don't reach Claude Code). Detection
+  `/think` command + Settings row. Under the `claude-cli` main provider the
+  level reaches Claude Code as a thinking-token budget plus an effort level
+  (`claude/controls.py`, sent before the next turn when it changes — as are
+  `/mode` → `set_permission_mode` and `/model` → `set_model`). Detection
   (`catalog.supports_thinking`) is best-effort UI annotation only — it never
   blocks a level.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;

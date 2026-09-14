@@ -87,6 +87,15 @@ class ExternalCliModel(Model):
         turn), False when the provider cannot steer (default)."""
         return False
 
+    def adopt(self, previous: Model) -> None:
+        """Take over whatever ``previous`` (the model being switched away
+        from) holds that this model can keep using — claude-cli moves the
+        live process across a same-provider ``/model`` switch so the switch
+        is one control request instead of a respawn. Called by
+        ``Harness.set_model`` before it schedules ``previous.aclose()``; the
+        base keeps nothing."""
+        return None
+
     async def compact_remote(self) -> None:
         """Ask the CLI to compact its own context (after marim compacts its
         copy). No-op by default."""

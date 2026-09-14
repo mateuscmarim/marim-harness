@@ -18,6 +18,10 @@ class _Closable(ExternalCliModel):
     def __init__(self) -> None:
         super().__init__()
         self.closed = 0
+        self.adopted: list[object] = []
+
+    def adopt(self, previous) -> None:
+        self.adopted.append(previous)
 
     @property
     def model_name(self) -> str:
@@ -68,6 +72,31 @@ async def test_set_model_closes_the_outgoing_external_model(tmp_path):
     await asyncio.sleep(0)  # the close is scheduled, not awaited inline
     assert old.closed == 1
     assert h.current_model is new
+
+
+@pytest.mark.anyio
+async def test_set_model_lets_the_new_model_adopt_the_old_before_closing_it(tmp_path):
+    old, new = _Closable(), _Closable()
+    h = _make_harness(old, _make_deps(tmp_path))
+    h.model_source = _Source({"old": old, "new": new})
+    h.set_model("new", persist=False)
+    await asyncio.sleep(0)
+    # adopt() runs synchronously inside set_model, before the scheduled
+    # close, so claude-cli can move the live process across the switch and
+    # leave the outgoing model nothing to close.
+    assert new.adopted == [old] and old.closed == 1 and new.closed == 0
+
+
+def test_base_adopt_keeps_nothing():
+    class _Plain(ExternalCliModel):
+        @property
+        def model_name(self) -> str:
+            return "plain"
+
+        async def request(self, *a, **k):  # pragma: no cover
+            raise NotImplementedError
+
+    assert _Plain().adopt(_Plain()) is None
 
 
 @pytest.mark.anyio

@@ -1031,10 +1031,15 @@ class Harness:
         # so switching TO such a provider at runtime honors live /mode, the
         # workspace cwd, and the TUI side-channels.
         self.wire_cli_model(model)
-        # The outgoing model may hold a live `claude` process / codex thread:
-        # release it now rather than when its idle reaper fires. Scheduled, not
-        # awaited — set_model is sync (called from the TUI's command path).
         if old is not model:
+            # A same-provider CLI switch keeps the live process (claude-cli
+            # sends `set_model` on the next turn instead of respawning) ...
+            if isinstance(model, ExternalCliModel):
+                model.adopt(old)
+            # ... and whatever the outgoing model still holds — a `claude`
+            # process nobody adopted, a codex thread — is released now rather
+            # than when its idle reaper fires. Scheduled, not awaited —
+            # set_model is sync (called from the TUI's command path).
             self._close_model_later(old)
 
     def _close_model_later(self, old: Model) -> None:

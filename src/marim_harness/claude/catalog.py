@@ -25,10 +25,10 @@ Where the list comes from, in order:
    (``--no-session-persistence``) — and closed again. Concurrent callers share
    one in-flight probe.
 
-``supports_thinking`` is left None on purpose: the CLI reports
-``supportsEffort`` per model, but marim's thinking level does not reach Claude
-Code (documented no-op under this provider), so annotating the picker with it
-would promise a knob that does nothing here.
+Every entry is ``supports_thinking=True``: marim's thinking level reaches
+Claude Code as a thinking-token budget plus an effort level
+(``claude/controls.py``), and each Claude model honours one of the two — the
+CLI's per-model ``supportsEffort`` only says which, not whether.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ CACHE_TTL = 600.0
 
 
 def _entry(model_id: str, name: str) -> ModelEntry:
-    return ModelEntry(id=model_id, name=name, provider=PROVIDER)
+    return ModelEntry(id=model_id, name=name, provider=PROVIDER, supports_thinking=True)
 
 
 # The fallback list: the family aliases every Claude Code release resolves
