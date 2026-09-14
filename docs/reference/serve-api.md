@@ -707,6 +707,13 @@ owns. These routes are the authority an attached TUI reads its jobs panel
 and sub-agent cards from; the `jobs.changed` stream event is only the
 trigger to re-read them.
 
+Agents spawned internally by a `claude-cli` or `codex-cli` session also appear
+here, with `backend_owned: true`. Their lifecycle is observed at the backend
+reader, including completions between parent turns. The CLI retains execution
+and result delivery; these rows never trigger marim's autonomous job wake.
+Clients refreshing after `jobs.changed` should send `Cache-Control: no-cache`
+so a fresh cached empty list cannot hide a newly started agent.
+
 ### GET /v1/workspaces/{ws}/sessions/{sid}/jobs
 
 `200 {"jobs": [JobDto, ...]}`, running jobs first, then settled ones by
@@ -744,6 +751,13 @@ file, so a spawn that finished in an earlier daemon life is still listed.
   last ~200 characters, the same verdict-carrying tail the persisted
   history keeps); `null` while the job runs.
 - `prompt` is always `null` on the list (see the detail route).
+- `backend_owned` is `true` for observed CLI agents, `false` for native jobs.
+  Older servers omit it. Prompts and metrics unavailable on the backend's
+  public event stream remain `null`; no values are invented. For example,
+  Codex's `subAgentActivity` spawn ping names the agent but carries no prompt.
+  Live detail returns the completion report; persisted history retains the
+  same bounded result tail as other jobs. If backend tracking ends before a
+  terminal report, the row fails with an explicit status-unavailable message.
 
 ### GET /v1/workspaces/{ws}/sessions/{sid}/jobs/{id}
 
@@ -760,6 +774,8 @@ registry's own wording, so an attached TUI's `/jobs cancel` reads exactly
 as the in-process one. `409 already_settled` when the job already
 finished; `404 job_not_found` for an unknown id, or for any id while no
 host is loaded (history rows are settled by definition).
+Running backend-owned jobs return `409 backend_managed`: cancellation must
+be requested through their owning CLI, and this route does not pretend to stop them.
 
 ### POST /v1/workspaces/{ws}/sessions/{sid}/subagents/{stream_id}/resume
 

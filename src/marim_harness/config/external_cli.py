@@ -26,6 +26,7 @@ from pydantic_ai.models import Model
 
 if TYPE_CHECKING:
     from ..ask_user import Question
+    from ..jobs import JobRegistry
 
 
 class CliModelError(Exception):
@@ -80,6 +81,9 @@ class ExternalCliModel(Model):
         # note for the autonomous marim turn that should consume it; the
         # harness stashes the note and asks its host to queue that turn.
         self.on_backend_turn: Callable[[str], None] | None = None
+        # Observed CLI agents share the jobs API, but the CLI owns execution.
+        self.job_registry: JobRegistry | None = None
+        self.on_jobs_settled: Callable[[], None] | None = None
 
     @property
     def system(self) -> str:

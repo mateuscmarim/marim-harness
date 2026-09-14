@@ -368,6 +368,12 @@ class CodexCliModel(ExternalCliModel):
         uses to prefix a child's approval prompts."""
         self.thread = handle
         self._router = router_for(server, handle)
+        if self.job_registry is not None and not self.ephemeral:
+            from ..runtime.backend_jobs import CodexJobObserver
+
+            handle.on_observation = CodexJobObserver(
+                self.job_registry, handle.thread_id, self.on_jobs_settled
+            )
         if self._broker is not None:
             self._broker.label_for = self._router.label_for
 

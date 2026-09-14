@@ -97,6 +97,8 @@ def test_wire_cli_model_binds_all_seams(tmp_path):
     assert m.mode_getter is not None and m.mode_getter() == harness.mode.value
     assert m.cwd == str(harness.deps.workspace.root)
     assert m.on_activity is harness.deps.ui.on_cli_activity
+    assert m.job_registry is harness.deps.jobs
+    assert m.on_jobs_settled is not None
     assert m.on_subagent is harness.deps.ui.on_subagent_event
     assert m.on_subagent_model is harness.deps.ui.on_subagent_model
     assert m.on_subagent_notice is harness.deps.ui.on_subagent_notice
@@ -117,6 +119,66 @@ def test_wire_cli_model_ignores_other_models(tmp_path):
     plain = _Plain()
     harness.wire_cli_model(plain)  # no attribute errors, nothing set
     assert not hasattr(plain, "mode_getter")
+
+
+async def test_observed_job_persist_defers_dirty_history_and_ignores_rebound_store(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from marim_harness.session import SessionManager
+
+    manager = SessionManager(tmp_path)
+    store = manager.create("original")
+    harness = _make_harness(_text_model(), _make_deps(tmp_path), store=store, manager=manager)
+    model = _Fake()
+    harness.wire_cli_model(model)
+    save_jobs = Mock(return_value=True)
+    monkeypatch.setattr(store, "save_jobs", save_jobs)
+    harness.deps.approval_round_active = True
+    model.on_jobs_settled()
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_not_called()
+    harness.deps.approval_round_active = False
+    model.on_jobs_settled()
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_called_once_with([])
+    save_jobs.reset_mock()
+    monkeypatch.setattr(harness.session, "store", manager.create("incoming"))
+    model.on_jobs_settled()
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_not_called()
+
+
+async def test_releasing_conversation_invalidates_old_jobs_and_rebinds_persistence(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import Mock
+
+    from marim_harness.runtime.backend_jobs import ClaudeJobObserver
+    from marim_harness.session import SessionManager
+
+    model = _Fake()
+    manager = SessionManager(tmp_path)
+    harness = _make_harness(
+        model, _make_deps(tmp_path), store=manager.create("original"), manager=manager
+    )
+    harness.wire_cli_model(model)
+    old = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
+    old.start("old-agent", {})
+    incoming = manager.create("incoming")
+    monkeypatch.setattr(harness.session, "store", incoming)
+    harness._release_cli_conversation()
+    old.start("late-agent", {})
+    old.close()
+    assert harness.deps.jobs.list() == []
+    save_jobs = Mock(return_value=True)
+    monkeypatch.setattr(incoming, "save_jobs", save_jobs)
+    current = ClaudeJobObserver(model.job_registry, model.on_jobs_settled)
+    current.start("new-agent", {})
+    current.finish("new-agent", "new report", "done")
+    await harness.cli_job_persistence.flush()
+    save_jobs.assert_called_once_with(harness.deps.jobs.export_settled())
 
 
 def test_base_ephemeral_clone_raises_when_a_subclass_forgets_to_override():

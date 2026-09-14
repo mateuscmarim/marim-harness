@@ -1682,6 +1682,40 @@ async def test_autonomous_turn_with_nothing_buffered_is_sent(tmp_path, monkeypat
 # --- control sync: mode / model / thinking reach the process -----------------------
 
 
+@pytest.mark.anyio
+async def test_backend_jobs_finish_between_turns_without_a_display_consumer(tmp_path, monkeypatch):
+    from marim_harness.jobs import JobRegistry
+    from tests.test_claude_process import _NOTIFICATION, _spawn_turn
+
+    scenario = {"turns": [_spawn_turn({"delay": 0.1, "steps": [{"raw": _NOTIFICATION}]})]}
+    model = _model(tmp_path, monkeypatch, scenario)
+    model.job_registry = JobRegistry()
+    try:
+        await model.request(_user("go"), None, ModelRequestParameters())
+        [job] = model.job_registry.list()
+        await _wait_for(lambda: job.status == "done")
+        assert job.result == "pong"
+        assert model.job_registry.take_finished_digest() == ""
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.anyio
+async def test_backend_jobs_stop_spinning_when_process_closes(tmp_path, monkeypatch):
+    from marim_harness.jobs import JobRegistry
+    from tests.test_claude_process import _spawn_turn
+
+    model = _model(tmp_path, monkeypatch, {"turns": [_spawn_turn()]})
+    model.job_registry = JobRegistry()
+    try:
+        await model.request(_user("go"), None, ModelRequestParameters())
+        [job] = model.job_registry.list()
+        assert job.status == "running"
+    finally:
+        await model.aclose()
+    assert job.status == "failed" and "unavailable" in job.result
+
+
 def _controls_sent(tmp_path: Path) -> list[dict]:
     """Every non-handshake control request the fake read, oldest first."""
     return [

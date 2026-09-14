@@ -9,6 +9,10 @@ wraps an awaitable that yields the final text, tracks status around it
 a running job comes from an optional ``output_fn`` (a bash job's growing buffer);
 agent jobs have none and read ``(still running)`` until done.
 
+CLI-native agents are observed rows: their backend owns execution and delivery
+of results. They share the display/history lifecycle, but never participate in
+native cancellation, dependencies, finished digests, or autonomous wake scheduling.
+
 State lives on :class:`~marim_harness.runtime.deps.Deps` next to the task checklist:
 tools mutate it via ``ctx.deps.jobs``, and the TUI subscribes to ``on_change`` to
 repaint a live panel. Live jobs belong to the running process and are cancelled
@@ -98,6 +102,8 @@ class Job:
     started_at: str | None = None
     # The spawn input: the sub-agent task prompt (agent) or the command (bash).
     prompt: str | None = None
+    # Observation only: the CLI backend, not this registry, controls execution.
+    backend_owned: bool = False
     task: asyncio.Task | None = field(default=None, repr=False)
     kill: Callable[[], None] | None = field(default=None, repr=False)
     output_fn: Callable[[], str] | None = field(default=None, repr=False)
@@ -119,6 +125,7 @@ def history_rows(entries: list[dict]) -> list[Job]:
             stream_id=e.get("stream_id"),
             finished_at=e.get("finished_at"),
             prompt=e.get("prompt"),
+            backend_owned=e.get("backend_owned") is True,
         )
         for e in entries
         if isinstance(e, dict)
@@ -146,6 +153,9 @@ class JobRegistry:
     def __init__(self, on_change: Callable[[], None] | None = None) -> None:
         self._jobs: dict[str, Job] = {}
         self._counter = 0
+        # A successful CLI conversation release invalidates every old observer,
+        # even one that had not seen its first spawn before the session switch.
+        self.observation_epoch: int = 0
         self.on_change = on_change
         # Ids of jobs that reached a terminal state since the digest was last
         # drained — surfaced to the model at the start of its next turn so a
@@ -184,7 +194,8 @@ class JobRegistry:
         self._poll_ledger.clear()
         if result is not None:
             job.result = result
-        self._finished_since_turn.append(job.id)
+        if not job.backend_owned:
+            self._finished_since_turn.append(job.id)
         self._notify()
 
     def _next_id(self) -> str:
@@ -254,6 +265,75 @@ class JobRegistry:
     def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
 
+    def observe_agent(self, stream_id: str, label: str, prompt: str | None = None) -> Job:
+        """Publish a CLI-owned agent without scheduling a native task.
+
+        Each call creates a row; the transport observer owns backend identity
+        mapping and calls reopen_observed for subsequent runs of the same agent.
+        """
+        job = Job(
+            id=self._next_id(),
+            kind="agent",
+            label=label,
+            stream_id=stream_id,
+            prompt=prompt,
+            backend_owned=True,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self._jobs[job.id] = job
+        self._poll_ledger.clear()
+        logger.debug("observed CLI agent registered: job=%s", job.id)
+        self._notify()
+        return job
+
+    def _validate_observed(self, job: Job) -> None:
+        if not job.backend_owned or self._jobs.get(job.id) is not job:
+            raise ValueError("job is not an observed agent in this registry")
+
+    def discard_observed(self) -> None:
+        """Invalidate old CLI observers and remove their in-process rows.
+
+        Session switches reuse this registry and may already have imported the
+        incoming session's history. Leave that history and native work intact;
+        the releasing transport still owns stopping its old backend agents.
+        """
+        self.observation_epoch += 1
+        remaining = {jid: job for jid, job in self._jobs.items() if not job.backend_owned}
+        removed = len(self._jobs) - len(remaining)
+        logger.debug(
+            "CLI job observations invalidated: epoch=%s removed=%s",
+            self.observation_epoch,
+            removed,
+        )
+        if not removed:
+            return
+        self._jobs = remaining
+        self._poll_ledger.clear()
+        self._notify()
+
+    def settle_observed(self, job: Job, status: Status, result: str) -> None:
+        """Record a backend's terminal outcome once, without native result delivery."""
+        self._validate_observed(job)
+        if status not in _SETTLED_STATUSES:
+            raise ValueError("observed job must settle to a terminal status")
+        if job.status != "running":
+            return
+        logger.debug("observed CLI agent settled: job=%s status=%s", job.id, status)
+        self._settle(job, status, result)
+
+    def reopen_observed(self, job: Job) -> None:
+        """Start another backend run under the same job and stream identity."""
+        self._validate_observed(job)
+        if job.status == "running":
+            return
+        job.status = "running"
+        job.result = None
+        job.finished_at = None
+        job.started_at = datetime.now(timezone.utc).isoformat()
+        self._poll_ledger.clear()
+        logger.debug("observed CLI agent reopened: job=%s", job.id)
+        self._notify()
+
     def list(self) -> list[Job]:
         """Every job, in launch order."""
         return list(self._jobs.values())
@@ -295,6 +375,8 @@ class JobRegistry:
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
+        if job.backend_owned and job.status == "running":
+            return f"job {job_id} still running; waiting is managed by the CLI backend"
         if job.status != "running" or job.task is None:
             # Already finished — mark as wake-consumed.
             self._wake_consumed.add(job_id)
@@ -364,16 +446,18 @@ class JobRegistry:
                 # Spawn-time validation guarantees existence; a vanished id means
                 # the registry was swapped/cleared out from under the chain.
                 raise PrerequisiteFailed(f"prerequisite {jid} no longer exists")
+            if job.backend_owned and job.status == "running":
+                raise PrerequisiteFailed(f"prerequisite {jid} is managed by the CLI backend")
             jobs.append(job)
 
         settled: list[Job] = []
         for jid, job in zip(ids, jobs, strict=True):
             while job.status == "running":
                 if job.task is None:
-                    # Unreachable via register(): a job's ``task`` is always set
-                    # before the job is published into ``self._jobs``, so no
-                    # caller can observe status == "running" with task is None.
-                    break
+                    # An observed prerequisite can reopen while we await an
+                    # earlier native job. Recheck here rather than treating its
+                    # absent native task as evidence that it finished.
+                    raise PrerequisiteFailed(f"prerequisite {jid} has no registry-owned task")
                 try:
                     await asyncio.shield(job.task)
                 except asyncio.CancelledError:
@@ -397,6 +481,9 @@ class JobRegistry:
         job = self._jobs.get(job_id)
         if job is None:
             return f"No job {job_id!r}."
+        if job.backend_owned:
+            logger.debug("observed CLI agent cancellation refused: job=%s", job_id)
+            return f"job {job_id} is managed by the CLI backend; cannot cancel it individually"
         # The agent (or shutdown) is acting on this job, so mark it wake-consumed:
         # an agent-initiated cancel must not fire a redundant autonomous wake.
         # The digest still records the outcome for the model's next turn.
@@ -435,7 +522,9 @@ class JobRegistry:
         return f"cancelled {job_id}"
 
     async def cancel_all(self) -> None:
-        """Cancel every running job (called on shutdown).
+        """Cancel every registry-owned running job (called on shutdown).
+
+        Observed agents are stopped and settled by their owning CLI transport.
 
         Iterates in *reverse* launch order — this matters. A dependent job
         (``after=``) always registers after its prerequisite, so forward order
@@ -454,7 +543,7 @@ class JobRegistry:
         *before* its prerequisites are ever touched, so the race can't occur.
         """
         for job in reversed(list(self._jobs.values())):
-            if job.status == "running":
+            if job.status == "running" and not job.backend_owned:
                 await self.cancel(job.id)
 
     def clear_history(self) -> None:
@@ -496,6 +585,7 @@ class JobRegistry:
                 "stream_id": j.stream_id,
                 "finished_at": j.finished_at,
                 "prompt": j.prompt,
+                "backend_owned": j.backend_owned,
             }
 
         settled = [entry(j) for j in self._jobs.values() if j.status != "running"]
@@ -514,8 +604,13 @@ class JobRegistry:
         self._notify()
 
     def any_running(self) -> bool:
-        """True if any job is still in the ``running`` state."""
-        return any(j.status == "running" for j in self._jobs.values())
+        """Whether native work is running, for the all-jobs-settled wake gate.
+
+        CLI backends deliver their own agent results; observed work must neither
+        trigger a duplicate native wake nor block unrelated native completions.
+        Display consumers should inspect list() for all running rows.
+        """
+        return any(j.status == "running" and not j.backend_owned for j in self._jobs.values())
 
     def has_finished_pending(self) -> bool:
         """True if one or more jobs finished since the last

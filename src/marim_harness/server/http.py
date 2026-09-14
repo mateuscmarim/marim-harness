@@ -740,6 +740,12 @@ async def cancel_job(request: Request) -> Response:
         return _error(404, "job_not_found", "unknown job")
     if job.status != "running":
         return _error(409, "already_settled", f"job {job_id} already {job.status}")
+    if job.backend_owned:
+        return _error(
+            409,
+            "backend_managed",
+            f"job {job_id} is managed by the CLI backend; cannot cancel it individually",
+        )
     message = await host.harness.deps.jobs.cancel(job_id)
     return JSONResponse({"ok": True, "message": message})
 

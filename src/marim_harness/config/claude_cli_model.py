@@ -925,6 +925,10 @@ class ClaudeCliModel(ExternalCliModel):
             idle_timeout=0.0 if self.ephemeral else cli_idle_timeout(),
             on_unsolicited=self._on_unsolicited,
         )
+        if self.job_registry is not None and not self.ephemeral:
+            from ..runtime.backend_jobs import ClaudeJobObserver
+
+            process.on_observation = ClaudeJobObserver(self.job_registry, self.on_jobs_settled)
         await process.start()
         self._process = process
         self._demux = CliSubagentDemux()
