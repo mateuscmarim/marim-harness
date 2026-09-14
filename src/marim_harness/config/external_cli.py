@@ -86,8 +86,8 @@ class ExternalCliModel(Model):
         override; the base raises so a forgotten override is loud."""
         raise NotImplementedError(f"{type(self).__name__} must implement ephemeral_clone")
 
-    def steer(self, text: str) -> bool:
-        """Inject ``text`` into the CLI's in-flight turn. Returns True when the
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> bool:
+        """Inject text and images into the CLI's in-flight turn. Returns True when the
         CLI accepted it (so the harness must NOT also buffer it for the next
         turn), False when the provider cannot steer (default)."""
         return False

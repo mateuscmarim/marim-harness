@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai.messages import (
+    BinaryContent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ModelRequest,
@@ -1586,7 +1587,8 @@ async def test_autonomous_turn_shows_the_cli_own_turn_and_settles_the_card(tmp_p
 
 
 @pytest.mark.anyio
-async def test_typed_turn_leaves_the_cli_own_turn_buffered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("image_only", [False, True])
+async def test_typed_turn_leaves_the_cli_own_turn_buffered(tmp_path, monkeypatch, image_only):
     scenario = {"turns": [_SPAWN_TURN, [{"text": "two"}]]}
     model = _model(tmp_path, monkeypatch, scenario)
     notes: list[str] = []
@@ -1594,15 +1596,21 @@ async def test_typed_turn_leaves_the_cli_own_turn_buffered(tmp_path, monkeypatch
     try:
         await _stream_text(model)
         await _wait_for(lambda: bool(notes))
+        content = (
+            [BinaryContent(data=b"\x89PNGx", media_type="image/png")] if image_only else "more"
+        )
         typed = await _stream_text(
-            model, _user("hi") + [ModelRequest(parts=[UserPromptPart(content="more")])]
+            model, _user("hi") + [ModelRequest(parts=[UserPromptPart(content=content)])]
         )
         assert model._process is not None and model._process.has_unsolicited
         shown = await _stream_text(model, _autonomous(notes[0]))
     finally:
         await model.aclose()
     assert typed == "two" and shown == "Agent completed: pong"
-    assert _user_texts(tmp_path) == ["User: hi", "more"]
+    assert _user_texts(tmp_path) == ["User: hi", "" if image_only else "more"]
+    if image_only:
+        sent = [obj for obj in read_claude_log(tmp_path) if obj.get("type") == "user"]
+        assert sent[1]["message"]["content"][0]["type"] == "image"
 
 
 @pytest.mark.anyio

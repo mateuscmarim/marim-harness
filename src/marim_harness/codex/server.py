@@ -491,7 +491,9 @@ class CodexServer:
         except (RpcError, asyncio.TimeoutError, CodexUnavailable) as exc:
             logger.debug("codex interrupt of %s ignored: %s", turn_id, exc)
 
-    async def steer(self, handle: ThreadHandle, text: str) -> bool:
+    async def steer(
+        self, handle: ThreadHandle, text: str, *, inputs: list[dict] | None = None
+    ) -> bool:
         turn_id = handle.current_turn_id
         if turn_id is None or not self.alive:
             return False
@@ -501,7 +503,7 @@ class CodexServer:
                 {
                     "threadId": handle.thread_id,
                     "expectedTurnId": turn_id,
-                    "input": [_text_input(text)],
+                    "input": inputs if inputs is not None else [_text_input(text)],
                 },
                 timeout=10.0,
             )

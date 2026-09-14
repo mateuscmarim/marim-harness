@@ -78,11 +78,14 @@ class StreamJsonClient:
             except (BrokenPipeError, ConnectionResetError) as exc:
                 raise ProcessClosed(str(exc)) from exc
 
-    async def user(self, text: str) -> None:
+    async def user(self, text: str | list[dict]) -> None:
         await self.write(
             {
                 "type": "user",
-                "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": text}] if isinstance(text, str) else text,
+                },
             }
         )
 

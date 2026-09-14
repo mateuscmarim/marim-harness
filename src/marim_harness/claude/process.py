@@ -567,7 +567,7 @@ class ClaudeProcess:
             logger.warning("claude's own turn did not finish in %.0fs; interrupting it", timeout)
             await self.interrupt(handle)
 
-    async def send_turn(self, text: str) -> TurnHandle:
+    async def send_turn(self, text: str | list[dict]) -> TurnHandle:
         """Open a turn and send its user message. A dead process still returns
         a handle — one whose queue already holds the ``CLOSED`` object — so the
         consumer has a single code path."""
@@ -595,7 +595,7 @@ class ClaudeProcess:
             self._deliver_closed()
         return handle
 
-    async def send_user(self, text: str) -> None:
+    async def send_user(self, text: str | list[dict]) -> None:
         """A user message while a turn is open folds into that turn (steer)."""
         if self._client is None or self.closed.is_set():
             raise ProcessClosed("claude is not running")

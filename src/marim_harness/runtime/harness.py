@@ -1348,7 +1348,7 @@ class Harness:
         ``turn/steer``): the harness's buffer would otherwise replay the text
         as a second user turn after Codex already acted on it."""
         model = self.current_model
-        if not attachments and isinstance(model, ExternalCliModel) and model.steer(text):
+        if isinstance(model, ExternalCliModel) and model.steer(text, attachments):
             return
         self.turn_controller.steer(text, attachments)
 
