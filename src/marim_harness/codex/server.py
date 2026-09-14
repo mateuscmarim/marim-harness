@@ -397,6 +397,8 @@ class CodexServer:
     async def _on_notification(self, method: str, params: dict) -> None:
         if method == "thread/started":
             self._adopt_announced(params)
+        elif method == "item/started":
+            self._adopt_pinged(params)
         tid = thread_id_for(method, params)
         if tid is None:
             # No threadId at all: a genuinely global notification (nothing in
@@ -506,6 +508,25 @@ class CodexServer:
         handle = self.adopt_thread(parent, child_id)
         if handle.parent_id == parent.thread_id:  # not a top-level thread left alone
             handle.label = thread_label(thread) or handle.label
+
+    def _adopt_pinged(self, params: dict) -> None:
+        """The same reader-task adoption for the shape codex 0.154 actually
+        sends (PR #128's live probe): no ``thread/started`` for the child
+        at all, the spawn reported as a ``subAgentActivity`` ``started``
+        ping on the parent, with the child's first ``turn/started`` right
+        behind it — the router's own adopt (on the consuming task) may not
+        have run yet. The label comes from ``agentPath``'s last segment."""
+        item = params.get("item") or {}
+        if item.get("type") != "subAgentActivity" or item.get("kind") != "started":
+            return
+        parent = self._threads.get(str(params.get("threadId") or ""))
+        child_id = str(item.get("agentThreadId") or "")
+        if parent is None or not child_id:
+            return
+        handle = self.adopt_thread(parent, child_id)
+        if handle.parent_id == parent.thread_id and handle.label is None:
+            path = str(item.get("agentPath") or "")
+            handle.label = path.rsplit("/", 1)[-1] or None
 
     def adopt_thread(self, parent: ThreadHandle, child_id: str) -> ThreadHandle:
         """Register a thread Codex spawned on the parent's behalf (a collab

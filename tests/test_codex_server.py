@@ -839,3 +839,41 @@ async def test_router_adopts_a_nested_spawn_under_the_child_that_spawned_it():
     orphan = {**spawn, "id": "k3", "receiverThreadIds": ["g2"]}
     router.route("item/started", {"threadId": "c1", "item": orphan})
     assert server.handle_for("g2").parent_id == "t1"  # pyright: ignore[reportOptionalMemberAccess]
+
+
+async def test_a_started_agent_ping_adopts_the_child_on_the_reader_task():
+    """codex 0.154 announces no ``thread/started`` for a spawned agent: the
+    ``subAgentActivity started`` item on the parent is the only notice, and
+    the child's ``turn/started`` follows it at once — so the reader adopts
+    the child right there (labelled from ``agentPath``), the same way an
+    announcement would, before the consumer can dequeue the ping."""
+
+    async def handler(method: str, params: dict) -> dict:
+        return {}
+
+    server = CodexServer()
+    parent = server._register({"id": "t1"}, handler)
+    ping = {
+        "type": "subAgentActivity",
+        "id": "call_x",
+        "kind": "started",
+        "agentThreadId": "c1",
+        "agentPath": "/root/reviewer",
+    }
+    await server._on_notification("item/started", {"threadId": "t1", "item": ping})
+    assert server.thread_ids == frozenset({"t1", "c1"})
+    assert server._threads["c1"].parent_id == "t1" and server._threads["c1"].events is parent.events
+    assert server.thread_label("c1") == "reviewer"
+    assert parent.events.get_nowait()[1]["item"] is ping  # the router still sees it
+    await server._on_notification("turn/started", {"threadId": "c1", "turn": {"id": "u1"}})
+    assert parent.events.get_nowait()[1]["threadId"] == "c1"
+    # Other kinds, an unknown parent, and a plain item do not adopt anything.
+    done = {**ping, "id": "subagent-completed-u1", "kind": "completed", "agentThreadId": "c2"}
+    await server._on_notification("item/started", {"threadId": "t1", "item": done})
+    await server._on_notification(
+        "item/started", {"threadId": "zz", "item": {**ping, "agentThreadId": "c3"}}
+    )
+    await server._on_notification(
+        "item/started", {"threadId": "t1", "item": {"type": "agentMessage", "id": "m1"}}
+    )
+    assert server.thread_ids == frozenset({"t1", "c1"})

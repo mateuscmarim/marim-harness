@@ -291,7 +291,11 @@ spawn).
 
 - **What the card shows.** Codex's `spawnAgent` call becomes one
   `spawn_agent` card (type `codex-agent`, the spawn prompt as its task, a
-  `codex-cli:<model>` badge) the moment it starts. The child's own text,
+  `codex-cli:<model>` badge) the moment it starts. When Codex reports the
+  spawn only as an agent activity ping (`multi_agent` v1 on codex 0.154:
+  no `spawnAgent` item, just `agent /root/<name> started`), that ping opens
+  the card instead — named after the agent, with no task text, since the
+  prompt is not on the wire. The child's own text,
   reasoning, tool calls and token usage stream into that card; the card
   settles with the child's last message when Codex reports the agent
   `completed` (typically at the `wait` that collects it), or as an error

@@ -290,7 +290,7 @@ class CollabRouter:
         if isinstance(item, CollabDone):
             return self._done(item)
         assert isinstance(item, AgentPing)
-        return self._ping(item)
+        return self._ping(item, container)
 
     def _call(self, item: CollabCall, container: str | None) -> list[object]:
         if item.tool == SPAWN_AGENT:
@@ -318,6 +318,11 @@ class CollabRouter:
         return self._on_container(child.container, ActivityStart(child.stream_id, SPAWN_TOOL, args))
 
     def _spawn(self, item: CollabCall, container: str | None) -> list[object]:
+        if item.receivers and item.receivers[0] in self._by_thread:
+            # Its ``started`` ping got here first and already opened the card
+            # (a Codex that sends both): one agent, one card — the done's
+            # ``agentsStates`` still fold onto it by thread id.
+            return []
         args = {
             "type": "codex-agent",
             "task": item.prompt or "",
@@ -327,10 +332,35 @@ class CollabRouter:
             "thread_id": item.receivers[0] if item.receivers else None,
         }
         child = _Child(stream_id=item.item_id, container=container, args=args, model=item.model)
-        self._by_stream[item.item_id] = child
-        child.ledger_open = container is None
-        self._bind(child, item.receivers)
-        return self._on_container(container, ActivityStart(item.item_id, SPAWN_TOOL, args))
+        return self._open(child, item.receivers)
+
+    def _spawn_from_ping(self, item: AgentPing, container: str | None) -> list[object]:
+        """Codex 0.154 (``multi_agent`` v1) reports a ``spawn_agent`` call as
+        nothing but a ``subAgentActivity`` ``started`` ping keyed by the call
+        id — no ``spawnAgent`` collab item at all (the live probe on PR #128;
+        the ``wait`` that follows names no receivers and folds no states).
+        So the ping IS the spawn: open the card on it, named from
+        ``agentPath`` (the prompt is not on the wire; the child's own thread
+        carries no ``userMessage`` either), on the parent's default model
+        until the child's first usage badges it."""
+        label = item.path.rsplit("/", 1)[-1] or item.path or None
+        args = {
+            "type": "codex-agent",
+            "task": "",
+            "description": label or "",
+            "model": None,
+            "backend": BACKEND,
+            "thread_id": item.thread_id,
+        }
+        child = _Child(stream_id=item.item_id, container=container, args=args, label=label)
+        return self._open(child, (item.thread_id,))
+
+    def _open(self, child: _Child, receivers: tuple[str, ...]) -> list[object]:
+        self._by_stream[child.stream_id] = child
+        child.ledger_open = child.container is None
+        self._bind(child, receivers)
+        start = ActivityStart(child.stream_id, SPAWN_TOOL, child.args)
+        return self._on_container(child.container, start)
 
     def _done(self, item: CollabDone) -> list[object]:
         out: list[object] = []
@@ -362,10 +392,12 @@ class CollabRouter:
             out.extend(self._forget(child))
         return out
 
-    def _ping(self, item: AgentPing) -> list[object]:
+    def _ping(self, item: AgentPing, container: str | None) -> list[object]:
         child = self._by_thread.get(item.thread_id)
         if child is None:
-            return []
+            if item.kind == "started" and item.thread_id:
+                return self._spawn_from_ping(item, container)
+            return []  # a ping for an agent nothing spawned: nothing to show
         if item.path and child.label is None:
             child.label = item.path.rsplit("/", 1)[-1] or item.path
         out = self._emit(child, Notice(f"agent {item.path or child.label} {item.kind}"))

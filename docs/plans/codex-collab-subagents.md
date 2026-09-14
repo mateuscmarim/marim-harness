@@ -103,6 +103,32 @@ resuming the child id (`thread/resume` attaches a listener without starting
 a turn) — the router below is unchanged either way; only the adoption call
 in `CodexServer` differs.
 
+**Task 0 result (2026-09-14, codex-cli 0.154.0, `multi_agent` stable/on,
+`multi_agent_v2` off, headless `auto`):** child traffic DOES fan out to the
+parent's client unsolicited — `turn/started`, `item/*` (`reasoning`,
+`agentMessage` + deltas, `commandExecution`), `thread/tokenUsage/updated`,
+`thread/status/changed`, `turn/completed`, all on the child's `threadId` —
+and before adoption every one of them logged as
+`codex notification 'item/started' for unknown thread 01a09db9-… dropped`
+(42 lines for one two-sentence review). Two surprises against the schema
+reading above: **no `thread/started` is sent for the child** (only for the
+threads marim starts itself), and **no `spawnAgent` collab item exists** —
+the spawn is reported as a `subAgentActivity` ping keyed by the tool-call id
+(`{"type":"subAgentActivity","id":"call_…","kind":"started",
+"agentThreadId":"01a09dbd-6068-…","agentPath":"/root/reviewer"}`), the
+`collabAgentToolCall` that follows is a `wait` with `receiverThreadIds: []`
+and `agentsStates: {}`, and completion is a second ping
+(`"kind":"completed"`, id `subagent-completed-<turnId>`). The router
+therefore opens the card on an unmapped `started` ping (`_spawn_from_ping`)
+and settles it on the `completed` one. A child's approval **does
+arrive under the child's `threadId`** (a second run had the agent write
+outside the workspace: `item/commandExecution/requestApproval` with
+`threadId` = its `agentThreadId`, `reason: "May I write hello to
+$HOME/… outside the workspace as requested?"`), and the adopted handle
+brokered it through the parent's `ApprovalBroker` (`auto` accepted, the
+file appeared) — §Design 1 as built; before adoption the request had no
+handle to reach.
+
 ## Design
 
 Five pieces, mirroring the claude-cli demux where the shapes already

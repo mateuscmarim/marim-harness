@@ -230,8 +230,9 @@ def test_agent_pings_are_notices_that_label_and_can_settle():
         Routed("k1", Notice("agent /root/reviewer completed"), None, None),
         ActivityEnd("k1", "looks fine", False),
     ]
-    # A ping for an unknown thread is dropped.
-    assert r.route_item(AgentPing("a3", "zz", "/root/x", "started")) == []
+    # A later ping for an unknown thread is dropped (a STARTED one is a spawn
+    # in its own right — see ``test_a_started_ping_for_an_unspawned_agent_…``).
+    assert r.route_item(AgentPing("a3", "zz", "/root/x", "interacted")) == []
 
 
 def test_thread_started_metadata_labels_the_child_either_order():
@@ -524,3 +525,85 @@ def test_a_gone_child_settles_and_forgets_its_own_nested_spawns():
     assert r.open_children == frozenset() and hooks.released == ["gg1", "g1", "c1"]
     # Trailing traffic for the forgotten threads is dropped, not rendered.
     assert r.route(*_child_msg("gg1", "m2", "late")) == []
+
+
+def test_a_started_ping_for_an_unspawned_agent_is_the_spawn():
+    """codex 0.154 (`multi_agent` v1) reports a spawn as nothing but a
+    ``subAgentActivity started`` ping keyed by the call id — no
+    ``spawnAgent`` item — followed by a ``wait`` naming no receivers and a
+    ``completed`` ping. The ping opens the card (named from ``agentPath``),
+    adopts the thread, and the completed ping settles it with the child's
+    last message."""
+    hooks = _Hooks()
+    r = hooks.router()
+    out = r.route_item(AgentPing("call_x", "c1", "/root/reviewer", "started"))
+    assert out == [
+        ActivityStart(
+            "call_x",
+            "spawn_agent",
+            {
+                "type": "codex-agent",
+                "task": "",
+                "description": "reviewer",
+                "model": None,
+                "backend": "codex-cli",
+                "thread_id": "c1",
+            },
+        )
+    ]
+    assert hooks.spawner == {"c1": "t1"} and r.label_for("c1") == "agent reviewer"
+    assert r.open_children == {"c1"}
+    # The wait names nobody: nothing to show, nothing to fold.
+    assert r.route_item(CollabCall("k2", "wait", (), None, None, None, {})) == []
+    assert r.route_item(_done("k2", "wait", ())) == []
+    assert r.route(*_child_msg("c1", "m1", "add() is correct.")) == [
+        Routed("call_x", TextDelta("m1", "add() is correct."), None, "codex-cli:default")
+    ]
+    out = r.route_item(AgentPing("subagent-completed-u1", "c1", "/root/reviewer", "completed"))
+    assert out == [
+        Routed("call_x", Notice("agent /root/reviewer completed"), None, None),
+        ActivityEnd("call_x", "add() is correct.", False),
+    ]
+    # Only a STARTED ping spawns; a stray completed/interacted one is still dropped.
+    assert r.route_item(AgentPing("a9", "zz", "/root/x", "completed")) == []
+    assert r.route_item(AgentPing("a9", "", "/root/x", "started")) == []
+
+
+def test_a_started_ping_on_a_child_stream_spawns_a_nested_card_there():
+    hooks = _Hooks()
+    r = hooks.router()
+    r.route_item(_spawn())
+    ping = {
+        "type": "subAgentActivity",
+        "id": "call_g",
+        "kind": "started",
+        "agentThreadId": "g1",
+        "agentPath": "/root/reviewer/digger",
+    }
+    [start] = r.route("item/started", {"threadId": "c1", "item": ping})
+    start = cast(Routed, start)
+    assert start.stream_id == "k1" and isinstance(start.item, ActivityStart)
+    assert start.item.item_id == "call_g" and start.item.args["description"] == "digger"
+    assert hooks.spawner == {"c1": "t1", "g1": "c1"} and r.open_children == {"c1", "g1"}
+    assert r.route(*_child_msg("g1", "m1", "deep")) == [
+        Routed("call_g", TextDelta("m1", "deep"), None, "codex-cli:default")
+    ]
+
+
+def test_a_spawn_item_after_its_started_ping_does_not_open_a_second_card():
+    """Should a Codex send both the ping and a ``spawnAgent`` item for one
+    agent, whichever lands first owns the card; the other adds nothing
+    (the spawn item's states still settle the ping's card by thread id)."""
+    hooks = _Hooks()
+    r = hooks.router()
+    [start] = r.route_item(AgentPing("call_x", "c1", "/root/reviewer", "started"))
+    assert cast(ActivityStart, start).item_id == "call_x"
+    assert r.route_item(_spawn("k1", ("c1",))) == [] and hooks.adopted == ["c1"]
+    r.route(*_child_msg("c1", "m1", "done"))
+    out = r.route_item(_done("k1", states={"c1": {"status": "completed"}}))
+    assert out == [ActivityEnd("call_x", "done", False)]
+    # The other order is the pre-existing path: the ping is a notice on k1.
+    r2 = _Hooks().router()
+    r2.route_item(_spawn())
+    [note] = r2.route_item(AgentPing("call_y", "c1", "/root/reviewer", "started"))
+    assert cast(Routed, note).stream_id == "k1"
