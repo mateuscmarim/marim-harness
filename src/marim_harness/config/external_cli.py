@@ -204,6 +204,10 @@ class ActivityLedger:
 
         return forward
 
+    def note_notice(self, notice) -> None:
+        """Record a display notice in the same order as prose and tool activity."""
+        self._record({"kind": "notice", "notice": notice.to_payload()})
+
     def note_activity(self, events: list) -> None:
         """Record the out-of-band tool events a provider built for the UI
         side-channel (the same ``FunctionToolCallEvent`` /
