@@ -13,10 +13,12 @@ backend, and the operational knobs. Keyboard/TUI details live in
 [guides/tui.md](tui.md); the full env-var tables live in
 [reference/configuration.md](../reference/configuration.md).
 
-> Provider note: under the `claude-cli` *main-loop* provider, marim is a
-> launcher and none of this applies to the main turn — Claude Code runs its
-> own Agent/Task sub-agents, which marim demuxes out of the stream and renders
-> in the sub-agents screen. `backend: claude-cli` on an individual *spec*
+> Provider note: under the `claude-cli` and `codex-cli` *main-loop*
+> providers, marim is a launcher and none of this applies to the main turn —
+> Claude Code runs its own Agent/Task sub-agents and Codex its own collab
+> agents, which marim demuxes out of the stream and renders in the
+> sub-agents screen (see [Codex-side sub-agents](#codex-side-sub-agents)).
+> `backend: claude-cli` / `backend: codex-cli` on an individual *spec*
 > (below) is a different, fully supported thing.
 
 ## How the model spawns them
@@ -276,6 +278,67 @@ turn.
   is noted in the output anyway, as with `claude-cli`.
 
 See [`docs/examples/agents/codex-worker.md`](../examples/agents/codex-worker.md).
+
+### Codex-side sub-agents
+
+Codex can spawn agents of its own (its *collab* tools: `spawn_agent`,
+`send_input`, `wait`, `close_agent`), each a separate thread on the same
+app-server. marim renders them as first-class `spawn_agent` cards, the way
+Claude's Agent/Task sub-agents render under `claude-cli` — for the
+`codex-cli` main-loop provider and for a `backend: codex-cli` spawn alike
+(where the card nests under the spawn's own card, like a native nested
+spawn).
+
+- **What the card shows.** Codex's `spawnAgent` call becomes one
+  `spawn_agent` card (type `codex-agent`, the spawn prompt as its task, a
+  `codex-cli:<model>` badge) the moment it starts. When Codex reports the
+  spawn only as an agent activity ping (`multi_agent` v1 on codex 0.154:
+  no `spawnAgent` item, just `agent /root/<name> started`), that ping opens
+  the card instead — named after the agent, with no task text, since the
+  prompt is not on the wire. The child's own text,
+  reasoning, tool calls and token usage stream into that card; the card
+  settles with the child's last message when Codex reports the agent
+  `completed` (typically at the `wait` that collects it), or as an error
+  when the agent failed or was never found.
+- **Follow-ups are notices.** `send_input`, `resume_agent`, `wait` and
+  `close_agent` on an agent show as a status line on its card (with the
+  message sent, for `send_input`), never as a second card; so do Codex's
+  own agent activity pings (`agent <path> started/completed`). A follow-up
+  on an agent that already settled puts it back to work: the card flips
+  back to running (the same card, never a second one), shows the notice,
+  and the persisted call is re-opened (`resumed`) so the next completion
+  is recorded again.
+- **Approvals go through the panel.** A child's command or edit approval
+  reaches marim's approval panel exactly like the parent's, labelled with
+  the agent's nickname when Codex assigned one (`agent scout`, or
+  `worker / agent scout` inside a spawn named `worker`);
+  under `plan` it is declined without a prompt. The child's sandbox is
+  whatever Codex gave it — marim brokers the request, it does not narrow
+  the child's reach.
+- **Across turns.** Codex keeps a spawned agent alive after the parent's
+  turn ends (a later turn can `wait` on it). The card stays open on screen
+  and settles when a later turn collects the agent; in the persisted
+  history the `spawn_agent` call is closed with a `running (detached;
+  continues next turn)` return at the end of each turn, so a history never
+  ends on an unanswered call. A `backend: codex-cli` *spawn* is one turn,
+  so its children die with its thread: their cards close with `still
+  running when the spawn finished (thread closed)` (`… was aborted …` when
+  the spawn itself failed mid-turn). Likewise an agent that is shut down
+  takes its own sub-agents with it: their nested cards close with `still
+  running when the agent that spawned it went away (thread closed)`.
+- **Persistence.** The spawn call and its result persist with the turn
+  (`GET .../history`, TUI replay, provider switch) as an ordinary
+  `spawn_agent` tool call. A `backend: codex-cli` spawn also persists each
+  child's transcript in its own sidecar (keyed by the card id) so the
+  sub-agents screen replays them after a resume; the main-loop provider
+  does not yet keep child transcripts (parity with `claude-cli`).
+- **Resume caveat.** A session resumed with an agent still open shows the
+  agent's card again only when Codex sends traffic for it; a child Codex
+  no longer knows (its thread was closed with the app-server) settles as
+  `notFound` on the next follow-up.
+
+Attached clients see all of this over the wire as the usual `subagent.*`
+events (see the serve reference).
 
 ## Tiered CLI workers
 

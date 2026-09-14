@@ -232,7 +232,12 @@ Requires `codex login` (marim never handles the OpenAI credentials) and
 `/steer` forwards to the running turn; `/compact` also compacts the Codex
 thread. The thread id is saved with the session, so `--resume` continues the
 same Codex thread; if Codex no longer has it, a fresh thread starts from the
-saved history.
+saved history. Codex's own sub-agents (its collab `spawn_agent` tool) are
+first-class `spawn_agent` cards in the sub-agents screen, their approval
+requests brokered through the same panel labelled with the agent's name —
+see [Codex-side sub-agents](../guides/subagents.md#codex-side-sub-agents).
+(Up to 0.7.2 they rendered as opaque `codex_agent` tool cards; histories
+written then still expand fine, the name is just no longer produced.)
 
 Per-turn usage on a resumed thread is seeded from Codex's own
 `thread/tokenUsage/updated` notification (its cumulative `total` minus the

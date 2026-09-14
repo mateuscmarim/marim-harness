@@ -232,3 +232,31 @@ async def test_rearm_spinner_is_a_noop_when_timer_still_running():
         card.rearm_spinner()
 
         assert card._spinner_timer is original  # untouched — no second timer
+
+
+@pytest.mark.anyio
+async def test_reopen_flips_a_settled_card_live_again_minus_the_idle_gap():
+    """A Codex collab follow-up puts a finished child back to work: its card
+    goes back to running (spinner re-armed, report cleared) and its duration
+    resumes from where it froze rather than counting the idle gap. A card
+    that never settled is left alone."""
+    app = _CardHarness()
+    async with app.run_test() as pilot:
+        card = app.query_one(SubAgentWidget)
+        await pilot.pause()
+        untouched = (card.status, card._t0, card._spinner_timer)
+        card.reopen()  # not settled: nothing to do
+        assert (card.status, card._t0, card._spinner_timer) == untouched
+
+        card.finish("half done", status="done")
+        await pilot.pause()
+        frozen_t0, frozen_end = card._t0, card._t_end
+        assert frozen_end is not None and card._spinner_timer._task is None
+        card._t_end = frozen_end - 30.0  # pretend it settled 30 s ago
+        card._t0 = frozen_t0 - 30.0
+
+        card.reopen()
+        assert card.status == "pending" and card.report == "" and card._t_end is None
+        assert card._spinner_timer._task is not None  # running again
+        # Shifted forward by the 30 s gap: the duration continues from the freeze.
+        assert abs(card._t0 - frozen_t0) < 1.0

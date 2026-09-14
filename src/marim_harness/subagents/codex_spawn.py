@@ -22,35 +22,32 @@ MCP grants are NOT forwarded (Codex has its own MCP config); a non-empty
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-    ToolCallPart,
-    ToolReturnPart,
-)
 from pydantic_ai.usage import RunUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
+from ..codex.collab import (
+    CLOSED_RESULT,
+    ChildSinks,
+    ChildStreams,
+    CollabRouter,
+    LedgerOnly,
+    Routed,
+    router_for,
+)
 from ..codex.env import CODEX_MODEL_ENV, INSTALL_HINT, CodexUnavailable, codex_available
 from ..codex.server import CodexServer, ThreadHandle, ThreadOptions, TurnOptions, shared_server
-from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
+from ..codex.transcript import ItemTranscript
 from ..codex.turn import TurnState, finish_turn, text_input, turn_events
-from ..config.codex_cli_model import activity_events, effort_for
+from ..config.codex_cli_model import effort_for
 from ..config.external_cli import CliModelError
 from ..runtime.permissions import Mode
 from ..thinking import resolve_thinking
@@ -70,108 +67,85 @@ logger = logging.getLogger(__name__)
 BACKEND = "codex-cli"
 
 
+# What a still-open nested card reads when the spawn's turn ended abnormally
+# (vs. ``CLOSED_RESULT`` for a turn that ran to completion).
+ABORTED_RESULT = "still running when the spawn was aborted (thread closed)"
+
+
 @dataclass
 class CodexRun:
     output: str
     transcript: list[Any]
     usage: RunUsage
     thread_id: str | None
+    # Codex-side sub-agents (collab ``spawnAgent``), each keyed by the stream
+    # id its nested card streamed under — the codex analog of the claude-cli
+    # demux's ``child_transcripts``; see ``codex/collab.py``.
+    child_transcripts: dict[str, list[Any]] = field(default_factory=dict)
 
 
 @dataclass
-class _Transcript:
-    """Folds translated Codex items into (a) pydantic-ai stream events for the
-    sub-agents screen and (b) a pydantic-ai message list for the sidecar —
-    the codex analog of ``cli_backend.CliStreamTranslator``. The spawn's
-    *output* is the text of the LAST agent message (with ``outputSchema``
-    that is the JSON document)."""
+class _SpawnFeed:
+    """One spawn turn's item consumer: the spawn's own items fold into its
+    transcript (checkpointed as it grows, events streamed to its card); its
+    Codex-side children's traffic (``Routed``) goes to their nested cards,
+    and ``drain`` settles those cards however the turn ends."""
 
-    messages: list[Any] = field(default_factory=list)
-    _index: int = 0
-    _texts: dict[str, list[str]] = field(default_factory=dict)
-    _open_text: str | None = None  # item id of the TextPart being streamed
-    _call_names: dict[str, str] = field(default_factory=dict)
-    # The backing list for the in-progress ModelResponse's parts. `ModelResponse.parts`
-    # is typed `Sequence[ModelResponsePart]` (pyright rejects `.append` on it), so the
-    # mutable list lives here and is handed to ModelResponse by reference — same object,
-    # so appending here is visible through `resp.parts` too.
-    _parts: list[Any] = field(default_factory=list)
+    tx: ItemTranscript
+    children: ChildStreams
+    router: CollabRouter
+    stream_id: str | None
+    on_event: Callable[[str, object, object], Awaitable[None]] | None
+    checkpoint: Callable[[list, str | None], None] | None
+    _ckpt_len: int = 0
 
-    def _response(self) -> ModelResponse:
-        if self.messages and isinstance(self.messages[-1], ModelResponse):
-            return self.messages[-1]
-        self._parts = []
-        resp = ModelResponse(parts=self._parts)
-        self.messages.append(resp)
-        return resp
+    async def drain(self, items: AsyncIterator[object]) -> None:
+        """Consume the turn's items. A child still running when the spawn's
+        turn ends dies with the thread (dropped by the caller, cascading to
+        its children), so its card is settled for real — on the normal end
+        AND when the turn blows up (app-server exit, idle timeout, a sink
+        raising, cancellation): the nested card must not spin forever and
+        the checkpointed transcript must not end on an unanswered
+        ``spawn_agent`` call. A close that fails after the turn already
+        failed must not mask the turn's own error."""
+        finished = False
+        try:
+            async for item in items:
+                await self.consume(item)
+            finished = True
+        finally:
+            result = CLOSED_RESULT if finished else ABORTED_RESULT
+            with contextlib.suppress(Exception):
+                for item in self.router.close_open(result):
+                    await self.consume(item)
 
-    def feed(self, item: object) -> list[Any]:
-        if isinstance(item, TextDelta):
-            return self._text(item)
-        if isinstance(item, ThinkingDelta):
-            return self._thinking(item)
-        if isinstance(item, ActivityStart):
-            self._open_text = None
-            self._call_names[item.item_id] = item.tool_name
-            self._response()
-            self._parts.append(
-                ToolCallPart(tool_name=item.tool_name, args=item.args, tool_call_id=item.item_id)
-            )
-            return activity_events(item)
-        if isinstance(item, ActivityEnd):
-            self._open_text = None
-            self.messages.append(
-                ModelRequest(
-                    parts=[
-                        ToolReturnPart(
-                            tool_name=self._call_names.get(item.item_id, "tool"),
-                            content=item.content,
-                            tool_call_id=item.item_id,
-                            timestamp=datetime.now(tz=timezone.utc),
-                        )
-                    ]
-                )
-            )
-            return activity_events(item)
-        if isinstance(item, Notice):
-            logger.info("codex spawn: %s", item.message)
-        return []
+    async def consume(self, item: object) -> None:
+        if isinstance(item, Routed):
+            await self.children.deliver(item)
+            return
+        if isinstance(item, LedgerOnly):
+            # A settled child put back to work (a same-turn ``sendInput``):
+            # the re-opened ``spawn_agent`` call goes into the transcript —
+            # the spawn's persisted record, where the main-loop model has its
+            # ledger — so the settle that follows has a call to answer; the
+            # live nested card already exists, so no event is streamed.
+            self.tx.feed(item.item)
+            self._checkpoint()
+            return
+        events = self.tx.feed(item)
+        self._checkpoint()
+        for event in events:
+            if self.stream_id and self.on_event is not None:
+                await self.on_event(self.stream_id, event, None)
 
-    def _text(self, item: TextDelta) -> list[Any]:
-        events: list[Any] = []
-        self._response()
-        if self._open_text != item.item_id:
-            self._open_text = item.item_id
-            self._index += 1
-            self._parts.append(TextPart(content=""))
-            events.append(PartStartEvent(index=self._index, part=TextPart(content="")))
-        part = self._parts[-1]
-        assert isinstance(part, TextPart)
-        part.content += item.delta
-        self._texts.setdefault(item.item_id, []).append(item.delta)
-        events.append(
-            PartDeltaEvent(index=self._index, delta=TextPartDelta(content_delta=item.delta))
-        )
-        return events
-
-    def _thinking(self, item: ThinkingDelta) -> list[Any]:
-        self._response()
-        self._open_text = None
-        last = self._parts[-1] if self._parts else None
-        if isinstance(last, ThinkingPart):
-            last.content += item.delta
-            return [
-                PartDeltaEvent(index=self._index, delta=ThinkingPartDelta(content_delta=item.delta))
-            ]
-        self._index += 1
-        self._parts.append(ThinkingPart(content=item.delta))
-        return [PartStartEvent(index=self._index, part=ThinkingPart(content=item.delta))]
-
-    def output(self) -> str:
-        if not self._texts:
-            return ""
-        last_id = next(reversed(self._texts))
-        return "".join(self._texts[last_id])
+    def _checkpoint(self) -> None:
+        # Checkpoint whenever the transcript grows (mirrors
+        # cli_backend._consume's growth-gated checkpoint) so a cancellation
+        # mid-turn loses at most the segment since the last item, not the
+        # whole run.
+        if self.checkpoint is not None and len(self.tx.messages) != self._ckpt_len:
+            self._ckpt_len = len(self.tx.messages)
+            self.checkpoint(self.tx.messages, None)
 
 
 @dataclass
@@ -328,7 +302,7 @@ class CodexSpawnOrchestrator:
                 transcript=full_transcript,
                 usage=result.usage,
                 final_meta=final_meta,
-                child_transcripts={},
+                child_transcripts=result.child_transcripts,
             )
 
         return await self._lifecycle(
@@ -436,9 +410,23 @@ class CodexSpawnOrchestrator:
             models = await server.list_models()
         except Exception:  # best-effort: effort degrades to `high` for xhigh
             models = []
-        state = TurnState()
-        tx = _Transcript()
-        last_ckpt_len = 0
+        # Codex-side sub-agents: the spawn's thread owns a collab router, so a
+        # ``spawnAgent`` becomes a nested ``spawn_agent`` card under this
+        # spawn's card and the child's own traffic streams into that nested
+        # card through the same four sinks (``Routed``). The child's approval
+        # requests reach ``broker`` (an adopted thread shares its parent's
+        # handler), labelled with the agent's name.
+        router = router_for(server, handle)
+        broker.label_for = router.label_for
+        state = TurnState(router=router)
+        feed = _SpawnFeed(
+            ItemTranscript(),
+            ChildStreams(self._child_sinks()),
+            router,
+            stream_id,
+            cbs.on_subagent_event,
+            request.checkpoint,
+        )
         try:
             turn_id = await server.start_turn(
                 handle,
@@ -451,18 +439,7 @@ class CodexSpawnOrchestrator:
                     output_schema=request.output_schema,
                 ),
             )
-            async for item in turn_events(server, handle, state, turn_id=turn_id):
-                events = tx.feed(item)
-                # Checkpoint whenever the transcript grows (mirrors
-                # cli_backend._consume's growth-gated checkpoint) so a
-                # cancellation mid-turn loses at most the segment since the
-                # last item, not the whole run.
-                if request.checkpoint is not None and len(tx.messages) != last_ckpt_len:
-                    last_ckpt_len = len(tx.messages)
-                    request.checkpoint(tx.messages, None)
-                for event in events:
-                    if stream_id and cbs.on_subagent_event is not None:
-                        await cbs.on_subagent_event(stream_id, event, None)
+            await feed.drain(turn_events(server, handle, state, turn_id=turn_id))
             req_usage = finish_turn(handle, state)
         finally:
             server.drop_thread(handle)
@@ -474,7 +451,20 @@ class CodexSpawnOrchestrator:
         if stream_id and cbs.on_subagent_usage is not None:
             await cbs.on_subagent_usage(stream_id, usage)
         return CodexRun(
-            output=tx.output(), transcript=tx.messages, usage=usage, thread_id=handle.thread_id
+            output=feed.tx.output(),
+            transcript=feed.tx.messages,
+            usage=usage,
+            thread_id=handle.thread_id,
+            child_transcripts=feed.children.transcripts,
+        )
+
+    def _child_sinks(self) -> ChildSinks:
+        cbs = self.deps.ui
+        return ChildSinks(
+            on_event=cbs.on_subagent_event,
+            on_model=cbs.on_subagent_model,
+            on_notice=cbs.on_subagent_notice,
+            on_usage=cbs.on_subagent_usage,
         )
 
     # --- resume -----------------------------------------------------------------------

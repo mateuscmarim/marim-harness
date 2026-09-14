@@ -1050,3 +1050,345 @@ async def test_stream_records_tool_activity_ledger_for_persistence(tmp_path):
     assert ledger[2]["content"] == "nope\n[exit 1]" and ledger[2]["outcome"] == "failed"
     assert ledger[3] == {"kind": "part", "index": 1}
     assert folded.provider_details is None
+
+
+# --- Codex-side sub-agents (codex/collab.py) ------------------------------------
+def _spawn_item(status: str = "inProgress", **extra) -> dict:
+    return {
+        "id": "k1",
+        "type": "collabAgentToolCall",
+        "tool": "spawnAgent",
+        "prompt": "review the diff",
+        "model": "gpt-5.4-mini",
+        "receiverThreadIds": ["child-1"],
+        "agentsStates": {"child-1": {"status": "running"}},
+        "status": status,
+        **extra,
+    }
+
+
+def _collab_turn(*, settle: bool = True) -> list[dict]:
+    """The parent spawns an agent, the child (thread ``child-1``, a thread
+    the fake never registered — exactly what Codex does) streams text and
+    runs a command, then a ``wait`` reports it completed."""
+    child_cmd = {"id": "cc1", "type": "commandExecution", "command": "ls", "cwd": "/w"}
+    steps = [
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "Spawning. "}},
+        {"notify": "item/started", "params": {"item": _spawn_item()}},
+        {"notify": "item/completed", "params": {"item": _spawn_item("completed")}},
+        {
+            "notify": "thread/started",
+            "params": {
+                "thread": {"id": "child-1", "parentThreadId": "$THREAD", "agentNickname": "scout"}
+            },
+        },
+        {
+            "notify": "item/agentMessage/delta",
+            "params": {"threadId": "child-1", "itemId": "cm1", "delta": "child here"},
+        },
+        {"notify": "item/started", "params": {"threadId": "child-1", "item": child_cmd}},
+        {
+            "notify": "item/completed",
+            "params": {
+                "threadId": "child-1",
+                "item": {
+                    **child_cmd,
+                    "status": "completed",
+                    "exitCode": 0,
+                    "aggregatedOutput": "a b",
+                },
+            },
+        },
+        {
+            "notify": "thread/tokenUsage/updated",
+            "params": {
+                "threadId": "child-1",
+                "tokenUsage": {
+                    "total": {"inputTokens": 40, "outputTokens": 8},
+                    "last": {"inputTokens": 40, "outputTokens": 8},
+                },
+            },
+        },
+        {
+            "notify": "turn/completed",
+            "params": {"threadId": "child-1", "turn": {"id": "child-turn", "status": "completed"}},
+        },
+    ]
+    if settle:
+        wait = {
+            "id": "k2",
+            "type": "collabAgentToolCall",
+            "tool": "wait",
+            "receiverThreadIds": ["child-1"],
+        }
+        steps += [
+            {"notify": "item/started", "params": {"item": {**wait, "status": "inProgress"}}},
+            {
+                "notify": "item/completed",
+                "params": {
+                    "item": {
+                        **wait,
+                        "status": "completed",
+                        "agentsStates": {"child-1": {"status": "completed"}},
+                    }
+                },
+            },
+        ]
+    steps.append({"notify": "item/agentMessage/delta", "params": {"itemId": "m2", "delta": "done"}})
+    return steps
+
+
+class _Screen:
+    """The sub-agents screen's four sinks, recorded."""
+
+    def __init__(self) -> None:
+        self.cards: list = []  # on_activity events (the parent's cards)
+        self.events: list[tuple[str, object, object]] = []
+        self.models: list[tuple[str, str]] = []
+        self.notices: list[tuple[str, str]] = []
+        self.usage: list[tuple[str, object]] = []
+
+    def bind(self, m: CodexCliModel) -> None:
+        async def on_activity(events):
+            self.cards.extend(events)
+
+        async def on_event(sid, ev, usage):
+            self.events.append((sid, ev, usage))
+
+        async def on_model(sid, model):
+            self.models.append((sid, model))
+
+        async def on_notice(sid, text):
+            self.notices.append((sid, text))
+
+        async def on_usage(sid, usage):
+            self.usage.append((sid, usage))
+
+        m.on_activity = on_activity
+        m.on_subagent = on_event
+        m.on_subagent_model = on_model
+        m.on_subagent_notice = on_notice
+        m.on_subagent_usage = on_usage
+
+
+async def _drain(m: CodexCliModel, text: str = "go"):
+    async with m.request_stream(_msgs(text), None, PARAMS) as stream:
+        async for _ in stream:
+            pass
+        return stream.get()
+
+
+async def test_stream_renders_a_codex_spawn_as_a_first_class_card(tmp_path):
+    """A ``spawnAgent`` becomes ONE ``spawn_agent`` card on the parent's
+    activity channel; the child's own traffic (an unregistered thread the
+    server would otherwise drop) streams into that card via the sub-agents
+    sinks, and the ``wait`` that finds it completed settles the card with the
+    child's last message."""
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+    from marim_harness.runtime.cli_activity import expand_cli_activity
+
+    m = _model(tmp_path, {"turns": [_collab_turn()]})
+    screen = _Screen()
+    screen.bind(m)
+    try:
+        resp = await _drain(m)
+    finally:
+        await m.aclose()
+    # The parent's channel: exactly one spawn_agent call + its return.
+    assert [type(e) for e in screen.cards] == [FunctionToolCallEvent, FunctionToolResultEvent]
+    call, result = screen.cards
+    assert call.part.tool_name == "spawn_agent" and call.part.tool_call_id == "k1"
+    assert call.part.args["type"] == "codex-agent" and call.part.args["task"] == "review the diff"
+    assert call.part.args["backend"] == "codex-cli" and call.part.args["thread_id"] == "child-1"
+    assert result.part.content == "child here" and result.part.tool_call_id == "k1"
+    # The child's stream: model label once, text + its own tool card, usage.
+    assert screen.models == [("k1", "codex-cli:gpt-5.4-mini")]
+    kinds = [type(ev).__name__ for sid, ev, _ in screen.events if sid == "k1"]
+    assert kinds == [
+        "PartStartEvent",
+        "PartDeltaEvent",
+        "FunctionToolCallEvent",
+        "FunctionToolResultEvent",
+    ]
+    assert screen.usage and screen.usage[0][0] == "k1"
+    assert screen.usage[0][1].input_tokens == 40 and screen.usage[0][1].output_tokens == 8
+    assert ("k1", "wait") in screen.notices
+    # The child's turn/completed did NOT end the parent's turn: its prose is whole.
+    assert "".join(p.content for p in resp.parts if isinstance(p, TextPart)) == "Spawning. done"
+    # Persisted: the ledger expands to a real spawn_agent call + return, once.
+    assert resp.provider_details is not None
+    ledger = resp.provider_details[CLI_ACTIVITY_KEY]
+    calls = [e for e in ledger if e["kind"] == "call"]
+    assert [c["name"] for c in calls] == ["spawn_agent"]
+    expanded = expand_cli_activity([resp])
+    tool_parts = [
+        p for msg in expanded for p in msg.parts if p.part_kind in ("tool-call", "tool-return")
+    ]
+    assert [p.part_kind for p in tool_parts] == ["tool-call", "tool-return"]
+    assert tool_parts[1].content == "child here"
+
+
+async def test_child_still_running_at_turn_end_is_sealed_in_the_ledger_only(tmp_path):
+    """The spawn card stays open on screen (Codex keeps the agent alive for
+    a later ``wait``), but the persisted ledger gets a placeholder return so
+    the history never ends with an unanswered spawn_agent call; the next
+    turn re-opens it (``resumed``) and settles it for real."""
+    from marim_harness.codex.collab import DETACHED_RESULT
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+
+    wait = {
+        "id": "k2",
+        "type": "collabAgentToolCall",
+        "tool": "wait",
+        "receiverThreadIds": ["child-1"],
+    }
+    second = [
+        {
+            "notify": "item/agentMessage/delta",
+            "params": {"threadId": "child-1", "itemId": "cm2", "delta": "final answer"},
+        },
+        {"notify": "item/started", "params": {"item": {**wait, "status": "inProgress"}}},
+        {
+            "notify": "item/completed",
+            "params": {
+                "item": {
+                    **wait,
+                    "status": "completed",
+                    "agentsStates": {"child-1": {"status": "completed"}},
+                }
+            },
+        },
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m3", "delta": "ok"}},
+    ]
+    m = _model(tmp_path, {"turns": [_collab_turn(settle=False), second]})
+    screen = _Screen()
+    screen.bind(m)
+    try:
+        first = await _drain(m)
+        assert m._router is not None and m._router.open_children == {"child-1"}
+        cards_after_first = len(screen.cards)
+        resp = await _drain(m, "and?")
+    finally:
+        await m.aclose()
+    # Turn 1: the live card got only the call; the ledger got call + detached return.
+    assert cards_after_first == 1
+    assert first.provider_details is not None
+    ledger1 = [e for e in first.provider_details[CLI_ACTIVITY_KEY] if e["kind"] != "part"]
+    assert [e["kind"] for e in ledger1] == ["call", "result"]
+    assert ledger1[1]["content"] == DETACHED_RESULT
+    # Turn 2: the child's traffic re-opened the ledger entry (resumed) and the
+    # wait settled it; the live card got its one real return.
+    assert resp.provider_details is not None
+    ledger2 = [e for e in resp.provider_details[CLI_ACTIVITY_KEY] if e["kind"] != "part"]
+    assert [e["kind"] for e in ledger2] == ["call", "result"]
+    assert ledger2[0]["args"]["resumed"] is True and ledger2[1]["content"] == "final answer"
+    assert [type(e) for e in screen.cards] == [FunctionToolCallEvent, FunctionToolResultEvent]
+    assert screen.cards[1].part.content == "final answer"
+
+
+async def test_child_approval_is_brokered_with_the_agents_label(tmp_path):
+    """A child's approval request reaches the parent's broker (shared
+    handler) and the panel entry names the agent."""
+    turn = [
+        {"notify": "item/started", "params": {"item": _spawn_item()}},
+        {"notify": "item/completed", "params": {"item": _spawn_item("completed")}},
+        {
+            "notify": "thread/started",
+            "params": {
+                "thread": {"id": "child-1", "parentThreadId": "$THREAD", "agentNickname": "scout"}
+            },
+        },
+        # No pause: the child may well ask before the consumer has dequeued
+        # the announcement (the fake fires in a burst) — the label then comes
+        # from what the server recorded when it adopted the child.
+        {
+            "request": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "child-1",
+                "itemId": "cc9",
+                "command": "rm -rf build",
+                "cwd": "/w",
+            },
+            "record_as": "child_approval",
+        },
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "ok"}},
+    ]
+    m = _model(tmp_path, {"turns": [turn]}, mode=Mode.ask)
+    asked: list = []
+
+    async def approver(call):
+        asked.append(call)
+        return True
+
+    m.request_approval = approver
+    try:
+        await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert [c.tool_name for c in asked] == ["bash"]
+    assert asked[0].args["label"] == "agent scout"
+    assert any(
+        r.get("child_approval") == {"decision": "accept"} for r in read_request_log(tmp_path)
+    )
+
+
+async def test_child_approval_in_plan_mode_is_declined_without_asking(tmp_path):
+    turn = [
+        {"notify": "item/started", "params": {"item": _spawn_item()}},
+        {
+            "notify": "thread/started",
+            "params": {"thread": {"id": "child-1", "parentThreadId": "$THREAD"}},
+        },
+        {
+            "request": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "child-1",
+                "itemId": "cc9",
+                "command": "rm -rf build",
+                "cwd": "/w",
+            },
+            "record_as": "child_approval",
+        },
+        {"notify": "item/agentMessage/delta", "params": {"itemId": "m1", "delta": "ok"}},
+    ]
+    m = _model(tmp_path, {"turns": [turn]}, mode=Mode.plan)
+    asked: list = []
+
+    async def approver(call):
+        asked.append(call)
+        return True
+
+    m.request_approval = approver
+    try:
+        await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    assert asked == []
+    assert any(
+        r.get("child_approval") == {"decision": "decline"} for r in read_request_log(tmp_path)
+    )
+
+
+async def test_headless_request_folds_the_spawn_and_ignores_child_traffic(tmp_path):
+    m = _model(tmp_path, {"turns": [_collab_turn()]})
+    try:
+        resp = await m.request(_msgs(), None, PARAMS)
+    finally:
+        await m.aclose()
+    text = resp.parts[0].content
+    assert "▸ spawn_agent review the diff" in text
+    assert "child here" not in text and "▸ bash" not in text
+
+
+async def test_dropping_the_thread_drops_its_adopted_children(tmp_path):
+    m = _model(tmp_path, {"turns": [_collab_turn(settle=False)]})
+    screen = _Screen()
+    screen.bind(m)
+    server = m._server
+    assert server is not None
+    try:
+        await _drain(m)
+        assert "child-1" in server.thread_ids
+    finally:
+        await m.aclose()
+    assert "child-1" not in server.thread_ids and m._router is None

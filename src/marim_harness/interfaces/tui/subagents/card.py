@@ -436,6 +436,26 @@ class SubAgentWidget(Vertical):
         if self._spinner_timer is not None:
             self._spinner_timer.stop()
 
+    def reopen(self) -> None:
+        """The agent behind a settled card is back at work — a Codex parent
+        sent a finished collab child more input, which re-fires the card's
+        ``spawn_agent`` call with ``resumed`` (live and in the persisted
+        history alike). Flip the card live again rather than mounting a
+        second one; the duration picks up where it froze, since the gap
+        between the settle and the follow-up is not time the agent spent
+        working. A card that never settled is left alone."""
+        if self._t_end is None:
+            return
+        self._t0 += time.monotonic() - self._t_end
+        self._t_end = None
+        self.status = "pending"
+        self.report = ""
+        self._fail_reason = self._full_reason = ""
+        self._expanded = False
+        self.rearm_spinner()
+        self._paint_header()
+        self._paint_activity()
+
     def rearm_spinner(self) -> None:
         """Restart the spinner timer if ``finish()`` previously stopped it.
         Called by the renderer's ``adopt_resumed_card`` when a settled card

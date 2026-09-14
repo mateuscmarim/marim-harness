@@ -63,7 +63,11 @@ Codex runs its own tools in its own sandbox, but its approval and
 user-input requests are brokered back through marim's approval panel /
 ask-user flow (`codex/approvals.py`), so `auto`/`ask`/`plan` keep their
 meaning. The thread id persists on the session (`SessionStore.cli_thread_id`)
-and resumes via `thread/resume`.
+and resumes via `thread/resume`. Codex's own collab sub-agents are adopted as
+child threads of the parent's handle (`CodexServer.adopt_thread`; same queue,
+same broker) and `codex/collab.py`'s `CollabRouter` renders them as first-class
+`spawn_agent` cards — the Codex counterpart of the claude-cli demux — for
+both the main-loop provider and `backend: codex-cli` spawns.
 
 ## Architecture
 

@@ -252,3 +252,29 @@ async def test_handle_elicitation_declines_and_unknown_raises(tmp_path):
     with pytest.raises(RpcError) as exc:
         await broker.handle("item/somethingNew/requestApproval", {})
     assert exc.value.code == -32601
+
+
+async def test_label_for_prefixes_a_childs_request_with_its_agent_name(tmp_path):
+    """An adopted collab child shares the parent's broker; ``label_for``
+    (set by the thread's owner from the collab router) names the agent on
+    the panel entry — joined to a spawn's own label when there is one."""
+    seen = []
+
+    async def approver(call):
+        seen.append(call)
+        return True
+
+    broker = _broker(Mode.ask, tmp_path, request_approval=approver, label="worker")
+    broker.label_for = lambda tid: "agent scout" if tid == "c1" else None
+    await broker.handle(
+        "item/commandExecution/requestApproval", {**_cmd("rm -rf build"), "threadId": "c1"}
+    )
+    await broker.handle(
+        "item/commandExecution/requestApproval", {**_cmd("rm -rf build"), "threadId": "t1"}
+    )
+    assert seen[0].args["label"] == "worker / agent scout"
+    assert seen[1].args["label"] == "worker"
+    plain = _broker(Mode.ask, tmp_path, request_approval=approver)
+    plain.label_for = lambda tid: "agent scout"
+    await plain.handle("item/commandExecution/requestApproval", {**_cmd("x"), "threadId": "c1"})
+    assert seen[2].args["label"] == "agent scout"

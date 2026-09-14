@@ -1091,6 +1091,8 @@ class Harness:
         model.on_activity = self.deps.ui.on_cli_activity
         model.on_subagent = self.deps.ui.on_subagent_event
         model.on_subagent_model = self.deps.ui.on_subagent_model
+        model.on_subagent_notice = self.deps.ui.on_subagent_notice
+        model.on_subagent_usage = self.deps.ui.on_subagent_usage
         model.request_approval = self.deps.ui.request_approval
         model.ask_user = self.deps.ui.ask_user
         services = self.deps.services

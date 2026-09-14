@@ -87,3 +87,42 @@ async def test_turn_without_usage_leaves_the_context_unknown():
     state = TurnState()
     _ = [item async for item in turn_events(server, handle, state, turn_id="turn-1")]
     assert state.context is None
+
+
+async def test_router_routes_child_traffic_and_turns_collab_items_into_cards():
+    """With ``state.router`` set, a child's notifications (same queue — the
+    thread was adopted) come out as ``Routed`` wrappers keyed by the spawn
+    card, the parent's ``spawnAgent`` becomes a bare ``spawn_agent``
+    ``ActivityStart``, and a child's ``turn/completed`` never ends the
+    PARENT turn (and is not the parent's stale completion either)."""
+    from marim_harness.codex.collab import CollabRouter, Routed
+    from marim_harness.codex.translate import ActivityStart, TextDelta
+
+    server = CodexServer(binary="unused", timeout=2.0)
+    handle = _handle()
+    handle.current_turn_id = "turn-1"
+    spawn = {
+        "type": "collabAgentToolCall",
+        "id": "k1",
+        "tool": "spawnAgent",
+        "prompt": "look",
+        "receiverThreadIds": ["c1"],
+        "status": "inProgress",
+    }
+    child_text = {"threadId": "c1", "itemId": "m", "delta": "child"}
+    child_done = {"threadId": "c1", "turn": {"id": "u9", "status": "completed"}}
+    parent_text = {"threadId": "t", "itemId": "p", "delta": "parent"}
+    handle.events.put_nowait(("item/started", {"threadId": "t", "item": spawn}))
+    handle.events.put_nowait(("item/agentMessage/delta", child_text))
+    handle.events.put_nowait(("turn/completed", child_done))
+    handle.events.put_nowait(("item/agentMessage/delta", parent_text))
+    handle.events.put_nowait(_completed("turn-1"))
+    adopted: list[str] = []
+    router = CollabRouter("t", adopt=lambda cid, _sid: adopted.append(cid), release=lambda _: None)
+    state = TurnState(router=router)
+    items = [item async for item in turn_events(server, handle, state, turn_id="turn-1")]
+    assert adopted == ["c1"]
+    assert isinstance(items[0], ActivityStart) and items[0].tool_name == "spawn_agent"
+    assert items[1] == Routed("k1", TextDelta("m", "child"), None, "codex-cli:default")
+    assert items[2] == TextDelta("p", "parent")
+    assert len(items) == 3 and state.done is not None and state.done.status == "completed"

@@ -853,6 +853,16 @@ a `…[truncated N chars]` marker in the persisted copy; a call the CLI never
 answered (the turn was interrupted mid-tool) is persisted with an
 `interrupted` return so the history stays resumable.
 
+Both CLIs can spawn sub-agents of their own (Claude's Agent/Task tool,
+Codex's collab `spawn_agent`). marim demuxes them out of the stream and
+publishes each as a `spawn_agent` `tool.call` on the parent's stream (its
+`id` is the child's `stream_id`) followed by the child's own traffic as the
+`subagent.*` family below — `subagent.model` (`codex-cli:<model>` /
+`claude-cli:<model>`), `subagent.event` for its text and tool calls,
+`subagent.usage`, `subagent.notice` for collab follow-ups (`wait`,
+`send_input …`) — and a `tool.result` when the agent settles. A client
+that renders marim's own nested spawns needs no special case.
+
 Turn lifecycle:
 
 | Type            | `data`                                                       |

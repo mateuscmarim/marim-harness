@@ -51,11 +51,15 @@ class ExternalCliModel(Model):
         # session resume/persist, always their own instructions, read-only.
         self.ephemeral: bool = False
         # TUI side-channels (None headless). on_activity renders the CLI's own
-        # tool calls as native tool cards; on_subagent/on_subagent_model route
-        # the CLI's sub-agents to the sub-agents screen.
+        # tool calls as native tool cards; on_subagent/on_subagent_model/
+        # on_subagent_notice/on_subagent_usage route the CLI's sub-agents to
+        # the sub-agents screen (the last two only used by codex-cli, whose
+        # children report notices and usage out of band).
         self.on_activity: Callable[[list], Awaitable[None]] | None = None
         self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
         self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
+        self.on_subagent_notice: Callable[[str, str], Awaitable[None]] | None = None
+        self.on_subagent_usage: Callable[[str, object], Awaitable[None]] | None = None
         # Interactive gating (Deps.ui.request_approval / ask_user). Both
         # external CLIs broker their tool-permission requests through them:
         # codex-cli its server-side approval requests, claude-cli the
