@@ -8,10 +8,16 @@ marim mirror history. No @internal protocol dependencies.
 
 ## Handoff
 
-Feature: cli-lifecycle-parity, approved 2026-09-14. Execute T1-T3 implemented
-and focused gates passing. T4 delivery/child replay, T5 inventory/telemetry,
-T6 mobile notices and T7 result stats are in integration. Branch in both
-repos: feat/cli-lifecycle-parity. Harness execution clone is in the session
-scratchpad; restore commits to durable harness worktree before finishing.
-Next: finish integration tests, full CI gates, independent verifier, docs.
-No publication, merge or deployment authorized. Preserve original untracked files.
+Feature cli-lifecycle-parity: all eight slices complete and independent
+verification PASS. All 35 LIFE requirements have evidence in validation.md;
+three isolated regression faults were caught. Harness 4899 tests (9 opt-in
+live skips),coverage 95.30%,lint/type/build gates pass. Android 624 tests,
+lint and APK gates pass,commit 9154b24. Both repos use feat/cli-lifecycle-parity.
+
+Durable harness worktree:
+/home/mateuscmarim/Projects/marim.dev/marim-harness-cli-lifecycle-parity
+
+User authorization covers local implementation/commits. Nothing pushed,
+merged to main/master or deployed. Next roadmap work is Phase 4 Codex push,
+plan and diff; it needs its own scoped task. Initial untracked mobile
+instruction files/directories are preserved.

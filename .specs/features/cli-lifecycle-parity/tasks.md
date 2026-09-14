@@ -1,6 +1,6 @@
 # CLI lifecycle parity tasks
 
-Status: In progress under the approved spec. Execute with tlc-spec-driven.
+Status: Complete and independently verified under the approved spec.
 Eight component-sized slices; independent delivery, telemetry and Android work
 uses bounded workers under the standing delegation instructions. A fresh
 independent verifier follows integration.
@@ -164,8 +164,8 @@ T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8
 **Reuses**: Existing activity/notice/Room seams described in design.md.
 **Tools**: Repository shell and file tools; coding-guardrails, test-driven-development, verification-before-completion. No connector access required.
 **Done when**:
-- [ ] Verified: complete CI-order checks, capability dispositions, independent verifier and discrimination sensor.
-- [ ] Relevant gate passes with exact test outcomes recorded in evidence.md.
+- [x] Verified: complete CI-order checks, capability dispositions, independent verifier and discrimination sensor.
+- [x] Relevant gate passes with exact test outcomes recorded in evidence.md.
 **Tests**: integration
 **Gate**: build
 **Commit**: `docs(cli): phase 3 acceptance verification`

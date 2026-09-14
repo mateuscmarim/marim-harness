@@ -1,7 +1,7 @@
 # CLI backend lifecycle parity — Phase 3 specification
 
 Date: 2026-09-14
-Status: Approved by Mateus on 2026-09-14; implementation in progress.
+Status: Approved by Mateus on 2026-09-14; implemented and independently verified locally.
 Harness branch: `feat/cli-lifecycle-parity`, based on `origin/master` at
 `ff9c58d7` (v0.8.0).
 Roadmap: `docs/plans/cli-backend-parity-roadmap.md`, Phase 3.
@@ -205,44 +205,44 @@ stays scoped and diagnostic output excludes payload content.
 
 | Requirement ID | Story | Phase | Status |
 | --- | --- | --- | --- |
-| LIFE-01 | Compaction notice | Execute | Pending |
-| LIFE-02 | Reroute notice | Execute | Pending |
-| LIFE-03 | Backend warnings | Execute | Pending |
-| LIFE-04 | Retrying errors | Execute | Pending |
-| LIFE-05 | Local and attached TUI | Execute | Pending |
-| LIFE-06 | Headless stderr | Execute | Pending |
-| LIFE-07 | Serve notice contract | Execute | Pending |
-| LIFE-08 | Android Room path | Execute | Pending |
-| LIFE-09 | Android sequence deduplication | Execute | Pending |
-| LIFE-10 | Compaction cache isolation | Execute | Pending |
-| LIFE-11 | Post-compaction count | Execute | Pending |
-| LIFE-12 | Unknown post-compaction count | Execute | Pending |
-| LIFE-13 | Thinking telemetry | Execute | Pending |
-| LIFE-14 | Backend state observations | Execute | Pending |
-| LIFE-15 | Approval ownership | Execute | Pending |
-| LIFE-16 | Stale events | Execute | Pending |
-| LIFE-17 | VCS refresh | Execute | Pending |
-| LIFE-18 | Shell task start | Execute | Pending |
-| LIFE-19 | Shell progress and completion | Execute | Pending |
-| LIFE-20 | Agent demux compatibility | Execute | Pending |
-| LIFE-21 | Process closure | Execute | Pending |
-| LIFE-22 | Init inventory | Execute | Pending |
-| LIFE-23 | Inventory replacement | Execute | Pending |
-| LIFE-24 | Built-in command precedence | Execute | Pending |
-| LIFE-25 | Backend command invocation | Execute | Pending |
-| LIFE-26 | Notice persistence | Execute | Pending |
-| LIFE-27 | History order | Execute | Pending |
-| LIFE-28 | History/live deduplication | Execute | Pending |
-| LIFE-29 | Backend result stats | Execute | Pending |
-| LIFE-30 | Older ledger compatibility | Execute | Pending |
-| LIFE-31 | Optional parsing | Execute | Pending |
-| LIFE-32 | Callback failure and diagnostics | Execute | Pending |
-| LIFE-33 | Child routing | Execute | Pending |
-| LIFE-34 | Shared backend isolation | Execute | Pending |
-| LIFE-35 | Capability evidence | Execute | Pending |
+| LIFE-01 | Compaction notice | Execute | Verified |
+| LIFE-02 | Reroute notice | Execute | Verified |
+| LIFE-03 | Backend warnings | Execute | Verified |
+| LIFE-04 | Retrying errors | Execute | Verified |
+| LIFE-05 | Local and attached TUI | Execute | Verified |
+| LIFE-06 | Headless stderr | Execute | Verified |
+| LIFE-07 | Serve notice contract | Execute | Verified |
+| LIFE-08 | Android Room path | Execute | Verified |
+| LIFE-09 | Android sequence deduplication | Execute | Verified |
+| LIFE-10 | Compaction cache isolation | Execute | Verified |
+| LIFE-11 | Post-compaction count | Execute | Verified |
+| LIFE-12 | Unknown post-compaction count | Execute | Verified |
+| LIFE-13 | Thinking telemetry | Execute | Verified |
+| LIFE-14 | Backend state observations | Execute | Verified |
+| LIFE-15 | Approval ownership | Execute | Verified |
+| LIFE-16 | Stale events | Execute | Verified |
+| LIFE-17 | VCS refresh | Execute | Verified |
+| LIFE-18 | Shell task start | Execute | Verified |
+| LIFE-19 | Shell progress and completion | Execute | Verified |
+| LIFE-20 | Agent demux compatibility | Execute | Verified |
+| LIFE-21 | Process closure | Execute | Verified |
+| LIFE-22 | Init inventory | Execute | Verified |
+| LIFE-23 | Inventory replacement | Execute | Verified |
+| LIFE-24 | Built-in command precedence | Execute | Verified |
+| LIFE-25 | Backend command invocation | Execute | Verified |
+| LIFE-26 | Notice persistence | Execute | Verified |
+| LIFE-27 | History order | Execute | Verified |
+| LIFE-28 | History/live deduplication | Execute | Verified |
+| LIFE-29 | Backend result stats | Execute | Verified |
+| LIFE-30 | Older ledger compatibility | Execute | Verified |
+| LIFE-31 | Optional parsing | Execute | Verified |
+| LIFE-32 | Callback failure and diagnostics | Execute | Verified |
+| LIFE-33 | Child routing | Execute | Verified |
+| LIFE-34 | Shared backend isolation | Execute | Verified |
+| LIFE-35 | Capability evidence | Execute | Verified |
 
-Coverage: 35 requirements identified; none implemented or verified yet.
-Task mapping follows spec confirmation.
+Coverage: all 35 requirements verified. Exact acceptance evidence and the
+independent discrimination sensor are recorded in [validation.md](validation.md).
 
 ## Proposed Implementation Sequence
 

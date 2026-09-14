@@ -222,6 +222,11 @@ spawn as a `spawn_agent` call + return; marim-mobile sees it via
 
 ## Phase 3 — Backend lifecycle in the transcript
 
+**Status: implemented locally and independently verified; unreleased.** Ordered
+backend notices now share the live serve path and durable transcript metadata.
+See [capabilities and evidence](../reference/cli-lifecycle-capabilities.md) for
+supported events, transport limits and the pinned protocol versions.
+
 **Goal.** What the backend does between marim's turns (compaction, model
 fallback, warnings, background work) is visible where a native provider's
 equivalent already is.
@@ -230,15 +235,15 @@ equivalent already is.
 
 | Backend | Event | Use |
 | --- | --- | --- |
-| Claude | `system/compact_boundary` (`trigger`, `pre_tokens`, `post_tokens`) and `system/status` (`compact_result`, `compact_error`) | a compaction note in the transcript, and a context-report reset |
+| Claude | `system/compact_boundary` (`compact_metadata.trigger/pre_tokens/post_tokens`) | a compaction note in the transcript, and a context-report reset |
 | Claude | `system/thinking_tokens` (`estimated_tokens`, delta) | the live token counter in the status bar |
-| Claude | `system/session_state_changed` (`idle`, `running`, `requires_action`) | the binary calls this the authoritative turn-over signal; use it to harden the turn lifecycle alongside `result` |
+| Claude | `system/session_state_changed` (`idle`, `running`, `requires_action`) | optional display observation only; result and approval ownership remain authoritative |
 | Claude | `system/vcs_state_changed` (`kind`, `cwd`) | refresh checkpoint and git state after Claude commits, pushes, merges or rebases |
 | Claude | `system/task_started`, `task_progress`, `task_notification` | backgrounded shells as cards next to the demuxed agents |
-| Claude | `system/notification`, `permission_denied`, `model_fallback`, `model_refusal_fallback` | toasts |
+| Claude | `system/notification`, `permission_denied`, `model_refusal_fallback` (`model_fallback` is internal and excluded) | toasts |
 | Claude | `result.permission_denials`, `num_turns`, `duration_api_ms`, `stop_reason` | stats ledger detail |
-| Codex | `thread/compacted` | compaction note |
-| Codex | `model/rerouted`, `warning`, `configWarning`, `deprecationNotice`, `guardianWarning`, `error.will_retry` | toasts and transcript notices |
+| Codex | completed `contextCompaction` item and deprecated `thread/compacted` | one completion note per occurrence; starting is not success |
+| Codex | `model/rerouted`, `warning`, `configWarning`, `deprecationNotice`, `guardianWarning`, `error.willRetry` | toasts and transcript notices |
 
 **marim seams.** `consume_cli_stream` grows a `NoticeChunk` (kind, text,
 data) for system subtypes worth showing; `ItemTranslator` grows the same for

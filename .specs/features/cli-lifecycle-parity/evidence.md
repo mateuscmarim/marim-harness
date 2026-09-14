@@ -284,3 +284,16 @@ A subsequent assertion extends the existing fake Claude→host test with raw
 vcs_state_changed and exact pre-terminal vcs_revision=1; both backend cases
 pass again (2 passed) and Ruff/format checks remain green. No source code
 changed after the full test/build gate.
+
+## T8 final acceptance
+
+Independent verifier PASS for all 35 acceptance criteria. Three isolated
+behavior faults were killed by the tests; controls passed and both actual
+working trees were unchanged by fault injection. See validation.md for the
+exact requirement assertions, limits and correction record. Final test-only
+notice-rendering assertions passed for local and attached clients (2 tests).
+
+Harness implementation source gate: 4899 passed,9 live opt-in skips,
+95.30% coverage; Ruff/format,Pyright,wheel and sdist pass. Android9154b24:
+624 passed,zero skips; ktlint/detekt and debug APK pass. No live paid backend
+turns or physical-device test performed. Local work only; no publication.
