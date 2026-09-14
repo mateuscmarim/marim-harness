@@ -1329,6 +1329,17 @@ class ClaudeCliModel(ExternalCliModel):
         task.add_done_callback(_log_steer_failure)
         return True
 
+    async def wait_backend_turn(self, timeout: float | None = None) -> bool:
+        """See the base. A background Agent lives inside the live process,
+        so a one-shot consumer closing at turn end would lose its report;
+        this waits for Claude's reaction to it (``ClaudeProcess.wait_background``,
+        bounded by ``timeout``), which ``_on_unsolicited`` has already noted
+        for the autonomous turn to carry."""
+        process = self._process
+        if process is None or not process.alive:
+            return False
+        return await process.wait_background(timeout)
+
     async def aclose(self) -> None:
         """Close the process. The session id survives on it, so a later turn on
         this model resumes; ``Harness.set_model`` calls this on the outgoing

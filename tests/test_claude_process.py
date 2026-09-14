@@ -587,3 +587,75 @@ async def test_idle_hold_for_an_agent_that_never_reports_is_bounded(tmp_path: Pa
     finally:
         await process.aclose()
     assert process.alive is False
+
+
+async def test_wait_background_hands_over_the_cli_reaction_turn(tmp_path: Path):
+    """A one-turn consumer (a spawn, a headless run) waits the background
+    agent out: the reaction turn is handed over once it opens, and the wait
+    ends at once — no grace — when nothing is left to hear from."""
+    own_turn = {
+        "prelude": [_NOTIFICATION],
+        "steps": [{"text": "Agent completed: pong"}],
+        "delay": 0.3,
+    }
+    process = _process(tmp_path, {"turns": [_spawn_turn(own_turn)]})
+    await process.start()
+    try:
+        await _collect(process, "one")
+        assert process.background_tasks == frozenset({"tu1"})
+        assert await process.wait_background(3.0) is True
+        handle = process.take_unsolicited()
+        assert handle is not None and handle.own
+        reaction = await _drain_turn(process, handle)
+        started = time.monotonic()
+        assert await process.wait_background(3.0) is False
+        assert time.monotonic() - started < 0.5
+    finally:
+        await process.aclose()
+    assert reaction[0] == _NOTIFICATION and reaction[-1]["result"] == "Agent completed: pong"
+    assert process.take_prelude() == []
+
+
+async def test_wait_background_gives_a_notification_only_grace_then_yields_it(tmp_path: Path):
+    """A notification the CLI does not react to: the wait gives the reaction
+    a short grace, then reports nothing to consume and leaves the
+    notification in the prelude for the consumer to settle the card with."""
+    scenario = {"turns": [_spawn_turn({"prelude": [_NOTIFICATION], "delay": 0.2})]}
+    process = _process(tmp_path, scenario)
+    await process.start()
+    try:
+        await _collect(process, "one")
+        assert await process.wait_background(3.0, grace=0.3) is False
+        assert process.background_tasks == frozenset()
+        assert process.take_prelude() == [_NOTIFICATION]
+    finally:
+        await process.aclose()
+
+
+async def test_wait_background_times_out_on_an_agent_that_never_reports(tmp_path: Path):
+    """Bounded: an agent whose notification never comes ends the wait at the
+    timeout, with the agent still on the books (the close will kill it)."""
+    process = _process(tmp_path, {"turns": [_spawn_turn()]})
+    await process.start()
+    try:
+        await _collect(process, "one")
+        started = time.monotonic()
+        assert await process.wait_background(0.3) is False
+        assert 0.25 < time.monotonic() - started < 2.0
+        assert process.background_tasks == frozenset({"tu1"})
+    finally:
+        await process.aclose()
+
+
+async def test_wait_background_returns_at_once_without_background_work(tmp_path: Path):
+    process = _process(tmp_path, {"turns": [[{"text": "plain"}]]})
+    await process.start()
+    try:
+        await _collect(process, "one")
+        started = time.monotonic()
+        assert await process.wait_background(3.0) is False
+        assert time.monotonic() - started < 0.2
+    finally:
+        await process.aclose()
+    # A closed process has nothing to wait for either.
+    assert await process.wait_background(3.0) is False

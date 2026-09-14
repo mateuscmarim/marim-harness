@@ -1379,6 +1379,24 @@ class Harness:
         """
         return await self.turn_controller.run_turn(prompt, event_stream_handler, attachments)
 
+    async def wait_backend_turn(self, timeout: float | None = None) -> bool:
+        """Wait for a turn the model's CLI backend runs on its own (claude-cli
+        reacting to a background sub-agent's report). True when one waits and
+        ``run_turn("")`` — the autonomous turn — plays it; False when there is
+        nothing to wait for (any other model included) or ``timeout`` ran
+        out. A hosted session never needs this: ``_on_backend_turn`` queues
+        the autonomous turn through the host. A one-shot consumer (headless,
+        an embedder running a single turn) calls it before tearing down, so
+        the sub-agent that lives inside the CLI's process is heard from:
+
+            while await harness.wait_backend_turn():
+                await harness.run_turn("")
+        """
+        model = self.current_model
+        if not isinstance(model, ExternalCliModel):
+            return False
+        return await model.wait_backend_turn(timeout)
+
     async def manual_compact(self, instructions: str | None = None) -> bool:
         """Manual /compact entry point. Delegates to the turn controller so the
         checkpoint-invalidation wrapper stays the single place every compaction
