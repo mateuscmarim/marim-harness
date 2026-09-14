@@ -234,3 +234,66 @@ async def test_closing_process_settles_live_shell_card(tmp_path, monkeypatch):
         ("claude:s:shell", "running"),
         ("claude:s:shell", "interrupted"),
     ]
+
+
+def test_compaction_preserves_window_and_fresh_usage_restores_unknown_reading():
+    from marim_harness.claude.lifecycle import LifecycleChunk
+    from marim_harness.config.claude_cli_model import ClaudeCliModel, PromptUsageChunk
+
+    model = ClaudeCliModel("default")
+    model.context_report = ContextReport(900, 1000)
+    model._consume_lifecycle(
+        LifecycleChunk({"subtype": "compact_boundary", "compact_metadata": {"post_tokens": 100}})
+    )
+    assert model.context_report == ContextReport(100, 1000)
+    model._consume_lifecycle(
+        LifecycleChunk({"subtype": "compact_boundary", "compact_metadata": {}})
+    )
+    assert current_context_report(model, []) is None
+    model._note(PromptUsageChunk(120))
+    assert model.context_report == ContextReport(120, 1000)
+    assert current_context_report(model, []) == ContextReport(120, 1000)
+
+
+@pytest.mark.anyio
+async def test_unexpected_process_failure_settles_shell_as_failed(tmp_path, monkeypatch):
+    from marim_harness.claude.lifecycle import BackendTask
+    from marim_harness.config.external_cli import CliModelError
+
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "task_started",
+                            "task_type": "local_bash",
+                            "session_id": "s",
+                            "task_id": "job",
+                        }
+                    },
+                    {"exit": {"code": 7}},
+                ]
+            ]
+        },
+    )
+    seen = []
+
+    async def activity(events):
+        seen.extend(event for event in events if isinstance(event, BackendTask))
+
+    model.on_activity = activity
+    try:
+        with pytest.raises(CliModelError):
+            async with model.request_stream(_user("go"), None, ModelRequestParameters()) as stream:
+                async for _ in stream:
+                    pass
+    finally:
+        await model.aclose()
+    assert [(event.task_id, event.status) for event in seen] == [
+        ("claude:s:job", "running"),
+        ("claude:s:job", "failed"),
+    ]

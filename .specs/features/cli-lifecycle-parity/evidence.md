@@ -254,3 +254,33 @@ Mobile commit 9154b24: existing Room path renders session.notice and restores or
 
 Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
 Feature-wide AC mapping and adversarial checks follow in validation.md.
+
+## Independent review corrections (T8)
+
+The review found lost known windows after context invalidation, collapsed
+Codex warning kinds, missing existing-view VCS refresh and failure exits
+mislabelled interrupted. Four focused regression tests failed first, then
+58 parser/process/turn tests passed after fixes. Codex reasoning spanning a
+notice was also proven to reorder before the notice; a failing fixture now
+passes with separate reasoning parts. Two-turn remote thinking estimates now
+receive the cleared snapshot before the next turn's output.
+
+Expanded boundary proof covers attached TUI replay, partial cancellation
+persistence, process adoption/callback ownership, malformed wire input followed
+by valid completion and optional telemetry resets. All 20 delivery tests and
+173 combined lifecycle/model regressions pass. VCS host-to-TUI tests now update
+the same mounted view and assert unchanged asks/checkpoints, ignored foreign
+cwd, duplicate revision handling and payload-free failure diagnostics.
+
+The first full gate found one obsolete exact stream-type whitelist assertion:
+4886 passed, 1 failed, 9 skipped; coverage95.27%. The whitelist now names all
+three additive lifecycle types, retaining exact equality. This was a contract
+update, not a removed assertion. A final full gate follows these corrections.
+
+Final implementation gate: Ruff check and format-check PASS; Pyright 0 errors;
+full pytest 4899 passed, 9 opt-in live/provider tests skipped, 18 warnings,
+coverage 95.30% (90% required); wheel and source distribution built successfully.
+A subsequent assertion extends the existing fake Claude→host test with raw
+vcs_state_changed and exact pre-terminal vcs_revision=1; both backend cases
+pass again (2 passed) and Ruff/format checks remain green. No source code
+changed after the full test/build gate.

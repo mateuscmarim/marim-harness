@@ -13,6 +13,9 @@ def test_event_as_dict():
 
 def test_stream_event_types_cover_shared_mapping():
     assert STREAM_EVENT_TYPES == {
+        "notice": "session.notice",
+        "backend_state": "session.backend_state",
+        "backend_task": "backend.task",
         "text": "text.delta",
         "thinking": "thinking.delta",
         "tool_call": "tool.call",

@@ -47,6 +47,7 @@ class TurnState:
     # published through ``on_context`` as it streams so the status bar moves
     # mid-turn; None until the first update.
     context: ContextReport | None = None
+    context_window: int | None = None
     on_context: Callable[[ContextReport | None], None] | None = None
     # Codex-side sub-agents (``codex/collab.py``): when set, notifications
     # for the thread's adopted children are routed to their cards instead of
@@ -109,6 +110,8 @@ def _fold(item: object, state: TurnState) -> object | None:
             return Notice(f"Codex is retrying: {item.message}", kind="retry")
         return None
     if isinstance(item, Notice) and item.kind == "compaction":
+        if state.context is not None:
+            state.context_window = state.context.window
         state.context = None
         if state.on_context is not None:
             state.on_context(None)
@@ -142,7 +145,10 @@ def _note_context(item: UsageUpdate, state: TurnState) -> None:
     used = nonnegative_int(item.last.get("inputTokens"))
     if used is None:
         return
-    window = item.model_context_window or (state.context.window if state.context else None)
+    window = item.model_context_window or (
+        state.context.window if state.context else state.context_window
+    )
+    state.context_window = window
     state.context = ContextReport(used, window)
     if state.on_context is not None:
         state.on_context(state.context)

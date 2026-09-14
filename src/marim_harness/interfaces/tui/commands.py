@@ -8,11 +8,13 @@ being sent to the model.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ...config.lifecycle import nonnegative_int
 from ...mcp.manager import McpStatus
 from ...runtime.permissions import Mode
 from ...server.host import HostClosed
@@ -26,6 +28,7 @@ from .widgets.compact_notice import CompactNotice
 
 if TYPE_CHECKING:
     from ...session.store import SessionInfo
+    from ...workspace.worktree import WorktreeInfo
     from .app import HarnessApp
 
 logger = logging.getLogger(__name__)
@@ -498,12 +501,64 @@ async def _worktree_list(app: HarnessApp, root, ws) -> None:
     except WorktreeError as exc:
         await app.post_system(f"Could not list worktrees: {exc}")
         return
+    widget = await app.post_system(_render_worktrees(rows))
+    app._worktree_view = (ws, widget)
+
+
+def _render_worktrees(rows: list[WorktreeInfo]) -> str:
     lines = ["| | branch | path |", "|---|---|---|"]
-    for r in rows:
-        marker = "•" if r.is_current else ""
-        branch = r.branch or "(detached)"
-        lines.append(f"| {marker} | `{branch}` | `{r.path}` |")
-    await app.post_system("\n".join(lines))
+    for row in rows:
+        marker = "•" if row.is_current else ""
+        branch = row.branch or "(detached)"
+        lines.append(f"| {marker} | `{branch}` | `{row.path}` |")
+    return "\n".join(lines)
+
+
+async def refresh_worktree_view(app: HarnessApp, telemetry: dict) -> None:
+    revision = nonnegative_int(telemetry.get("vcs_revision"))
+    if revision is None or app.harness is None:
+        return
+    marker = (id(app.harness.current_model), revision)
+    if marker == app._worktree_vcs_marker:
+        return
+    app._worktree_vcs_marker = marker
+    if revision == 0 or app._worktree_view is None:
+        return
+    try:
+        await _refresh_worktree_widget(app)
+    except Exception as exc:
+        logger.warning(
+            "%s worktree view refresh failed (%s)",
+            type(app.harness.current_model).__name__,
+            type(exc).__name__,
+        )
+
+
+async def _refresh_worktree_widget(app: HarnessApp) -> None:
+    from ...workspace.worktree import list_worktrees, repo_root
+
+    assert app.harness is not None and app._worktree_view is not None
+    displayed_workspace, widget = app._worktree_view
+    workspace = app.harness.deps.workspace.root
+    if not widget.is_attached or displayed_workspace != workspace:
+        app._worktree_view = None
+        return
+    # Event cwd is an untrusted hint: only the session's own workspace is read.
+    root = await asyncio.to_thread(repo_root, workspace)
+    if root is None:
+        return
+    rows = await asyncio.to_thread(list_worktrees, root, current=workspace)
+    markdown = _render_worktrees(rows)
+    # The one-shot command output may still be draining its first Markdown
+    # append. Finish that parse before replacing the same mounted document.
+    if widget._inflight is not None:
+        await widget._inflight
+    if not widget.is_attached:
+        return
+    widget.text = markdown
+    widget._rendered_len = len(markdown)
+    widget._pending = False
+    await widget.update(markdown)
 
 
 async def _worktree_create(app: HarnessApp, root, rest: str) -> None:

@@ -33,7 +33,7 @@ class CodexLifecycle:
         if method in ("warning", "guardianWarning", "configWarning", "deprecationNotice"):
             key = "summary" if method in ("configWarning", "deprecationNotice") else "message"
             message = _text(params, key)
-            return [Notice(message)] if message.strip() else []
+            return [Notice(message, kind=method)] if message.strip() else []
         if method == "thread/compacted":
             return self._compacted(params, None)
         if method in ("item/started", "item/completed"):

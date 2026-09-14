@@ -129,6 +129,7 @@ class CodexCliModel(ExternalCliModel):
         self._model_id = model_id or None
         self.ephemeral = ephemeral
         self.context_invalidated = False
+        self._context_window: int | None = None
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
         self._server = server
@@ -240,6 +241,7 @@ class CodexCliModel(ExternalCliModel):
             self._drop_own_thread(self._server)
         self.context_report = None
         self.context_invalidated = False
+        self._context_window = None
 
     def _drop_own_thread(self, server: CodexServer) -> None:
         if self.thread is not None:
@@ -487,10 +489,16 @@ class CodexCliModel(ExternalCliModel):
         report so a window learned on an earlier turn survives an update
         that omits ``modelContextWindow``."""
         return TurnState(
-            context=self.context_report, on_context=self._note_context, router=self._router
+            context=self.context_report,
+            on_context=self._note_context,
+            router=self._router,
+            context_window=self._context_window,
         )
 
     def _note_context(self, report: ContextReport | None) -> None:
+        previous = report or self.context_report
+        if previous is not None and previous.window is not None:
+            self._context_window = previous.window
         self.context_report = report
         self.context_invalidated = report is None
 
@@ -604,7 +612,7 @@ class CodexStreamedResponse(StreamedResponse):
                 yield ev
         elif isinstance(item, ThinkingDelta):
             for ev in self._parts_manager.handle_thinking_delta(
-                vendor_part_id=f"think-{item.item_id}", content=item.delta
+                vendor_part_id=f"think-{item.item_id}-{folder.part_n}", content=item.delta
             ):
                 yield ev
         elif isinstance(item, (ActivityStart, ActivityEnd)):

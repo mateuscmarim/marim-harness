@@ -167,11 +167,11 @@ class ClaudeLifecycle:
         self.tasks[task_id] = known
         return [known]
 
-    def close(self) -> list[BackendTask]:
+    def close(self, status: str = "interrupted") -> list[BackendTask]:
         closed = []
         for key, task in self.tasks.items():
             if task.status == "running":
-                settled = replace(task, status="interrupted")
+                settled = replace(task, status=status)
                 self.tasks[key] = settled
                 closed.append(settled)
         return closed

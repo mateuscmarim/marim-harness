@@ -4,6 +4,7 @@ import time
 from asyncio import CancelledError, Event, Task, create_task
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 import rich.markup
@@ -65,7 +66,7 @@ from ...usage import resolve_cost, usage_from_dump
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .activity import ActivityMonitor
-from .commands import dispatch
+from .commands import dispatch, refresh_worktree_view
 from .interactions import (
     ApprovalPanel,
     AskUserPanel,
@@ -218,6 +219,7 @@ async def _handle_backend_state(app: "HarnessApp", _wire: SessionBackendState) -
     app.status.refresh_status()
     if app._autocomplete is not None:
         app._autocomplete.refresh_inventory(app.link.info.backend_inventory)
+    await refresh_worktree_view(app, _wire.telemetry)
 
 
 async def _handle_session_notice(app: "HarnessApp", wire: SessionNotice) -> None:
@@ -520,6 +522,8 @@ class HarnessApp(App):
         # only: an attached app has no host in this process.
         self.host: SessionHost
         self._autocomplete: CommandAutocomplete | None = None
+        self._worktree_view: tuple[Path, AssistantMessage] | None = None
+        self._worktree_vcs_marker: tuple[int, int] | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
         self.subagents = SubAgentsScreen(self)
@@ -1333,13 +1337,14 @@ class HarnessApp(App):
 
     # --- Log helpers ---
 
-    async def post_system(self, markdown: str) -> None:
+    async def post_system(self, markdown: str) -> AssistantMessage:
         """Render a system/command message into the log (markdown)."""
         log = self.query_one("#log", VerticalScroll)
         msg = AssistantMessage()
         await log.mount(msg)
         self.stream.append_stream(msg, markdown)
         self.stream.flush_streams()  # one-shot system text: render it now, no tick wait
+        return msg
 
     def append_log(self, widget) -> None:
         """Mount a notice/error into the log, keeping the viewport pinned to the

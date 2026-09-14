@@ -182,3 +182,83 @@ async def test_declared_backend_command_forwards_exact_text_and_respects_queue()
     await dispatch(app, "/review")
     assert "Unknown command" in app.post_system.call_args.args[0]
     assert app.start_turn.await_count == app.queue.enqueue.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_vcs_observation_refreshes_same_worktree_widget_and_preserves_ask(
+    tmp_path, monkeypatch, caplog
+):
+    import subprocess
+
+    from marim_harness.config.lifecycle import BackendObservation
+    from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from tests.test_app import _app
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True
+        )
+
+    git("init", "-b", "before")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "init",
+    )
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await dispatch(app, "/worktree")
+        await pilot.pause()
+        widgets = [w for w in app.query(AssistantMessage) if "`before`" in w.text]
+        assert len(widgets) == 1
+        widget = widgets[0]
+        ask = app.host._park("approval", {"tool": "bash"})
+        before_asks = app.host.pending_asks()
+        before_status = app.host.status
+        before_checkpoints = list(app.harness.checkpoints.list())
+        git("branch", "-m", "after")
+        await app.host._on_cli_activity(
+            [
+                BackendObservation(
+                    telemetry={"vcs_revision": 1, "state": "idle", "cwd": "/untrusted/event/path"}
+                )
+            ]
+        )
+        await pilot.pause()
+        assert "`after`" in widget.text and "`before`" not in widget.text
+        assert widget.is_mounted
+        assert len([w for w in app.query(AssistantMessage) if "| branch |" in w.text]) == 1
+        assert app.host.pending_asks() == before_asks and not ask.future.done()
+        assert app.host.status == before_status
+        assert app.harness.checkpoints.list() == before_checkpoints
+        assert git("for-each-ref", "refs/marim").stdout == ""
+        git("branch", "-m", "latest")
+        await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 1})])
+        await pilot.pause()
+        assert "`after`" in widget.text  # replayed observation does not re-read git
+        await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 2})])
+        await pilot.pause()
+        assert "`latest`" in widget.text
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("PRIVATE git failure")
+
+        monkeypatch.setattr("marim_harness.workspace.worktree.list_worktrees", fail)
+        await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 3})])
+        await pilot.pause()
+        assert "worktree view refresh failed" in caplog.text
+        assert "PRIVATE" not in caplog.text
+        assert app.host.pending_asks() == before_asks and not ask.future.done()
+        assert "`latest`" in widget.text
+        await widget.remove()
+        caplog.clear()
+        await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 4})])
+        await pilot.pause()
+        assert "worktree view refresh failed" not in caplog.text
+        app.host.answer_ask(ask.id, {"approve": False})

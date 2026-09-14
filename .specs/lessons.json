@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "promote_threshold": 2,
+  "window_days": 45,
+  "quarantine_threshold": 2,
+  "next_id": 3,
+  "lessons": [
+    {
+      "id": "L-001",
+      "key": "ac_gap::invalidate stale context usage without discarding an independently valid window and test recovery after invalidation",
+      "text": "Invalidate stale context usage without discarding an independently valid window, and test recovery after invalidation.",
+      "signal": "ac_gap",
+      "scope": "cli-context",
+      "status": "candidate",
+      "features": [
+        "cli-lifecycle-parity"
+      ],
+      "recurrence": 1,
+      "harmful": 0,
+      "evidence": [
+        "LIFE-11 (cli-context)"
+      ],
+      "created": "2026-09-14T20:05:49Z",
+      "last_seen": "2026-09-14T20:05:49Z"
+    },
+    {
+      "id": "L-002",
+      "key": "ac_gap::prove optional backend events from raw transport through the consuming view directly injected display state cannot prove the adapter",
+      "text": "Prove optional backend events from raw transport through the consuming view; directly injected display state cannot prove the adapter.",
+      "signal": "ac_gap",
+      "scope": "cli-events",
+      "status": "candidate",
+      "features": [
+        "cli-lifecycle-parity"
+      ],
+      "recurrence": 1,
+      "harmful": 0,
+      "evidence": [
+        "LIFE-17 (cli-events)"
+      ],
+      "created": "2026-09-14T20:05:50Z",
+      "last_seen": "2026-09-14T20:05:50Z"
+    }
+  ]
+}

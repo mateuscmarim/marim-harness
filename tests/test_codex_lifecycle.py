@@ -116,3 +116,78 @@ async def test_fake_stream_notice_between_text_and_history_has_same_identity(tmp
     parts = [part for msg in history for part in msg.parts]
     assert [part.content for part in parts if isinstance(part, TextPart)] == ["before", "", "after"]
     assert notice_from_part(parts[1])["id"] == seen[0].id
+
+
+def test_fresh_usage_after_compaction_retains_valid_window():
+    state = TurnState(context=ContextReport(900, 1000))
+    _outputs("thread/compacted", {"turnId": "t"}, state, "t")
+    assert state.context is None
+    _outputs(
+        "thread/tokenUsage/updated",
+        {"tokenUsage": {"total": {"inputTokens": 100}, "last": {"inputTokens": 100}}},
+        state,
+        "t",
+    )
+    assert state.context == ContextReport(100, 1000)
+
+
+def test_warning_kind_and_severity_preserve_source():
+    translator = ItemTranslator()
+    for method, field in (
+        ("warning", "message"),
+        ("guardianWarning", "message"),
+        ("configWarning", "summary"),
+        ("deprecationNotice", "summary"),
+    ):
+        [notice] = translator.translate(method, {field: "reason"})
+        assert notice.normalized().to_payload() == {
+            "id": notice.id,
+            "message": "reason",
+            "backend": "codex-cli",
+            "kind": method,
+            "severity": "warning",
+            "data": {},
+        }
+
+
+@pytest.mark.anyio
+async def test_notice_splits_same_reasoning_item_in_persisted_order(tmp_path):
+    from pydantic_ai.messages import ThinkingPart
+
+    model = _model(
+        tmp_path,
+        {
+            "turns": [
+                [
+                    {
+                        "notify": "item/reasoning/textDelta",
+                        "params": {"itemId": "r", "delta": "before"},
+                    },
+                    {"notify": "warning", "params": {"message": "between"}},
+                    {
+                        "notify": "item/reasoning/textDelta",
+                        "params": {"itemId": "r", "delta": "after"},
+                    },
+                    {
+                        "notify": "item/agentMessage/delta",
+                        "params": {"itemId": "m", "delta": "done"},
+                    },
+                ]
+            ]
+        },
+    )
+    try:
+        async with model.request_stream(_msgs(), None, PARAMS) as stream:
+            async for _ in stream:
+                pass
+            history = expand_cli_activity([stream.get()])
+    finally:
+        await model.aclose()
+    parts = [part for message in history for part in message.parts]
+    assert [part.content for part in parts if isinstance(part, (TextPart, ThinkingPart))] == [
+        "before",
+        "",
+        "after",
+        "done",
+    ]
+    assert notice_from_part(parts[1])["message"] == "between"

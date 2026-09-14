@@ -933,7 +933,9 @@ class ClaudeCliModel(ExternalCliModel):
         # against the old process's total.
         self._cost.reset()
         self.lifecycle = ClaudeLifecycle()
-        process.on_closed = lambda state=self.lifecycle: self._lifecycle_closed(state)
+        process.on_closed = lambda status, state=self.lifecycle: self._lifecycle_closed(
+            state, status
+        )
         return process
 
     def _on_unsolicited(self, opening: list[dict]) -> None:
@@ -1094,7 +1096,9 @@ class ClaudeCliModel(ExternalCliModel):
         self.lifecycle, previous.lifecycle = previous.lifecycle, ClaudeLifecycle()
         self.context_invalidated = previous.context_invalidated
         self._process, previous._process = previous._process, None
-        self._process.on_closed = lambda state=self.lifecycle: self._lifecycle_closed(state)
+        self._process.on_closed = lambda status, state=self.lifecycle: self._lifecycle_closed(
+            state, status
+        )
         self._broker, previous._broker = previous._broker, None
         self._cost, previous._cost = previous._cost, CostMeter()
         self.context_report, previous.context_report = previous.context_report, None
@@ -1194,8 +1198,8 @@ class ClaudeCliModel(ExternalCliModel):
             except Exception as exc:
                 logger.warning("claude task display failed cause=%s", type(exc).__name__)
 
-    def _lifecycle_closed(self, state: ClaudeLifecycle) -> None:
-        events = state.close()
+    def _lifecycle_closed(self, state: ClaudeLifecycle, status: str) -> None:
+        events = state.close(status)
         if events:
             task = asyncio.create_task(self._display_tasks(events))
             self._lifecycle_notifications.add(task)
@@ -1213,12 +1217,18 @@ class ClaudeCliModel(ExternalCliModel):
             "vcs_revision": self.lifecycle.vcs_revision,
         }
 
+    async def _begin_lifecycle_turn(self) -> None:
+        before = self._observation()
+        self.lifecycle.begin_turn()
+        if self._observation() != before:
+            await self._display_tasks([self._observation()])
+
     def _observation(self) -> BackendObservation:
         return BackendObservation(dict(self.backend_inventory), dict(self.backend_telemetry))
 
     def _consume_lifecycle(self, chunk: LifecycleChunk) -> list:
         if chunk.obj.get("type") == CLOSED:
-            return self.lifecycle.close()
+            return self.lifecycle.close(str(chunk.obj.get("closure_status", "interrupted")))
         before = self._observation()
         events = self.lifecycle.consume(chunk.obj)
         if self._observation() != before:
@@ -1227,6 +1237,7 @@ class ClaudeCliModel(ExternalCliModel):
             if isinstance(event, BackendNotice) and event.kind == "compaction":
                 used = event.data.get("post_tokens")
                 window = self.context_report.window if self.context_report else self._context_window
+                self._context_window = window
                 self.context_report = ContextReport(used, window) if used is not None else None
                 self.context_invalidated = used is None
         return events
@@ -1256,7 +1267,7 @@ class ClaudeCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         process, handle, first = await self._start_turn(messages, model_settings)
-        self.lifecycle.begin_turn()
+        await self._begin_lifecycle_turn()
         done: DoneChunk | None = None
         parts: list = []
         folded = _FoldedText()  # assistant prose + folded ▸ tool lines (no UI here)
@@ -1313,7 +1324,7 @@ class ClaudeCliModel(ExternalCliModel):
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
         process, handle, first = await self._start_turn(messages, model_settings)
-        self.lifecycle.begin_turn()
+        await self._begin_lifecycle_turn()
         objs = _turn_stream(process, handle, first)
         stream = ClaudeCliStreamedResponse(
             model_request_parameters=model_request_parameters,

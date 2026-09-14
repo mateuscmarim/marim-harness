@@ -239,6 +239,7 @@ async def test_fake_backend_through_host_persists_same_notice_identity(
         steps = [
             {"text": "before"},
             {"raw": {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 17}},
+            {"raw": {"type": "system", "subtype": "vcs_state_changed", "kind": "commit"}},
             {
                 "raw": {
                     "type": "system",
@@ -276,6 +277,10 @@ async def test_fake_backend_through_host_persists_same_notice_identity(
         if backend == "claude":
             snapshots = [e for e in events if e.type == "session.backend_state"]
             assert any(
+                e.data["telemetry"].get("vcs_revision") == 1 and e.seq < terminal.seq
+                for e in snapshots
+            )
+            assert any(
                 e.data["inventory"].get("tools") == ["Read", "Write", "Edit", "Bash"]
                 for e in snapshots
             )
@@ -283,5 +288,282 @@ async def test_fake_backend_through_host_persists_same_notice_identity(
                 e.data["telemetry"].get("thinking_tokens") == 17 and e.seq < terminal.seq
                 for e in snapshots
             )
+    finally:
+        await host.aclose()
+
+
+@pytest.mark.anyio
+async def test_attached_tui_restores_and_deduplicates_notice_through_remote_feed(
+    tmp_path, monkeypatch
+):
+    from tests.conftest import _settle
+    from tests.test_app_remote import _spawn_app, _texts
+
+    first = BackendNotice("remote lifecycle", "codex-cli", "warning", id="remote-one")
+    second = BackendNotice("remote lifecycle", "codex-cli", "warning", id="remote-two")
+
+    def configure(link):
+        link.messages = [ModelResponse(parts=[TextPart("before"), notice_part(first.to_payload())])]
+
+    app, links = _spawn_app(tmp_path, monkeypatch, configure, spawn_history=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        link = links[0]
+        assert app.attached and app.harness is None
+        assert len(app.query(NoticeMessage)) == 1
+        link.feed.push("session.notice", **first.to_payload())
+        link.feed.push("session.notice", **second.to_payload())
+        link.feed.push("text.delta", text="after notices")
+        await _settle(
+            pilot,
+            lambda: any("after notices" in text for text in _texts(app, AssistantMessage)),
+            what="the text after both remote notices",
+        )
+        assert len(app.query(NoticeMessage)) == 2
+        link.messages.append(
+            ModelResponse(parts=[notice_part(second.to_payload()), TextPart("after notices")])
+        )
+        link.feed.push("stream.gap", resync="history")
+        await _settle(pilot, lambda: len(link.feeds) == 2, what="remote history restoration")
+        assert len(app.query(NoticeMessage)) == 2
+        link.feed.push("session.notice", **second.to_payload())
+        link.feed.push("text.delta", text="tail after replay")
+        await _settle(
+            pilot,
+            lambda: any("tail after replay" in text for text in _texts(app, AssistantMessage)),
+            what="the live tail after restoration",
+        )
+        assert len(app.query(NoticeMessage)) == 2
+        assert app.history_messages == link.messages
+
+
+@pytest.mark.anyio
+async def test_cancel_after_backend_notice_persists_partial_notice(tmp_path, monkeypatch):
+    from tests.test_claude_cli_model import _model
+
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [
+                    {"text": "partial answer"},
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "notification",
+                            "text": "before cancellation",
+                            "uuid": "partial-notice",
+                            "session_id": "partial-session",
+                        }
+                    },
+                    {"await_interrupt": True},
+                ]
+            ]
+        },
+    )
+    harness = _harness(tmp_path, model=model)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    try:
+        host.submit("go")
+        delivered = await _drain_until(events, "session.notice")
+        assert host.interrupt()
+        finished = await _drain_until(events, "turn.finished")
+        assert finished.data["interrupted"] is True
+        assert delivered.seq < finished.seq
+        messages = harness.session.store.load()[0]
+        markers = [notice_from_part(p) for m in messages for p in m.parts if notice_from_part(p)]
+        assert markers == [delivered.data]
+        assert any(
+            isinstance(p, TextPart) and "partial answer" in p.content
+            for m in messages
+            for p in m.parts
+        )
+    finally:
+        await host.aclose()
+
+
+@pytest.mark.anyio
+async def test_adopted_claude_process_delivers_notices_to_new_adapter(tmp_path, monkeypatch):
+    from pydantic_ai.models import ModelRequestParameters
+
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+    from tests.fakes import read_claude_argvs
+    from tests.test_claude_cli_model import _model, _user
+
+    old = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [{"text": "first"}],
+                [
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "notification",
+                            "text": "after adoption",
+                            "uuid": "adopted-notice",
+                            "session_id": "adopted-session",
+                        }
+                    },
+                    {"text": "second"},
+                ],
+            ]
+        },
+    )
+    old_events, new_events = [], []
+
+    async def old_callback(events):
+        old_events.extend(events)
+
+    async def new_callback(events):
+        new_events.extend(events)
+
+    old.on_activity = old_callback
+    await old.request(_user("first"), None, ModelRequestParameters())
+    process = old._process
+    new = ClaudeCliModel("opus")
+    new.cwd, new.mode_getter = old.cwd, old.mode_getter
+    new.on_activity = new_callback
+    try:
+        new.adopt(old)
+        await old.aclose()
+        response = await new.request(_user("second"), None, ModelRequestParameters())
+        assert new._process is process and process.alive
+        assert not any(isinstance(e, BackendNotice) for e in old_events)
+        [notice] = [e for e in new_events if isinstance(e, BackendNotice)]
+        assert notice.message == "after adoption"
+        assert notice.id == "claude:adopted-session:adopted-notice"
+        assert [notice_from_part(p) for p in response.parts if notice_from_part(p)] == [
+            notice.to_payload()
+        ]
+        assert len(read_claude_argvs(tmp_path)) == 1
+    finally:
+        await new.aclose()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("backend", ["claude", "codex"])
+async def test_malformed_backend_notice_does_not_block_valid_notice_or_completion(
+    tmp_path, monkeypatch, backend
+):
+    from tests.test_claude_cli_model import _model as claude_model
+    from tests.test_codex_cli_model import _model as codex_model
+
+    if backend == "claude":
+        model = claude_model(
+            tmp_path,
+            monkeypatch,
+            {
+                "turns": [
+                    [
+                        {
+                            "raw": {
+                                "type": "system",
+                                "subtype": "notification",
+                                "text": {"invalid": True},
+                            }
+                        },
+                        {
+                            "raw": {
+                                "type": "system",
+                                "subtype": "compact_boundary",
+                                "compact_metadata": [],
+                            }
+                        },
+                        {
+                            "raw": {
+                                "type": "system",
+                                "subtype": "notification",
+                                "text": "valid notice",
+                            }
+                        },
+                        {"text": "completed despite malformed notice"},
+                    ]
+                ]
+            },
+        )
+    else:
+        model = codex_model(
+            tmp_path,
+            {
+                "turns": [
+                    [
+                        {"notify": "model/rerouted", "params": {"fromModel": [], "toModel": "new"}},
+                        {"notify": "warning", "params": {"message": {"invalid": True}}},
+                        {"notify": "warning", "params": {"message": "valid notice"}},
+                        {
+                            "notify": "item/agentMessage/delta",
+                            "params": {
+                                "itemId": "m",
+                                "delta": "completed despite malformed notice",
+                            },
+                        },
+                    ]
+                ]
+            },
+        )
+    host = SessionHost(_harness(tmp_path, model=model), EventBus())
+    events = _spy(host.bus)
+    try:
+        host.submit("go")
+        terminal = await _drain_until(events, "turn.finished")
+        assert terminal.data["output"] == "completed despite malformed notice"
+        [notice] = [e for e in events if e.type == "session.notice"]
+        assert notice.data["message"] == "valid notice"
+        assert notice.seq < terminal.seq
+        assert not any(e.type == "turn.error" for e in events)
+    finally:
+        await host.aclose()
+
+
+@pytest.mark.anyio
+async def test_next_claude_turn_clears_remote_thinking_estimate(tmp_path, monkeypatch):
+    from marim_harness.server.client import RemoteInfo
+    from tests.test_claude_cli_model import _model
+
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "thinking_tokens",
+                            "estimated_tokens": 17,
+                        }
+                    },
+                    {"text": "first"},
+                ],
+                [{"text": "second"}],
+            ]
+        },
+    )
+    host = SessionHost(_harness(tmp_path, model=model), EventBus())
+    events = _spy(host.bus)
+    info = RemoteInfo(workspace_root=tmp_path, session_id=host.harness.session.store.session_id)
+    try:
+        host.submit("first")
+        await _drain_until(events, "turn.finished")
+        for event in events:
+            info.observe(event)
+        assert info.backend_telemetry["thinking_tokens"] == 17
+        events.clear()
+        host.submit("second")
+        terminal = await _drain_until(events, "turn.finished")
+        for event in events:
+            info.observe(event)
+        assert terminal.data["output"] == "second"
+        assert info.backend_telemetry["thinking_tokens"] is None
+        assert any(
+            event.type == "session.backend_state"
+            and event.seq < terminal.seq
+            and event.data["telemetry"]["thinking_tokens"] is None
+            for event in events
+        )
     finally:
         await host.aclose()
