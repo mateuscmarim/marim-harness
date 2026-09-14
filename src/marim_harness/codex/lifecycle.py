@@ -12,6 +12,19 @@ def _text(obj: dict, key: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _rerouted(params: dict) -> list[object]:
+    old, new = _text(params, "fromModel"), _text(params, "toModel")
+    if not old or not new:
+        return []
+    return [
+        Notice(
+            f"Codex model rerouted: {old} → {new}",
+            kind="model_rerouted",
+            data={k: _text(params, k) for k in ("fromModel", "toModel", "reason")},
+        )
+    ]
+
+
 class CodexLifecycle:
     def __init__(self) -> None:
         self._items: set[tuple[str, str]] = set()
@@ -20,16 +33,7 @@ class CodexLifecycle:
 
     def translate(self, method: str, params: dict) -> list[object] | None:
         if method == "model/rerouted":
-            old, new = _text(params, "fromModel"), _text(params, "toModel")
-            if not old or not new:
-                return []
-            return [
-                Notice(
-                    f"Codex model rerouted: {old} → {new}",
-                    kind="model_rerouted",
-                    data={k: _text(params, k) for k in ("fromModel", "toModel", "reason")},
-                )
-            ]
+            return _rerouted(params)
         if method in ("warning", "guardianWarning", "configWarning", "deprecationNotice"):
             key = "summary" if method in ("configWarning", "deprecationNotice") else "message"
             message = _text(params, key)
