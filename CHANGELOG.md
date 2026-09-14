@@ -10,6 +10,23 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **`/mode`, `/model` and `/think` reach Claude Code.** Under the
+  `claude-cli` main provider the three switches are now sent to the live
+  process as control requests before the next turn instead of being
+  emulated or documented as no-ops: `plan` runs Claude in its own plan mode
+  (`set_permission_mode`; marim's broker keeps denying every mutating tool
+  on top, and Claude's `ExitPlanMode` is answered with "the user switches
+  with `/mode`"), `auto`/`ask` run it in Claude's `default` mode where it
+  keeps asking marim; a same-provider `/model` switch is one `set_model` on
+  the process you already have (no close + `--resume` respawn, the context
+  and quota readings carry over) and a rejected id fails that turn with the
+  CLI's message instead of running on the wrong model; `/think` is sent as
+  a thinking-token budget plus an effort level (`set_max_thinking_tokens` +
+  `apply_flag_settings {effortLevel}`), so both token-budget and
+  adaptive-thinking Claude models honour it (the latter cannot switch
+  thinking off, so `off` is their lowest effort). Each is sent once per process
+  and again only when it changes; the model picker's claude-cli entries are
+  now annotated as thinking-capable.
 - **The CLI backends report their own context.** Under `claude-cli` and
   `codex-cli` the status bar's `ctx` field now shows the backend's real
   numbers — the prompt size of its most recent model request (system
@@ -56,6 +73,21 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Fixed
 
+- **Switching sessions under `claude-cli`/`codex-cli` kept driving the old
+  conversation.** A session switch, `/new` or `/clear` rebound marim's
+  session store but left the adapter's live `claude` process or codex thread
+  in place, so the next prompt continued the conversation the user had just
+  left — and the CLI's reply persisted the old conversation's id over the new
+  session's ref. The harness now tells the model to release its provider-side
+  conversation at every store rebind (`ExternalCliModel.release_conversation`),
+  so the next turn resumes what the incoming session recorded, or starts
+  cold.
+- **A bare-id `/model` switch orphaned the CLI thread ref.** `/model sonnet`
+  under a `claude-cli` (or `codex-cli`) default provider carries no provider
+  prefix, and the session read its first segment as the provider — so every
+  same-provider switch cleared the persisted thread ref and the next resume
+  started cold. The harness now tells the session which provider the new
+  model runs on.
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
   bidirectional transport every `result` carries the process's *running*
   `total_cost_usd`, not the turn's cost, and marim billed each turn the

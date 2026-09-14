@@ -60,6 +60,16 @@ _PATH_KEYS = {
 }
 
 PLAN_DENY_MESSAGE = "plan mode: read-only — describe the change instead of making it"
+# Claude's own plan mode (the process runs in it whenever marim is in plan
+# mode, see ``controls.py``) ends with an ``ExitPlanMode`` call asking the
+# user to approve the plan and switch modes. marim owns the mode, so the
+# call is refused with a hint that keeps Claude's plan-mode workflow
+# useful: present the plan, and the user switches with ``/mode``.
+EXIT_PLAN_MESSAGE = (
+    "plan mode is set by the user in marim, not by this tool: present the plan "
+    "as your answer; the user switches out of plan mode with /mode when they "
+    "want it carried out"
+)
 CANCELLED_MESSAGE = "cancelled by user"
 USER_DENIED_MESSAGE = "denied by the user; do not retry this action, ask what they want instead"
 HEADLESS_DENY_MESSAGE = (
@@ -110,11 +120,12 @@ def deny_reply(message: str) -> dict:
     return {"behavior": "deny", "message": message}
 
 
-def wire_deny_message(decision: Decision) -> str:
+def wire_deny_message(decision: Decision, tool_name: str = "") -> str:
     """The shared core's reason is a log label; on the wire plan mode gets
-    the fuller hint Claude can act on."""
+    the fuller hint Claude can act on (and its ``ExitPlanMode`` the one that
+    names who owns the mode)."""
     if decision.reason == PLAN_READ_ONLY:
-        return PLAN_DENY_MESSAGE
+        return EXIT_PLAN_MESSAGE if tool_name == "ExitPlanMode" else PLAN_DENY_MESSAGE
     return decision.reason or "not permitted"
 
 
@@ -205,7 +216,7 @@ class ClaudeApprovalBroker:
         if decision.accept:
             return allow_reply(tool_input)
         logger.info("claude %s denied (%s)", tool_name, decision.reason)
-        return deny_reply(wire_deny_message(decision))
+        return deny_reply(wire_deny_message(decision, tool_name))
 
     def _anchored(self, req: ToolRequest) -> ExternalRequest:
         """The CLI runs with cwd = the workspace root, so a relative

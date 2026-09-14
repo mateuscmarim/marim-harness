@@ -374,11 +374,21 @@ class SessionController:
         """The model id persisted with this session, or None if unavailable."""
         return self.store.model if self.store is not None else None
 
-    def set_model(self, model_id: str) -> None:
+    def set_model(self, model_id: str, *, provider: str | None = None) -> None:
+        """Record the session's model. ``provider`` is the external-CLI
+        provider the new model runs on (``ExternalCliModel.provider_id``) —
+        the harness passes it because ``model_id`` alone cannot say: a bare
+        id (``sonnet`` under a claude-cli default provider) carries no
+        prefix, and reading its first segment as the provider (``sonnet:``)
+        used to orphan the persisted thread on every same-provider switch.
+        Callers without the model object (an embedder) may leave it unset,
+        and a qualified id (``codex-cli:gpt-5.4-mini``) then still names its
+        provider."""
         if self.store is not None:
             self.store.model = model_id
             ref = self.store.cli_thread_id
-            if ref and not ref.startswith(model_id.split(":", 1)[0] + ":"):
+            owner = provider if provider is not None else model_id.split(":", 1)[0]
+            if ref and not ref.startswith(owner + ":"):
                 # A thread belongs to one external CLI. Switching provider
                 # orphans it — the new model would ignore the foreign
                 # prefix anyway, but a stale ref must not outlive the switch

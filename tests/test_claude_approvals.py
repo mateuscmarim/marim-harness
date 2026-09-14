@@ -11,6 +11,7 @@ from pydantic_ai import ToolDenied
 
 from marim_harness.claude.approvals import (
     CANCELLED_MESSAGE,
+    EXIT_PLAN_MESSAGE,
     HEADLESS_DENY_MESSAGE,
     NO_USER_MESSAGE,
     PLAN_DENY_MESSAGE,
@@ -124,6 +125,22 @@ async def test_plan_denies_mutation_without_prompting(tmp_path: Path):
     assert reply == deny_reply(PLAN_DENY_MESSAGE)
     assert panel.calls == []
     assert broker.last_reply == reply
+
+
+async def test_plan_tells_exit_plan_mode_who_owns_the_mode(tmp_path: Path):
+    # The process runs in Claude's own plan mode (controls.py), whose
+    # workflow ends in an ExitPlanMode call asking to switch modes. marim
+    # owns the mode: the call is refused with the hint to present the plan
+    # (not the generic "describe the change" text, which reads as if the
+    # plan itself were the forbidden write).
+    panel = _Panel(True)
+    broker = _broker(Mode.plan, tmp_path, panel=panel)
+    req = {"subtype": "can_use_tool", "tool_name": "ExitPlanMode", "input": {"plan": "1. do x"}}
+    assert await broker.handle("r1", req) == deny_reply(EXIT_PLAN_MESSAGE)
+    assert panel.calls == []
+    # Outside plan mode the same call is an ordinary mutating tool (auto
+    # accepts it, ask prompts) — Claude only makes it in plan mode anyway.
+    assert await _broker(Mode.auto, tmp_path).handle("r2", req) == allow_reply(req["input"])
 
 
 async def test_plan_allows_reads(tmp_path: Path):

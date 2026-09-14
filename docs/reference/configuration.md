@@ -128,8 +128,19 @@ LSP and MCP do not apply. The process is launched with `--safe-mode
 plugins and settings do NOT load; its skills and `CLAUDE.md` files are plain
 files under the workspace and remain readable (the CLI's `--bare` flag would
 close that gap but breaks subscription auth, so it is not used). Requires Claude
-Code 2.1 or newer (older versions log a warning). The thinking level (`/think`)
-is a no-op under this provider.
+Code 2.1 or newer (older versions log a warning). `/mode`, `/model` and
+`/think` reach the running process as control requests before the next
+turn (`set_permission_mode`, `set_model`, `set_max_thinking_tokens` +
+`apply_flag_settings {effortLevel}`), so none of them needs a restart; a
+same-provider `/model` switch keeps the process and its session (the launch
+`--model` still seeds the first spawn). Plan mode is enforced twice: Claude
+runs in its own plan mode AND marim denies every mutating `can_use_tool`.
+The thinking level maps to a token budget (`off` 0, `minimal` 1024, `low`
+4096, `medium` 16384, `high` 32768, `xhigh` 65536) plus an effort level
+(`off`/`minimal`/`low` → `low`, then `medium`, `high`, `xhigh`); each
+Claude model honours whichever of the two it supports — an
+adaptive-thinking model cannot switch thinking off, so `off` is its lowest
+effort. An unset level sends nothing and leaves the CLI's own defaults.
 
 The status bar's `ctx` field shows Claude's own context under this provider:
 each `assistant` event carries the prompt size of that request (uncached

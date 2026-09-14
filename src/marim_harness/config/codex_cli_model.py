@@ -247,6 +247,15 @@ class CodexCliModel(ExternalCliModel):
         else:
             self._drop_own_thread(server)
 
+    def release_conversation(self) -> None:
+        """Drop the live thread handle (see the base): the next turn then
+        ``thread/resume``s whatever the rebound store names, or starts a new
+        thread. The server stays — it is process-wide and serves every other
+        session on it. The context report goes with the thread it described."""
+        if self._server is not None:
+            self._drop_own_thread(self._server)
+        self.context_report = None
+
     def _drop_own_thread(self, server: CodexServer) -> None:
         if self.thread is not None:
             server.drop_thread(self.thread)
