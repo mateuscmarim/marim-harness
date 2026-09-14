@@ -976,8 +976,7 @@ async def _observed_job_events(host, after_seq):
     subscription = host.bus.attach(after_seq=after_seq)
     try:
         return [
-            await subscription.next_event(timeout=1)
-            for _ in range(host.bus.last_seq - after_seq)
+            await subscription.next_event(timeout=1) for _ in range(host.bus.last_seq - after_seq)
         ]
     finally:
         subscription.close()
@@ -1037,8 +1036,10 @@ def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_s
     }
     if outcome == "cancelled":
         terminal_item = {
-            "type": "subAgentActivity", "id": "cli-spawn",
-            "agentThreadId": "cli-child", "kind": "interrupted",
+            "type": "subAgentActivity",
+            "id": "cli-spawn",
+            "agentThreadId": "cli-child",
+            "kind": "interrupted",
         }
     terminal_method = "item/started" if outcome == "cancelled" else "item/completed"
     terminal = (terminal_method, {"threadId": "cli-parent", "item": terminal_item})
@@ -1047,14 +1048,16 @@ def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_s
         terminal,
         terminal,
     ]
-    asyncio.run_coroutine_threadsafe(
-        _feed_codex_observations(handle, notifications), loop
-    ).result(timeout=5)
+    asyncio.run_coroutine_threadsafe(_feed_codex_observations(handle, notifications), loop).result(
+        timeout=5
+    )
     response = test_client.get(job_url, headers=AUTH)
     assert response.status_code == 200
     detail = response.json()
     assert (detail["status"], detail["result"], detail["prompt"]) == (
-        outcome, report, spawn["prompt"]
+        outcome,
+        report,
+        spawn["prompt"],
     )
     assert detail["finished_at"]
     assert test_client.get(base, headers=AUTH).json()["status"] == "idle"

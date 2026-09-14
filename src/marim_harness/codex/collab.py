@@ -409,9 +409,7 @@ class CollabRouter:
         out = self._emit(child, Notice(f"agent {item.path or child.label} {item.kind}"))
         if item.kind in _PING_SETTLES and not child.settled:
             content = "".join(child.last_text) or f"agent {item.kind}"
-            out.extend(
-                self._settle(child, content, item.kind == "interrupted", status=item.kind)
-            )
+            out.extend(self._settle(child, content, item.kind == "interrupted", status=item.kind))
         return out
 
     # --- bookkeeping ------------------------------------------------------------

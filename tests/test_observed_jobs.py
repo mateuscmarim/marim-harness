@@ -50,7 +50,9 @@ def test_observed_rows_round_trip_history_and_list_with_distinct_new_ids():
     [history] = restored.history
     assert history.backend_owned
     assert (history.status, history.result, history.prompt) == (
-        "failed", result_tail(report), "prompt"
+        "failed",
+        result_tail(report),
+        "prompt",
     )
     another = restored.observe_agent("cli-child", "second")
     assert another.id != job.id
@@ -141,9 +143,9 @@ async def test_discard_observed_preserves_native_work_digest_and_incoming_histor
     observed_running = registry.observe_agent("old-running", "old CLI task")
     observed_done = registry.observe_agent("old-done", "finished CLI task")
     registry.settle_observed(observed_done, "done", "old report")
-    registry.import_history([
-        {"id": "job-50", "status": "done", "backend_owned": True, "label": "incoming"}
-    ])
+    registry.import_history(
+        [{"id": "job-50", "status": "done", "backend_owned": True, "label": "incoming"}]
+    )
     incoming_history = registry.history
     changed.reset_mock()
     epoch = registry.observation_epoch
