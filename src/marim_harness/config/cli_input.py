@@ -178,9 +178,7 @@ def prompt_content(messages: list[ModelMessage], *, history: bool) -> list[UserC
     return _history_content(selected) if history else content
 
 
-def attachment_content(
-    text: str, attachments: list[tuple[bytes, str]] | None
-) -> list[UserContent]:
+def attachment_content(text: str, attachments: list[tuple[bytes, str]] | None) -> list[UserContent]:
     """The same binary content used by run_turn, for direct CLI steering."""
     return [text, *(BinaryContent(data=d, media_type=m) for d, m in attachments or [])]
 

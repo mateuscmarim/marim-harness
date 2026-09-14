@@ -48,9 +48,7 @@ def _model(backend, tmp_path, monkeypatch, *, resume=False, waiting=False):
         turn = [{"notify": "item/agentMessage/delta", "params": {"delta": "ready"}}]
         if waiting:
             turn.append({"hang": True})
-        binary = fake_codex_bin(
-            tmp_path, {"resumable": ["OLD"] if resume else [], "turns": [turn]}
-        )
+        binary = fake_codex_bin(tmp_path, {"resumable": ["OLD"] if resume else [], "turns": [turn]})
         model = CodexCliModel("test-model", server=CodexServer(binary=binary))
     model.cwd = str(tmp_path)
     model.mode_getter = lambda: "auto"
