@@ -17,10 +17,14 @@ from ..workspace.memory import (
 def resolve_scope(ctx: RunContext[Deps], which: str) -> MemoryScope:
     """Pick the memory scope for ``which`` ("global" | "project"). An explicit
     ``workspace.memory_root`` (embedders, via HarnessBuilder.with_memory) maps
-    both scopes under one root; otherwise the CLI defaults apply."""
+    both scopes under one root. A ``project_memory_root`` maps only project
+    memory; otherwise the CLI defaults apply."""
     root = ctx.deps.workspace.memory_root
     if root is not None:
         return MemoryScope(which, root / which)
+    project_root = ctx.deps.workspace.project_memory_root
+    if which == "project" and project_root is not None:
+        return MemoryScope("project", project_root)
     return global_scope() if which == "global" else project_scope(ctx.deps.workspace.root)
 
 

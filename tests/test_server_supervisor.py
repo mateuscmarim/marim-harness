@@ -64,7 +64,12 @@ def _model() -> FunctionModel:
 
 
 def _factory(created: list):
-    async def factory(workspace: Path, session_id: str, mode: Mode | None):
+    async def factory(
+        workspace: Path,
+        session_id: str,
+        mode: Mode | None,
+        project_memory_root: Path | None = None,
+    ):
         created.append((workspace, session_id, mode))
         return _make_harness(_model(), _make_deps(workspace, mode=mode or Mode.auto))
 

@@ -34,7 +34,7 @@ from .workspaces import WorkspaceRecord
 
 logger = logging.getLogger(__name__)
 
-HarnessFactory = Callable[[Path, str, "Mode | None"], Awaitable[Harness]]
+HarnessFactory = Callable[[Path, str, "Mode | None", "Path | None"], Awaitable[Harness]]
 
 _EVICT_POLL_CEILING_SECONDS = 60.0
 
@@ -56,13 +56,23 @@ def _persisted_mode(workspace: Path, session_id: str) -> Mode | None:
         return None
 
 
-async def default_harness_factory(workspace: Path, session_id: str, mode: Mode | None) -> Harness:
+async def default_harness_factory(
+    workspace: Path,
+    session_id: str,
+    mode: Mode | None,
+    project_memory_root: Path | None = None,
+) -> Harness:
     """Build a full production harness for one session: the same wiring as the
     TUI/headless (models, MCP, LSP, hooks) via build_harness, plus the connect
     + session_start lifecycle headless performs around a run."""
     from ..runtime.bootstrap import build_harness
 
-    harness = build_harness(workspace, mode=mode, session_id=session_id)
+    harness = build_harness(
+        workspace,
+        mode=mode,
+        session_id=session_id,
+        project_memory_root=project_memory_root,
+    )
     await harness.connect()
     await harness.session_start("resume" if harness.session.history else "startup")
     return harness
@@ -76,10 +86,12 @@ class SessionSupervisor:
         idle_ttl: float = 900.0,
         ring_size: int = 1000,
         endpoint: str | None = None,
+        chat_memory_dir: Path | None = None,
     ) -> None:
         self._factory = factory
         self.idle_ttl = idle_ttl
         self.endpoint = endpoint
+        self._chat_memory_dir = chat_memory_dir
         self._ring_size = ring_size
         self._buses: dict[tuple[str, str], EventBus] = {}
         self._hosts: dict[tuple[str, str], SessionHost] = {}
@@ -157,7 +169,12 @@ class SessionSupervisor:
                 mode = _persisted_mode(Path(record.path), session_id)
             claim = self._claim_session(Path(record.path), session_id)
             try:
-                harness = await self._factory(Path(record.path), session_id, mode)
+                project_memory_root = (
+                    self._chat_memory_dir if record.kind == "chat" else None
+                )
+                harness = await self._factory(
+                    Path(record.path), session_id, mode, project_memory_root
+                )
                 host = SessionHost(harness, self.bus_for(*key), claim=claim)
             except BaseException:
                 # Either the factory or SessionHost.__init__ failed, so nothing

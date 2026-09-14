@@ -433,7 +433,9 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     workspaces = args.workspaces_root or state_dir / "workspaces"
     registry = WorkspaceRegistry(state_dir / "workspaces.json", workspaces)
     supervisor = SessionSupervisor(
-        idle_ttl=args.idle_ttl, endpoint=format_base_url(args.host, args.port)
+        idle_ttl=args.idle_ttl,
+        endpoint=format_base_url(args.host, args.port),
+        chat_memory_dir=state_dir / "chat-memory",
     )
     app = create_app(registry=registry, supervisor=supervisor, token=token)
 

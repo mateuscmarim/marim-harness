@@ -202,10 +202,13 @@ class WorkspaceConfig:
     command_policy: CommandPolicy = field(default_factory=CommandPolicy)
     tool_search: str = "auto"
     tool_search_threshold: int = 15
-    # Embedder overrides (set by HarnessBuilder; None everywhere in the CLI):
-    # an explicit memory store root replacing the XDG-global/.marim-project
-    # scopes, and explicit skill directories replacing skill discovery.
+    # Embedder override set by HarnessBuilder: an explicit memory store root
+    # replacing both the XDG-global and .marim-project scopes.
     memory_root: Path | None = None
+    # Project-only override, additionally set by the server for chat
+    # workspaces. Global memory remains in the user's XDG config directory.
+    project_memory_root: Path | None = None
+    # Embedder override set by HarnessBuilder, replacing skill discovery.
     skill_dirs: "tuple[Path, ...] | None" = None
 
 
