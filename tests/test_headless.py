@@ -15,7 +15,7 @@ def _hook_script(tmp_path: Path, name: str, body: str) -> str:
     return str(p)
 
 
-def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks=None):
+def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks=None, model=None):
     from pydantic_ai.models.test import TestModel
 
     from marim_harness.runtime.harness import Harness
@@ -25,7 +25,8 @@ def _harness(tmp_path: Path, output_text: str = "hello from the model", *, hooks
     deps = _make_deps(tmp_path, hooks=hooks)
     manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
     store = manager.create("headless")
-    model = TestModel(call_tools=[], custom_output_text=output_text)
+    if model is None:
+        model = TestModel(call_tools=[], custom_output_text=output_text)
     from marim_harness.runtime.harness import HarnessConfig
 
     return Harness(
@@ -356,3 +357,61 @@ async def test_stream_json_emits_terminal_error_line_on_failure(tmp_path: Path):
     assert "upstream exploded" in lines[-1]["error"]
     # and the human-readable error still goes to stderr
     assert "upstream exploded" in err.getvalue()
+
+
+@pytest.mark.anyio
+async def test_headless_plays_the_turn_claude_runs_on_a_background_agent(
+    tmp_path: Path, monkeypatch
+):
+    """Under claude-cli a turn can end with a background Agent of Claude's
+    still running inside the process. With no host to queue the autonomous
+    turn, headless waits for Claude's reaction and plays it itself before
+    teardown: its text follows the turn's own in the output, and the
+    session history carries it as an autonomous turn with the note that
+    says why (issue #130)."""
+    from marim_harness.claude.env import CLI_BINARY_ENV
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+    from marim_harness.interfaces.cli.headless import run_headless
+    from marim_harness.runtime.context import strip_turn_context
+    from tests.fakes import fake_claude_bin
+
+    notification = {
+        "type": "system",
+        "subtype": "task_notification",
+        "tool_use_id": "tu1",
+        "status": "completed",
+        "summary": "pong",
+    }
+    spawn_turn = [
+        {"tool_use": {"id": "tu1", "name": "Agent", "input": {"description": "Explore"}}},
+        {
+            "raw": {
+                "type": "system",
+                "subtype": "task_started",
+                "tool_use_id": "tu1",
+                "is_backgrounded": True,
+            }
+        },
+        {"tool_result": {"id": "tu1", "content": "Async agent launched successfully"}},
+        {"text": "Launched."},
+        {
+            "after_turn": {
+                "prelude": [notification],
+                "steps": [{"text": "Agent completed: pong"}],
+                "delay": 0.3,
+            }
+        },
+    ]
+    monkeypatch.setenv(CLI_BINARY_ENV, fake_claude_bin(tmp_path, {"turns": [spawn_turn]}))
+    harness = _harness(tmp_path, model=ClaudeCliModel("sonnet"))
+    harness.wire_cli_model(harness.current_model)
+    out = io.StringIO()
+    code = await run_headless(harness, "explore", "text", out=out)
+    assert code == 0
+    # No UI: Claude's own tool calls fold to ▸ lines ahead of the prose.
+    assert out.getvalue().strip().endswith("Launched.\n\nAgent completed: pong")
+    prompts = [
+        p.content for m in harness.session.history for p in m.parts if p.part_kind == "user-prompt"
+    ]
+    assert len(prompts) == 2 and strip_turn_context(prompts[1]) == ""
+    assert "sub-agent tu1 completed: pong" in prompts[1]

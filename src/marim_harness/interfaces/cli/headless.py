@@ -8,6 +8,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from typing import TypeVar
 
+from ...claude.env import cli_timeout
 from ...runtime.errors import format_provider_error
 from ...runtime.harness import Harness
 from ...stream_events import event_to_dict
@@ -72,6 +73,23 @@ def _result_obj(harness: Harness, output: str) -> dict:
     }
 
 
+async def _run_turns(harness: Harness, prompt: str, handler) -> str:
+    """The typed turn, then any turn the CLI backend runs on its own after
+    it: a claude-cli turn may end with a background Agent of Claude's still
+    running inside the process. A hosted session plays Claude's reaction as an
+    autonomous turn; this one-shot run has to wait for it (bounded by the
+    CLI's silence timeout) and play it itself, or the report dies with the
+    process at teardown. The reaction's text follows the turn's own."""
+    outcome = await harness.run_turn(prompt, event_stream_handler=handler)
+    # Headless prints text: a plain turn always has one, and the structured
+    # harnesses this could carry are an embedder (SDK) concern, not a CLI one.
+    output = outcome.result or ""
+    while await harness.wait_backend_turn(cli_timeout()):
+        reaction = await harness.run_turn("", event_stream_handler=handler)
+        output = "\n\n".join(part for part in (output, reaction.result or "") if part)
+    return output
+
+
 async def run_headless(
     harness: Harness,
     prompt: str,
@@ -114,10 +132,7 @@ async def run_headless(
     try:
         await harness.connect()  # open any configured MCP servers for this run
         await harness.session_start("resume" if harness.session.history else "startup")
-        outcome = await harness.run_turn(prompt, event_stream_handler=handler)
-        # Headless prints text: a plain turn always has one, and the structured
-        # harnesses this could carry are an embedder (SDK) concern, not a CLI one.
-        output = outcome.result or ""
+        output = await _run_turns(harness, prompt, handler)
     except Exception as exc:  # keep the failure surface small and scriptable
         detail = format_provider_error(exc) or f"{type(exc).__name__}: {exc}"
         print(detail, file=err)

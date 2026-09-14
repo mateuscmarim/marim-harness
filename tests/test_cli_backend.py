@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import ToolReturnPart
 
 from marim_harness.claude.approvals import HEADLESS_DENY_MESSAGE, ClaudeApprovalBroker
 from marim_harness.runtime.permissions import Mode, UiSeams
@@ -184,3 +185,116 @@ def test_synth_usage_rounds_micro_usd():
     assert int(1.001 * 1_000_000) == 1000999  # pins the truncation the fix avoids
     usage = synth_usage({"input_tokens": 1, "output_tokens": 1}, 1, total_cost_usd=1.001)
     assert usage.details[COST_DETAIL_KEY] == 1001000
+
+
+# --- background Agents of the spawn's own claude (issue #130) -----------------
+
+_NOTIFICATION = {
+    "type": "system",
+    "subtype": "task_notification",
+    "tool_use_id": "tu1",
+    "status": "completed",
+    "summary": "pong",
+}
+
+
+def _spawn_turn(after_turn: dict | None = None) -> list[dict]:
+    """A turn that launches a background Agent and ends before it reports."""
+    steps: list[dict] = [
+        {"tool_use": {"id": "tu1", "name": "Agent", "input": {"description": "Explore"}}},
+        {
+            "raw": {
+                "type": "system",
+                "subtype": "task_started",
+                "tool_use_id": "tu1",
+                "is_backgrounded": True,
+            }
+        },
+        {"tool_result": {"id": "tu1", "content": "Async agent launched successfully"}},
+        {"text": "Launched."},
+        {"result": {"result": "Launched.", "total_cost_usd": 0.002}},
+    ]
+    if after_turn is not None:
+        steps.append({"after_turn": after_turn})
+    return steps
+
+
+def _card_returns(events: list) -> list[tuple[str, str]]:
+    """(stream, content) of every spawn_agent return the sink saw — the
+    demux settling a Claude-side sub-agent's card."""
+    out = []
+    for sid, ev in events:
+        part = getattr(ev, "part", None)
+        if isinstance(part, ToolReturnPart) and part.tool_name == "spawn_agent":
+            out.append((sid, str(part.content)))
+    return out
+
+
+@pytest.mark.anyio
+async def test_run_waits_for_the_background_agent_and_reports_the_reaction(tmp_path):
+    """The spawn's claude launched a background Agent and ended its turn:
+    the runner keeps the process open until Claude reacts to the report and
+    that reaction is the spawn's report (last result), with the card settled
+    and both turns' usage summed."""
+    own_turn = {
+        "prelude": [_NOTIFICATION],
+        "steps": [
+            {"text": "Agent completed: pong"},
+            {"result": {"result": "Agent completed: pong", "total_cost_usd": 0.005}},
+        ],
+        "delay": 0.3,
+    }
+    binary = fake_claude_bin(tmp_path, {"turns": [_spawn_turn(own_turn)]})
+    events: list = []
+
+    async def on_event(sid, ev, usage):
+        events.append((sid, ev))
+
+    result = await ClaudeCliRunner(on_event, None).run(**_run_kwargs(binary, tmp_path))
+    assert result.output == "Agent completed: pong"
+    assert result.usage.input_tokens == 14 and result.usage.details[COST_DETAIL_KEY] == 5000
+    assert _card_returns(events) == [("s1", "pong")]
+    # One process, two turns, no second user message: the reaction was
+    # Claude's own, not something the runner sent.
+    users = [m for m in read_claude_log(tmp_path) if m.get("type") == "user"]
+    assert len(users) == 1
+
+
+@pytest.mark.anyio
+async def test_run_settles_a_report_the_cli_never_reacted_to(tmp_path):
+    """The agent reports but Claude runs no turn on it: the sent turn's
+    result stands, and the notification still settles the card on the way
+    out instead of dying in the process's prelude."""
+    binary = fake_claude_bin(
+        tmp_path, {"turns": [_spawn_turn({"prelude": [_NOTIFICATION], "delay": 0.2})]}
+    )
+    events: list = []
+
+    async def on_event(sid, ev, usage):
+        events.append((sid, ev))
+
+    result = await ClaudeCliRunner(on_event, None).run(**_run_kwargs(binary, tmp_path))
+    assert result.output == "Launched." and result.usage.details[COST_DETAIL_KEY] == 2000
+    assert _card_returns(events) == [("s1", "pong")]
+
+
+@pytest.mark.anyio
+async def test_run_gives_up_on_an_agent_that_never_reports(tmp_path, monkeypatch):
+    """Bounded by the silence timeout: the sent turn's result is the report
+    and the spawn ends (killing the agent with the process) rather than
+    pinning its slot forever."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "0.3")
+    binary = fake_claude_bin(tmp_path, {"turns": [_spawn_turn({"delay": 30})]})
+    result = await ClaudeCliRunner(None, None).run(**_run_kwargs(binary, tmp_path))
+    assert result.output == "Launched."
+
+
+@pytest.mark.anyio
+async def test_run_keeps_the_report_when_the_reaction_goes_silent(tmp_path, monkeypatch):
+    """A reaction turn that hangs is interrupted like any silent turn, but it
+    does not fail the spawn: the sent turn already produced the report."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_TIMEOUT", "0.3")
+    own_turn = {"prelude": [_NOTIFICATION], "steps": [{"text": "hmm"}, {"await_interrupt": True}]}
+    binary = fake_claude_bin(tmp_path, {"turns": [_spawn_turn(own_turn)]})
+    result = await ClaudeCliRunner(None, None).run(**_run_kwargs(binary, tmp_path))
+    assert result.output == "Launched."

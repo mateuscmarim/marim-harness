@@ -169,10 +169,13 @@ idle reaper stretches its clock tenfold while a background agent is still
 running (closing the process would kill it and lose the report; the
 stretched clock only bounds an agent that never reports, since a closed
 process resumes by id anyway) and starts the normal one when the report
-lands. Two things do not cover this: a `backend: claude-cli` *spawn*
-closes its process when its own turn ends, so a background agent inside a
-spawn is lost with it; and a headless/aux clone has no session to play the
-turn into, so its reaction stays in Claude's history only.
+lands. A `backend: claude-cli` *spawn* and a headless run (`marim -p`)
+own their process for one turn only, so they wait a running background
+agent out before closing it (bounded by `MARIM_CLAUDE_CLI_TIMEOUT`): the
+spawn's report is Claude's reaction to the agent (the last result of the
+process), and headless plays the reaction as an autonomous turn and prints
+its text after the turn's own. An aux clone (advisor, summarizer) is
+one-turn read-only and does not wait.
 
 No API key is read for this provider — the CLI owns its own subscription auth.
 The model picker's `claude-cli` catalog is the CLI's own `/model` menu, read

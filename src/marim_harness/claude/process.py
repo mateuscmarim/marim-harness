@@ -26,7 +26,9 @@ with no user message from marim in between (probed 2026-09-13). Those
 objects are buffered on an *unsolicited* ``TurnHandle`` (``take_unsolicited``
 hands it to the consumer that runs marim's matching autonomous turn) instead
 of being dropped, and the idle reaper holds off while a background sub-agent
-is still running — closing the process would kill it.
+is still running — closing the process would kill it. A consumer that owns
+the process for one turn only (a ``backend: claude-cli`` spawn, a headless
+run) waits that report out with ``wait_background`` before closing.
 """
 
 from __future__ import annotations
@@ -99,6 +101,10 @@ _PRELUDE_LIMIT = 64
 # rather than stopped: Claude Code always ends an agent with a notification, so
 # the hold is only ever a bound on a report that will never come.
 _BACKGROUND_HOLD_FACTOR = 10
+# How long ``wait_background`` gives the CLI to open its reaction turn once
+# the last sub-agent's notification has landed: the ``system/init`` follows
+# the notification within milliseconds when it comes at all.
+_REACTION_GRACE = 2.0
 
 # The callback fired when the CLI opens a turn of its own: receives the
 # objects the turn opened with (any inter-turn prelude — the task
@@ -219,6 +225,10 @@ class ClaudeProcess:
         self._unsolicited: deque[TurnHandle] = deque()
         self._prelude: deque[dict] = deque(maxlen=_PRELUDE_LIMIT)
         self._background: set[str] = set()
+        # Set whenever the background state above moves (a sub-agent starts
+        # or reports, an own turn opens, the process closes) so
+        # `wait_background` wakes without polling; the waiter clears it.
+        self._changed = asyncio.Event()
         # Bumped on every control_request handler entry AND exit, so the turn's
         # silence clock can tell that a prompt was open at some point inside a
         # window even when it has already closed again (see next_turn_object).
@@ -282,6 +292,55 @@ class ClaudeProcess:
         it; None when there is none. Read it like any other handle — through
         ``next_turn_object``/``turn_objects``."""
         return self._unsolicited.popleft() if self._unsolicited else None
+
+    def take_prelude(self) -> list[dict]:
+        """The objects that arrived between turns without opening one (a
+        notification the CLI never reacted to), oldest first; the buffer is
+        emptied. For a consumer about to close the process — the next turn
+        would otherwise have carried them (``send_turn``)."""
+        objs = list(self._prelude)
+        self._prelude.clear()
+        return objs
+
+    async def wait_background(
+        self, timeout: float | None = None, grace: float = _REACTION_GRACE
+    ) -> bool:
+        """Wait for the CLI to react to its background sub-agents. True as
+        soon as a turn of its own waits in ``take_unsolicited`` (already
+        finished or still streaming); False when there is nothing left to
+        hear from — no sub-agent running and no notification the CLI could
+        still react to — or when ``timeout`` (None: unbounded) runs out with
+        a sub-agent still working, or when the process closes. A notification
+        that landed with no turn open gets ``grace`` seconds for the
+        reaction's ``system/init`` to follow, since the CLI does not always
+        run one. Returns at once for a process that never backgrounded
+        anything, so a consumer can call it unconditionally at turn end."""
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            if self._unsolicited:
+                return True
+            if self.closed.is_set() or not (self._background or self._prelude):
+                return False
+            if self._background:
+                wait = None if deadline is None else deadline - loop.time()
+                if wait is not None and wait <= 0:
+                    logger.warning(
+                        "claude's background sub-agent(s) %s did not report in %.0fs",
+                        sorted(self._background),
+                        timeout,
+                    )
+                    return False
+            else:
+                # Only a prelude is pending: the reaction opens within `grace`
+                # or the CLI is not going to react.
+                wait = grace
+            self._changed.clear()
+            try:
+                await asyncio.wait_for(self._changed.wait(), wait)
+            except (asyncio.TimeoutError, TimeoutError):
+                if not self._background:
+                    return False
 
     @property
     def pid(self) -> int | None:
@@ -435,6 +494,7 @@ class ClaudeProcess:
         # The sub-agents died with the process; the resumed CLI carries the
         # notifications it did see in its own history.
         self._background.clear()
+        self._changed.set()
 
     async def aclose(self) -> None:
         self._cancel_idle()
@@ -500,8 +560,10 @@ class ClaudeProcess:
         subtype = obj.get("subtype")
         if subtype == "task_started" and obj.get("is_backgrounded") and tid:
             self._background.add(tid)
+            self._changed.set()
         elif subtype == "task_notification":
             self._background.discard(tid)
+            self._changed.set()
 
     def _route_unsolicited(self, obj: dict) -> None:
         """An object with no turn open. A ``system/init`` opens a turn the CLI
@@ -518,6 +580,7 @@ class ClaudeProcess:
                 return
             if obj.get("subtype") != "init":
                 self._prelude.append(obj)
+                self._changed.set()
                 # No turn is open, so the clock is (re)armed for the new
                 # state: the last sub-agent's notification with no turn to
                 # follow it ends the hold `_arm_idle` kept.
@@ -540,6 +603,7 @@ class ClaudeProcess:
         self._prelude.clear()
         handle = self._own_turn = TurnHandle(own=True)
         self._unsolicited.append(handle)
+        self._changed.set()
         for pre in opening[:-1]:
             handle.events.put_nowait(pre)
         logger.info("claude opened a turn of its own (%d objects in prelude)", len(opening) - 1)

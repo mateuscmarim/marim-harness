@@ -7,7 +7,10 @@ stream-json turn, Claude's tool calls are approved per tool through the spawn's
 ``ClaudeApprovalBroker`` (marim's ``auto``/``ask``/``plan`` mode, the approval
 panel, ``ask_user``), and the assistant/user objects it emits are translated
 into pydantic-ai streaming events for the sub-agents screen. The process is
-closed when the spawn ends; an interrupted spawn resumes by session id.
+closed when the spawn ends — after the turn Claude runs on its own once a
+background Agent of its own reports, since that agent lives inside the
+process (the LAST result's text is the spawn's report, see
+``sum_result_usages``); an interrupted spawn resumes by session id.
 
 The harness wrapping (worktree, hooks bracketing, output cap, background
 persist) stays in ``cli_spawn.py``, so this module is unit-tested without the
@@ -17,7 +20,7 @@ rest of the harness.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -429,11 +432,16 @@ class ClaudeCliRunner:
         # Capturing that (rather than pre-seeding `resume_session_id`) is what
         # lets a later re-resume key off the fork, not the exhausted original.
         state = _RunState()
+
+        async def consume(obj: dict) -> None:
+            await self._consume(obj, state, translator, demux, stream_id, checkpoint)
+
         await process.start()
         try:
             handle = await process.send_turn(prompt)
             async for obj in turn_objects(process, handle):
-                await self._consume(obj, state, translator, demux, stream_id, checkpoint)
+                await consume(obj)
+            await self._settle_background(process, state, consume)
         except CliModelError as exc:
             # next_turn_object's silence timeout (already interrupted the turn).
             raise CliRunError(str(exc)) from exc
@@ -442,6 +450,35 @@ class ClaudeCliRunner:
             # spawn was cancelled, the CLI died), nothing outlives the spawn.
             await process.aclose()
         return self._finalize(state, translator, demux)
+
+    async def _settle_background(
+        self, process: ClaudeProcess, state: _RunState, consume: Callable[[dict], Awaitable[None]]
+    ) -> None:
+        """The turn ended with a background Agent of Claude's still running:
+        it lives inside this process, so closing now would lose its report
+        and leave its card spinning. Wait for the CLI's reaction — the turn it
+        runs on its own when the agent reports (`ClaudeProcess.wait_background`)
+        — and consume it like the sent turn: its result becomes the spawn's
+        report (the reaction is what Claude has to say once the agent is
+        done), its usage adds up. A notification the CLI never reacted to
+        still settles the card through the demux. Bounded by the silence
+        timeout, per wait and per streamed object — an agent that outlives
+        it is lost with the process, as under the main loop's idle hold, and
+        a reaction that goes silent is interrupted (`next_turn_object`) and
+        dropped: the sent turn's result stands as the report."""
+        if state.closed_detail:
+            return  # the process died mid-turn; there is nothing to wait for
+        timeout = process.silence_timeout if process.silence_timeout > 0 else None
+        try:
+            while await process.wait_background(timeout):
+                handle = process.take_unsolicited()
+                assert handle is not None
+                async for obj in turn_objects(process, handle):
+                    await consume(obj)
+        except CliModelError as exc:
+            logger.warning("claude's reaction to its background sub-agent dropped: %s", exc)
+        for obj in process.take_prelude():
+            await consume(obj)
 
     async def _consume(
         self,
@@ -505,10 +542,10 @@ class ClaudeCliRunner:
                 if self._on_model is not None and stream_id:
                     await self._on_model(stream_id, str(found))
         if obj.get("type") == "result":
-            # A turn ends at its result, so a spawn normally sees exactly one.
-            # The fold is kept anyway (the LAST result's text is the report,
-            # usage sums across all of them) because a resumed spawn replays
-            # into the same state — see sum_result_usages.
+            # A turn ends at its result; a spawn sees more than one when
+            # Claude reacts to a background Agent's report after it
+            # (`_settle_background`). The LAST result's text is the report,
+            # usage sums across all of them — see sum_result_usages.
             state.results.append(obj)
             state.output = obj.get("result", "") or ""
             return

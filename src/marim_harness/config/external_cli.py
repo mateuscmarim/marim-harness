@@ -119,6 +119,15 @@ class ExternalCliModel(Model):
         copy). No-op by default."""
         return None
 
+    async def wait_backend_turn(self, timeout: float | None = None) -> bool:
+        """Wait for a turn the backend runs on its own once a background
+        sub-agent of its reports (see ``on_backend_turn``). True when one is
+        buffered and the next autonomous turn (an empty prompt) plays it;
+        False when nothing is left to hear from, the wait timed out, or the
+        backend has no such turns (default). For a consumer with no host to
+        queue the autonomous turn — a headless run — to call before closing."""
+        return False
+
     async def aclose(self) -> None:
         """Release whatever the provider holds open (a subprocess, a server
         thread). Called by the harness when the model is switched away from

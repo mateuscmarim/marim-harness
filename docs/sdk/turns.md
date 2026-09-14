@@ -22,6 +22,21 @@ accumulates history across turns (see
 [Sessions & state](sessions-and-state.md)), so a second `run_turn` on the
 same harness continues the conversation.
 
+Under the `claude-cli` model a turn can end with a background Agent of
+Claude's still running inside the CLI process; Claude reacts to its report
+with a turn of its own that marim plays as an *autonomous* turn (an empty
+prompt). A hosted session queues that turn itself. An embedder running one
+turn at a time waits for it before tearing down, or the agent dies with the
+process:
+
+```python
+outcome = await harness.run_turn("explore the repo with an agent")
+while await harness.wait_backend_turn(timeout=600):
+    reaction = await harness.run_turn("")
+```
+
+`wait_backend_turn` returns `False` at once for every other model.
+
 ## The approval loop
 
 The agent's output type is `[str, DeferredToolRequests]`. Tools registered

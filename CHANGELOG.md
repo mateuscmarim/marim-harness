@@ -89,6 +89,20 @@ pre-1.0, minor versions may contain breaking changes.
   at the start of the next turn, the idle reaper holds (bounded) while a
   background agent runs, and a resumed history records the unanswered spawn as
   "reports later" rather than as an interrupted call.
+- **`claude-cli`: a background Agent inside a spawn or a headless run died
+  with the process.** A `backend: claude-cli` spawn closed its `claude`
+  process when its turn ended and `marim -p` exited with the turn, so an
+  Agent that spawn or run had launched in the background was killed before
+  it reported — the spawn's report said "I kicked off an agent" and ended,
+  and its card spun forever. Both now wait the agent out (bounded by
+  `MARIM_CLAUDE_CLI_TIMEOUT`, `ClaudeProcess.wait_background`): the spawn
+  consumes Claude's reaction turn as part of the run, so its report is what
+  Claude has to say once the agent is done (the last result, usage summed)
+  and a report Claude never reacts to still settles the card; headless
+  plays the reaction as an autonomous turn (`Harness.wait_backend_turn`,
+  also for embedders running one turn at a time) and prints its text after
+  the turn's own. A reaction that goes silent is interrupted and dropped —
+  the turn's own result stands.
 - **Switching sessions under `claude-cli`/`codex-cli` kept driving the old
   conversation.** A session switch, `/new` or `/clear` rebound marim's
   session store but left the adapter's live `claude` process or codex thread
