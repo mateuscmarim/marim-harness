@@ -82,6 +82,7 @@ class CliSubagentDemux:
         self._usage: dict[str, RunUsage] = {}
         self._usage_msgs: dict[str, set[str]] = {}
         self._model_sent: set[str] = set()
+        self._agent_streams: dict[str, str] = {}
 
     def route(self, obj: dict) -> tuple[list[RoutedEvent], dict | None]:
         kind = obj.get("type")
@@ -101,10 +102,18 @@ class CliSubagentDemux:
 
     def _system(self, obj: dict) -> tuple[list[RoutedEvent], dict | None]:
         subtype = obj.get("subtype")
+        if subtype not in ("task_started", "task_notification", "task_updated"):
+            sid = obj.get("parent_tool_use_id") or self._agent_streams.get(str(obj.get("agent_id")))
+            if sid:
+                return [
+                    self._routed(str(sid), ev) for ev in self._translator(str(sid)).translate(obj)
+                ], None
         if subtype == "task_started":
             tid = str(obj.get("tool_use_id") or "")
             if tid:
                 self._spawns.setdefault(tid, _Spawn(container=None)).async_started = True
+                if isinstance(obj.get("agent_id"), str):
+                    self._agent_streams[obj["agent_id"]] = tid
             return [], None
         if subtype == "task_notification":
             tid = str(obj.get("tool_use_id") or "")

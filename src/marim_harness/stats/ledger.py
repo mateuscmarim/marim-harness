@@ -13,7 +13,7 @@ from typing import Literal
 from ..session.store import default_sessions_base, workspace_slug
 from .query import models as _models_query
 from .query import overview as _overview_query
-from .types import ModelsReport, Overview, Range, TurnEvent
+from .types import ModelsReport, Overview, Range, TurnEvent, normalize_backend_result
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,7 @@ def event_from_dict(data: object) -> TurnEvent | None:
         cost_usd=_as_float(data.get("cost_usd")),
         cost_is_exact=bool(data.get("cost_is_exact", False)),
         session_duration_seconds=_as_float(data.get("session_duration_seconds")),
+        backend_result=normalize_backend_result(data.get("backend_result")),
     )
 
 

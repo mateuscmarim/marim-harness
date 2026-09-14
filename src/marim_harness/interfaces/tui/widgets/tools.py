@@ -418,6 +418,13 @@ class ToolCallWidget(Collapsible):
         self.collapsed = False if value else self._default_collapsed()
         self._refresh_body()
 
+    def update_progress(self, args: dict, message: str) -> None:
+        """Refresh a backend activity card while keeping its pending spinner alive."""
+        self.args = args
+        self.result_text = message
+        self.title = self._summary()
+        self._refresh_body()
+
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
         self.result_text = result_text

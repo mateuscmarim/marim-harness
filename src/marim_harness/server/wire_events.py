@@ -203,6 +203,25 @@ class SessionModeChanged(BaseModel):
 class SessionNotice(BaseModel):
     type: Literal["session.notice"]
     message: str
+    id: str | None = None
+    backend: str | None = None
+    kind: str | None = None
+    severity: str | None = None
+    data: dict = Field(default_factory=dict)
+
+
+class SessionBackendState(BaseModel):
+    type: Literal["session.backend_state"]
+    inventory: dict = Field(default_factory=dict)
+    telemetry: dict = Field(default_factory=dict)
+
+
+class BackendTaskChanged(BaseModel):
+    type: Literal["backend.task"]
+    id: str
+    backend: str
+    description: str
+    status: str
 
 
 class SteerAccepted(BaseModel):
@@ -250,6 +269,8 @@ WireEvent = Annotated[
         | SessionTtft
         | SessionModeChanged
         | SessionNotice
+        | BackendTaskChanged
+        | SessionBackendState
         | SteerAccepted
         | StreamGap
     ),

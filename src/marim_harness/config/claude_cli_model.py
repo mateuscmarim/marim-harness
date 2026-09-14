@@ -58,7 +58,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -76,6 +76,7 @@ from ..claude.env import (
     cli_timeout,
     resolve_cli_binary,
 )
+from ..claude.lifecycle import ClaudeLifecycle, LifecycleChunk, inventory_from
 from ..claude.process import (
     ClaudeProcess,
     ProcessOptions,
@@ -106,6 +107,7 @@ from .external_cli import (
     ExternalCliModel,
     TextFolder,
 )
+from .lifecycle import BackendNotice, BackendObservation, deliver_notice, notice_part
 from .quota import QuotaHint
 
 if TYPE_CHECKING:
@@ -300,6 +302,7 @@ class InitChunk:
     session_id: str | None
     version: str
     model: str
+    inventory: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -326,6 +329,7 @@ class DoneChunk:
     # model the old model's cumulative total keeps it heaviest for a while.
     context_window: int | None = None
     context_windows: dict[str, int] = field(default_factory=dict)
+    backend_details: dict = field(default_factory=dict)
 
 
 def _flatten_result_content(content) -> str:
@@ -429,7 +433,10 @@ def _result_chunk(obj: dict, *, produced_text: bool) -> DoneChunk:
     ``error_detail``; with NO usable text the turn is a bare failure and
     ``complete=False`` makes the model raise ``CliModelError``."""
     usage = request_usage_from_cli(obj.get("usage"), None)
+    lifecycle = ClaudeLifecycle()
+    lifecycle.result(obj)
     facts = {
+        "backend_details": lifecycle.result_details,
         "session_id": obj.get("session_id"),
         "usage": usage,
         "cumulative_cost_usd": _cumulative_cost(obj),
@@ -517,6 +524,7 @@ def _event_chunks(obj: dict) -> Iterator:
                 session_id=obj.get("session_id") or None,
                 version=str(obj.get("claude_code_version") or ""),
                 model=str(obj.get("model") or ""),
+                inventory=inventory_from(obj),
             )
     elif kind == "stream_event":
         chunk = _delta_chunk(obj)
@@ -532,6 +540,27 @@ def _event_chunks(obj: dict) -> Iterator:
         # `isReplay` is the CLI echoing back a message marim itself sent (the
         # turn's prompt, or a steer) — never a tool result.
         yield from _user_chunks(obj)
+
+
+def _is_lifecycle_object(obj: dict) -> bool:
+    if obj.get("parent_tool_use_id") or obj.get("agent_id"):
+        return False  # child notices are delivered by the demux side-channel
+    if obj.get("type") == CLOSED:
+        return True
+    if str(obj.get("subtype", "")).startswith("task_") and not obj.get("task_id"):
+        return False
+    return obj.get("type") == "system" and str(obj.get("subtype")) in {
+        "compact_boundary",
+        "notification",
+        "permission_denied",
+        "model_refusal_fallback",
+        "thinking_tokens",
+        "session_state_changed",
+        "vcs_state_changed",
+        "task_started",
+        "task_progress",
+        "task_notification",
+    }
 
 
 async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncGenerator:
@@ -554,6 +583,8 @@ async def consume_cli_stream(objs: AsyncIterator[dict]) -> AsyncGenerator:
     ``CLOSED`` object the process publishes when the CLI exits mid-turn."""
     produced_text = False
     async for obj in objs:
+        if _is_lifecycle_object(obj):
+            yield LifecycleChunk(obj)
         if _is_subagent_noise(obj):
             continue
         kind = obj.get("type")
@@ -797,6 +828,9 @@ class ClaudeCliModel(ExternalCliModel):
         # `getattr(model, ...)`). Refreshed per assistant event / per result
         # / once per turn respectively; None until the first reading.
         self.context_report: ContextReport | None = None
+        self.context_invalidated = False
+        self.lifecycle = ClaudeLifecycle()
+        self._lifecycle_notifications: set[asyncio.Task] = set()
         self.quota_hint: QuotaHint | None = None
         # The window is a per-model constant learned at each result; kept
         # apart so the next turn's first reading carries it before its own
@@ -898,6 +932,10 @@ class ClaudeCliModel(ExternalCliModel):
         # total at zero; the meter must follow or the first result is billed
         # against the old process's total.
         self._cost.reset()
+        self.lifecycle = ClaudeLifecycle()
+        process.on_closed = lambda status, state=self.lifecycle: self._lifecycle_closed(
+            state, status
+        )
         return process
 
     def _on_unsolicited(self, opening: list[dict]) -> None:
@@ -1055,7 +1093,12 @@ class ClaudeCliModel(ExternalCliModel):
             return
         if self.ephemeral or previous.ephemeral or previous._process is None:
             return
+        self.lifecycle, previous.lifecycle = previous.lifecycle, ClaudeLifecycle()
+        self.context_invalidated = previous.context_invalidated
         self._process, previous._process = previous._process, None
+        self._process.on_closed = lambda status, state=self.lifecycle: self._lifecycle_closed(
+            state, status
+        )
         self._broker, previous._broker = previous._broker, None
         self._cost, previous._cost = previous._cost, CostMeter()
         self.context_report, previous.context_report = previous.context_report, None
@@ -1071,6 +1114,8 @@ class ClaudeCliModel(ExternalCliModel):
         to close (a process only exists inside the loop that spawned it)."""
         process, self._process = self._process, None
         self._broker = None
+        self.lifecycle = ClaudeLifecycle()
+        self.context_invalidated = False
         self.context_report = self.quota_hint = None
         self._context_window = self._prompt_model = None
         self._cost = CostMeter()
@@ -1102,8 +1147,10 @@ class ClaudeCliModel(ExternalCliModel):
                 # A model change (a fallback, a /model switch) invalidates
                 # the carried window until the result names the new one.
                 self._prompt_model, self._context_window = chunk.model, None
+            self.context_invalidated = False
             self.context_report = ContextReport(chunk.prompt_tokens, self._context_window)
             return
+        self.lifecycle.inventory = chunk.inventory
         note_old_version_once(chunk.version)
         if chunk.session_id and not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + chunk.session_id)
@@ -1124,6 +1171,7 @@ class ClaudeCliModel(ExternalCliModel):
         Played after a typed turn that went out first, its result is older
         than the last one billed: the cost is on the ledger already and the
         window is staler than the one shown, so both are left alone."""
+        self.lifecycle.result_details = done.backend_details
         if own and self._cost.behind(done.cumulative_cost_usd):
             return charge_cost(done.usage, 0.0)
         window = done.context_windows.get(self._prompt_model or "") or done.context_window
@@ -1140,6 +1188,59 @@ class ClaudeCliModel(ExternalCliModel):
         if self.context_report is None:
             return None
         return {CONTEXT_REPORT_KEY: self.context_report.to_payload()}
+
+    async def _display_tasks(self, tasks: list) -> None:
+        if self.on_activity is None or self.ephemeral:
+            return
+        for event in tasks:
+            try:
+                await self.on_activity([event])
+            except Exception as exc:
+                logger.warning("claude task display failed cause=%s", type(exc).__name__)
+
+    def _lifecycle_closed(self, state: ClaudeLifecycle, status: str) -> None:
+        events = state.close(status)
+        if events:
+            task = asyncio.create_task(self._display_tasks(events))
+            self._lifecycle_notifications.add(task)
+            task.add_done_callback(self._lifecycle_notifications.discard)
+
+    @property
+    def backend_inventory(self) -> dict:
+        return self.lifecycle.inventory
+
+    @property
+    def backend_telemetry(self) -> dict:
+        return {
+            "thinking_tokens": self.lifecycle.thinking_tokens,
+            "state": self.lifecycle.backend_state,
+            "vcs_revision": self.lifecycle.vcs_revision,
+        }
+
+    async def _begin_lifecycle_turn(self) -> None:
+        before = self._observation()
+        self.lifecycle.begin_turn()
+        if self._observation() != before:
+            await self._display_tasks([self._observation()])
+
+    def _observation(self) -> BackendObservation:
+        return BackendObservation(dict(self.backend_inventory), dict(self.backend_telemetry))
+
+    def _consume_lifecycle(self, chunk: LifecycleChunk) -> list:
+        if chunk.obj.get("type") == CLOSED:
+            return self.lifecycle.close(str(chunk.obj.get("closure_status", "interrupted")))
+        before = self._observation()
+        events = self.lifecycle.consume(chunk.obj)
+        if self._observation() != before:
+            events.append(self._observation())
+        for event in events:
+            if isinstance(event, BackendNotice) and event.kind == "compaction":
+                used = event.data.get("post_tokens")
+                window = self.context_report.window if self.context_report else self._context_window
+                self._context_window = window
+                self.context_report = ContextReport(used, window) if used is not None else None
+                self.context_invalidated = used is None
+        return events
 
     async def _refresh_quota(self, process: ClaudeProcess) -> None:
         """Poll ``get_usage`` once, after the turn's result (on the consuming
@@ -1166,7 +1267,9 @@ class ClaudeCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
         process, handle, first = await self._start_turn(messages, model_settings)
+        await self._begin_lifecycle_turn()
         done: DoneChunk | None = None
+        parts: list = []
         folded = _FoldedText()  # assistant prose + folded ▸ tool lines (no UI here)
         objs = _turn_stream(process, handle, first)
         try:
@@ -1174,8 +1277,22 @@ class ClaudeCliModel(ExternalCliModel):
                 async for chunk in stream:
                     if isinstance(chunk, (InitChunk, PromptUsageChunk)):
                         self._note(chunk)
+                        if isinstance(chunk, InitChunk) and chunk.inventory:
+                            await self._display_tasks([self._observation()])
                     elif isinstance(chunk, DoneChunk):
                         done = chunk
+                    elif isinstance(chunk, LifecycleChunk):
+                        for event in self._consume_lifecycle(chunk):
+                            if isinstance(event, BackendNotice):
+                                parts.extend(
+                                    [TextPart(folded.text()), notice_part(event.to_payload())]
+                                )
+                                folded = _FoldedText()
+                                await deliver_notice(
+                                    event, self.on_activity, ephemeral=self.ephemeral
+                                )
+                            else:
+                                await self._display_tasks([event])
                     else:
                         folded.add(chunk)
             if done is not None and done.complete:
@@ -1186,7 +1303,7 @@ class ClaudeCliModel(ExternalCliModel):
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
         return ModelResponse(
-            parts=[TextPart(content=folded.text())],
+            parts=[*parts, TextPart(content=folded.text())],
             model_name=self.model_name,
             # Stamp each response with the current time — not a shared
             # construction-time value — so a multi-turn history doesn't carry
@@ -1195,6 +1312,7 @@ class ClaudeCliModel(ExternalCliModel):
             usage=self._settle_turn(done, own=handle.own),
             provider_name="claude-cli",
             provider_details=self._response_details(),
+            metadata={"backend_result": self.lifecycle.result_details},
         )
 
     @asynccontextmanager
@@ -1206,6 +1324,7 @@ class ClaudeCliModel(ExternalCliModel):
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
         process, handle, first = await self._start_turn(messages, model_settings)
+        await self._begin_lifecycle_turn()
         objs = _turn_stream(process, handle, first)
         stream = ClaudeCliStreamedResponse(
             model_request_parameters=model_request_parameters,
@@ -1215,6 +1334,9 @@ class ClaudeCliModel(ExternalCliModel):
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
             _on_note=self._note,
+            _on_lifecycle=self._consume_lifecycle,
+            _observation=self._observation,
+            _ephemeral=self.ephemeral,
             _finish=lambda done: self._settle_turn(done, own=handle.own),
             _details=self._response_details,
             _after=lambda: self._refresh_quota(process),
@@ -1268,6 +1390,8 @@ class ClaudeCliModel(ExternalCliModel):
         self._clones.clear()
         if self._process is not None:
             await self._process.aclose()
+        if self._lifecycle_notifications:
+            await asyncio.gather(*self._lifecycle_notifications)
 
 
 # Moved to config/external_cli.py (shared with codex-cli); the old name stays
@@ -1318,6 +1442,10 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     # once-per-turn quota poll awaited after the settle (best-effort, never
     # raises into the stream — mirrors CodexStreamedResponse._after).
     _on_note: Callable[[InitChunk | PromptUsageChunk], None] | None = None
+    _on_lifecycle: Callable[[LifecycleChunk], list] | None = None
+    _observation: Callable[[], BackendObservation] | None = None
+    _lifecycle: ClaudeLifecycle = field(default_factory=ClaudeLifecycle)
+    _ephemeral: bool = False
     _finish: Callable[[DoneChunk], RequestUsage] | None = None
     _details: Callable[[], dict | None] | None = None
     _after: Callable[[], Awaitable[None]] | None = None
@@ -1354,16 +1482,32 @@ class ClaudeCliStreamedResponse(StreamedResponse):
 
         demux = self._demux or CliSubagentDemux()
         assert self._objs is not None
+        shell_ids: set[str] = set()
         async for obj in self._objs:
+            if obj.get("type") == "system":
+                yield obj
+                await self._route_system(obj, demux, shell_ids, activity, folder)
+                continue
             if obj.get("type") == "stream_event":
                 if not obj.get("parent_tool_use_id"):
                     yield obj
                 continue
             routed, remainder = demux.route(obj)
+            if self._on_subagent is None:
+                remainder = obj  # Preserve headless folded spawn/tool lines.
             for r in routed:
                 await self._deliver_routed(r, activity, folder)
             if remainder is not None:
                 yield remainder
+
+    async def _route_system(self, obj, demux, shell_ids, activity, folder) -> None:
+        if obj.get("task_type") == "local_bash":
+            shell_ids.add(str(obj.get("task_id")))
+        if str(obj.get("task_id")) in shell_ids:
+            return
+        routed, _ = demux.route(obj)
+        for r in routed:
+            await self._deliver_routed(r, activity, folder)
 
     async def _deliver_routed(
         self, r, activity: Callable[[list], Awaitable[None]] | None, folder: TextFolder
@@ -1377,7 +1521,18 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         elif self._on_subagent is not None:
             if r.model and self._on_subagent_model is not None:
                 await self._on_subagent_model(r.stream_id, r.model)
-            await self._on_subagent(r.stream_id, r.event, r.usage)
+            try:
+                await self._on_subagent(r.stream_id, r.event, r.usage)
+            except Exception:
+                if not isinstance(r.event, BackendNotice):
+                    raise
+                logger.warning("claude child notice delivery failed")
+        elif isinstance(r.event, BackendNotice):
+            await deliver_notice(
+                replace(r.event, message=f"[{r.stream_id}] {r.event.message}"),
+                None,
+                ephemeral=self._ephemeral,
+            )
 
     def _finalize_done(self, done: DoneChunk | None) -> None:
         """Mirror ``request()``: a stream that ends without a proper ``result``
@@ -1389,6 +1544,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
         self._usage = self._finish(done) if self._finish is not None else done.usage
+        self.metadata = {"backend_result": done.backend_details}
         details = self._details() if self._details is not None else None
         if details:
             self.provider_details = {**(self.provider_details or {}), **details}
@@ -1409,6 +1565,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                 yield ev
         elif isinstance(chunk, (InitChunk, PromptUsageChunk)) and self._on_note is not None:
             self._on_note(chunk)
+            if isinstance(chunk, InitChunk) and chunk.inventory and self._observation is not None:
+                await self._display_observation(self._observation())
+
+    async def _display_observation(self, event: object) -> None:
+        if self._on_activity is not None and not self._ephemeral:
+            try:
+                await self._on_activity([event])
+            except Exception as exc:
+                logger.warning("claude lifecycle display failed cause=%s", type(exc).__name__)
 
     async def _get_event_iterator(self):
         if self._objs is None:
@@ -1425,7 +1590,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
         )
-        objs = self._demuxed_objs(activity, folder) if self._on_subagent is not None else self._objs
+        objs = self._demuxed_objs(activity, folder)
         thinking = _ThinkingParts(self._parts_manager)
         done: DoneChunk | None = None
         # aclosing() so an abandoned/cancelled consumer finalizes the chunk
@@ -1439,6 +1604,9 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                 if isinstance(chunk, DoneChunk):
                     done = chunk
                     continue
+                if isinstance(chunk, LifecycleChunk):
+                    await self._emit_lifecycle(chunk, ledger, folder, thinking)
+                    continue
                 async for ev in self._events_for(chunk, folder, thinking):
                     ledger.note_event(ev)
                     yield ev
@@ -1447,6 +1615,22 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # cost the turn its usage (same ordering as CodexStreamedResponse).
         if self._after is not None:
             await self._after()
+
+    async def _emit_lifecycle(self, chunk, ledger, folder, thinking) -> None:
+        events = (
+            self._on_lifecycle(chunk) if self._on_lifecycle else self._lifecycle.consume(chunk.obj)
+        )
+        for event in events:
+            if isinstance(event, BackendNotice):
+                ledger.note_notice(event)
+                folder.part_n += 1
+                thinking.close()
+                await deliver_notice(event, self._on_activity, ephemeral=self._ephemeral)
+            elif self._on_activity is not None and not self._ephemeral:
+                try:
+                    await self._on_activity([event])
+                except Exception as exc:
+                    logger.warning("claude task display failed cause=%s", type(exc).__name__)
 
     def _attach_activity(self, entries: list[dict]) -> None:
         """The ledger's first tool entry: expose it on the response (merged

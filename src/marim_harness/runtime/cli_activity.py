@@ -35,6 +35,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RequestUsage
 
 from ..config.external_cli import CLI_ACTIVITY_KEY
+from ..config.lifecycle import notice_part
 
 MISSING_RESULT_NOTE = (
     "No result was recorded for this tool call: the CLI turn ended before the tool returned."
@@ -111,12 +112,27 @@ class _Expansion:
                 self._call(entry)
             elif kind == "result":
                 self._result(entry)
+            elif kind == "notice" and isinstance(entry.get("notice"), dict):
+                self._notice(entry["notice"])
         self._take_parts_through(len(self._parts) - 1)
         if self._unanswered:
             self._begin_request()
         self._close_request()
         self._close_response()
         return self._with_usage_on_last()
+
+    def _notice(self, payload: dict) -> None:
+        # A notice between parallel tool results must not seal their request:
+        # that would synthesize the still-pending returns and drop real results.
+        # ToolReturnPart metadata is application-only and stays out of model input.
+        if self._request:
+            part = self._request[-1]
+            metadata = dict(part.metadata) if isinstance(part.metadata, dict) else {}
+            notices = metadata.setdefault("backend_notices_after", [])
+            notices.append(payload)
+            part.metadata = metadata
+        else:
+            self._response.append(notice_part(payload))
 
     # --- entries ---------------------------------------------------------------------
     def _take_parts_through(self, index: int) -> None:

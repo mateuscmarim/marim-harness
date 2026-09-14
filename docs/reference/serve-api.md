@@ -831,8 +831,7 @@ reconnect after daemon restart as a full resync.
 
 ### Event types
 
-Turn stream (from the model loop; only these four stream-event kinds are
-surfaced):
+Turn stream (model output and display-only backend activity):
 
 | Type             | `data`                                        |
 | ---------------- | --------------------------------------------- |
@@ -840,6 +839,25 @@ surfaced):
 | `thinking.delta` | `{"text": "<chunk>"}`                         |
 | `tool.call`      | `{"name": "...", "args": {...}, "id": "..."}` |
 | `tool.result`    | `{"id": "...", "content": "<stringified>", "status": "done"\|"failed"\|"denied", "images": [{"sha": "...", "media_type": "image/png", "bytes": 4096}]}` — `images` lists any image the tool returned (a `read_file` on a PNG, an MCP image block); `content` carries a text placeholder in its place, and the bytes are served at `GET .../images/{sha}` the moment the event is published |
+
+Backend lifecycle events use the same ordered session bus:
+
+| Type | `data` |
+| --- | --- |
+| `session.notice` | Required `message`; optional `id`, `backend`, `kind`, `severity`, `data`. Older message-only events remain valid. |
+| `session.backend_state` | `inventory` and `telemetry` snapshots, replacing previous backend display state. |
+| `backend.task` | `id`, `backend`, `description`, `status` (`running`, `completed`, `failed`, `interrupted`); update one card by id. |
+
+Session GET also exposes `backend_inventory` and `backend_telemetry` objects
+(empty when unavailable). These are observations, never turn-completion or
+approval-resolution signals. Backend compaction produces `session.notice`,
+not `compaction.finished`; clients must preserve cached mirror history.
+
+Persisted lifecycle notices are blank text parts with
+`provider_details.backend_notice`, or ordered `metadata.backend_notices_after`
+records on a preceding tool return. Restore these as system notices at that
+position and deduplicate live/history overlap by `id` (not message text).
+See [lifecycle capabilities](cli-lifecycle-capabilities.md) for field sources.
 
 Under the `claude-cli` and `codex-cli` providers the CLI runs its own tools,
 so those calls never enter the model loop's stream; the daemon publishes them

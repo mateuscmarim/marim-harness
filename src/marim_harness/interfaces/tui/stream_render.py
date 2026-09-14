@@ -22,6 +22,8 @@ from textual.widget import Widget
 from ...binary_safe import render_binary_safe
 from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
+    BackendTaskChanged,
+    SessionNotice,
     TextDelta,
     ThinkingDelta,
     ToolCall,
@@ -34,6 +36,7 @@ from ...usage import resolve_cost, usage_from_dump
 from .subagents import SubAgentDetailHost, SubAgentPane, SubAgentWidget
 from .widgets import (
     AssistantMessage,
+    NoticeMessage,
     ThinkingWidget,
     ToolCallWidget,
     ToolGroupWidget,
@@ -465,6 +468,7 @@ class StreamRenderer:
         # run_workflow ToolCallWidget itself, which _on_tool_result must keep
         # settling normally — registering the card there would clobber it.
         self.workflow_cards: dict[str, SubAgentWidget] = {}
+        self.backend_tasks: dict[str, ToolCallWidget] = {}
         self.tool_group: ToolGroupWidget | None = None
         self.solo_tool: ToolCallWidget | None = None
         self._sub_streams: dict[str, _SubStreamState] = {}
@@ -520,6 +524,7 @@ class StreamRenderer:
         self._sub_streams.clear()
         self.subagents.clear()
         self.workflow_cards.clear()
+        self.backend_tasks.clear()
         self._detached_cards.clear()
         self.dirty_streams.clear()
         self.last_ttft = None
@@ -1290,8 +1295,15 @@ class StreamRenderer:
         # handlers that mount, so the base's ``container: Widget | None`` stays
         # honest without each handler re-checking.
         container: Widget = sink.container
+        if isinstance(wire, SessionNotice) and not self.app.session.claim_notice(wire.id):
+            return
         self._finalize_stale_blocks(wire, sink)
-        if isinstance(wire, TextDelta):
+        if isinstance(wire, SessionNotice):
+            sink.set_run(None, None)
+            await container.mount(NoticeMessage(wire.message))
+        elif isinstance(wire, BackendTaskChanged):
+            await self._on_backend_task(wire, sink, container)
+        elif isinstance(wire, TextDelta):
             await self._on_text(wire.text, sink, container)
         elif isinstance(wire, ThinkingDelta):
             await self._on_thinking(wire.text, sink, container)
@@ -1299,6 +1311,19 @@ class StreamRenderer:
             await self._on_tool_call(wire.id, wire.name, wire.args, sink, container)
         elif isinstance(wire, ToolResult):
             await self._on_tool_result(wire.id, wire.content, wire.status, sink)
+
+    async def _on_backend_task(self, wire: BackendTaskChanged, sink, container) -> None:
+        """Backend shells update one display card; they are never callable tools."""
+        widget = self.backend_tasks.get(wire.id)
+        if widget is None:
+            widget = ToolCallWidget("background shell", {"description": wire.description})
+            self.backend_tasks[wire.id] = widget
+            sink.set_run(None, None)
+            await container.mount(widget)
+        widget.update_progress({"description": wire.description}, wire.description)
+        if wire.status != "running":
+            status = "done" if wire.status == "completed" else "failed"
+            widget.finish(f"{wire.description} ({wire.status})", status=status)
 
     async def dispatch_stream_event(self, event, sink: "_StreamSink") -> None:
         """TEMPORARY (phase 3a) pydantic-ai adapter for :meth:`dispatch_wire` —

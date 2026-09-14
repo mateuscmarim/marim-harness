@@ -12,6 +12,9 @@ import json
 import shlex
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from uuid import uuid4
+
+from ..config.lifecycle import BackendNotice
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,16 @@ class TurnFailure:
 @dataclass(frozen=True)
 class Notice:
     message: str
+    kind: str = "warning"
+    severity: str = "warning"
+    id: str = field(default_factory=lambda: str(uuid4()), compare=False)
+    data: dict = field(default_factory=dict)
+    transient: bool = field(default=False, compare=False)
+
+    def normalized(self) -> BackendNotice:
+        return BackendNotice(
+            self.message, "codex-cli", self.kind, self.severity, self.id, self.data
+        )
 
 
 # --- collab (Codex-side sub-agents) ------------------------------------------
@@ -264,8 +277,20 @@ class ItemTranslator:
     def __init__(self) -> None:
         self._streamed: set[str] = set()
         self._output: dict[str, list[str]] = {}
+        from .lifecycle import CodexLifecycle
+
+        self.lifecycle = CodexLifecycle()
 
     def translate(self, method: str, params: dict) -> list[object]:
+        if not isinstance(params, dict):
+            return []
+        if method in ("item/started", "item/completed") and not isinstance(
+            params.get("item"), dict
+        ):
+            return []
+        lifecycle = self.lifecycle.translate(method, params)
+        if lifecycle is not None:
+            return lifecycle
         handler = _METHODS.get(method)
         return handler(self, params) if handler is not None else []
 
@@ -391,7 +416,6 @@ _STARTED_BY_KIND: dict[str, Callable[[dict], list[object]]] = {
         ActivityStart(cid, "apply_patch", args) for cid, args in _changes(item)
     ],
     "plan": _started_plan,
-    "contextCompaction": lambda item: [Notice("Codex compacted its context")],
     "collabAgentToolCall": lambda item: [collab_call(item)],
     "subAgentActivity": lambda item: [agent_ping(item)],
 }

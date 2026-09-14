@@ -440,6 +440,9 @@ def build_collaborators(
             cfg.stats_ledger,
             session_id=cfg.store.session_id,
             get_model_id=get_model_id,
+            get_backend_result=lambda: getattr(
+                getattr(get_model(), "lifecycle", None), "result_details", None
+            ),
             get_duration_seconds=lambda: (
                 session_holder[0].duration_snapshot() if session_holder else None
             ),

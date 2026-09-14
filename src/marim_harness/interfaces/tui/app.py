@@ -4,6 +4,7 @@ import time
 from asyncio import CancelledError, Event, Task, create_task
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 import rich.markup
@@ -25,9 +26,11 @@ from ...server.schema import STREAM_EVENT_TYPES
 from ...server.wire_events import (
     AskPending,
     AskResolved,
+    BackendTaskChanged,
     CompactionFinished,
     CompactionStarted,
     JobsChanged,
+    SessionBackendState,
     SessionModeChanged,
     SessionNotice,
     SessionRenamed,
@@ -63,7 +66,7 @@ from ...usage import resolve_cost, usage_from_dump
 from ..history import PromptHistory
 from ..prefs import load_theme, save_theme
 from .activity import ActivityMonitor
-from .commands import dispatch
+from .commands import dispatch, refresh_worktree_view
 from .interactions import (
     ApprovalPanel,
     AskUserPanel,
@@ -210,8 +213,17 @@ async def _handle_session_mode_changed(app: "HarnessApp", _wire: SessionModeChan
     app._refresh_mode_display()
 
 
+async def _handle_backend_state(app: "HarnessApp", _wire: SessionBackendState) -> None:
+    # The link has folded this snapshot before dispatch. Observations never
+    # drive TurnTracker or resolve an outstanding approval panel.
+    app.status.refresh_status()
+    if app._autocomplete is not None:
+        app._autocomplete.refresh_inventory(app.link.info.backend_inventory)
+    await refresh_worktree_view(app, _wire.telemetry)
+
+
 async def _handle_session_notice(app: "HarnessApp", wire: SessionNotice) -> None:
-    app.session.on_notice(wire.message)
+    await app.stream.on_wire(wire)
 
 
 async def _handle_session_renamed(app: "HarnessApp", wire: SessionRenamed) -> None:
@@ -361,6 +373,8 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     SessionTtft: _handle_session_ttft,
     SessionModeChanged: _handle_session_mode_changed,
     SessionNotice: _handle_session_notice,
+    SessionBackendState: _handle_backend_state,
+    BackendTaskChanged: _handle_session_notice,
     SessionRenamed: _handle_session_renamed,
     TasksChanged: _handle_tasks_changed,
     JobsChanged: _handle_jobs_changed,
@@ -508,6 +522,8 @@ class HarnessApp(App):
         # only: an attached app has no host in this process.
         self.host: SessionHost
         self._autocomplete: CommandAutocomplete | None = None
+        self._worktree_view: tuple[Path, AssistantMessage] | None = None
+        self._worktree_vcs_marker: tuple[int, int] | None = None
         # Full-bleed sub-agents screen (ctrl+x): its open/navigate/close lifecycle
         # and the per-frame repaint coalescing live in this collaborator.
         self.subagents = SubAgentsScreen(self)
@@ -1321,13 +1337,14 @@ class HarnessApp(App):
 
     # --- Log helpers ---
 
-    async def post_system(self, markdown: str) -> None:
+    async def post_system(self, markdown: str) -> AssistantMessage:
         """Render a system/command message into the log (markdown)."""
         log = self.query_one("#log", VerticalScroll)
         msg = AssistantMessage()
         await log.mount(msg)
         self.stream.append_stream(msg, markdown)
         self.stream.flush_streams()  # one-shot system text: render it now, no tick wait
+        return msg
 
     def append_log(self, widget) -> None:
         """Mount a notice/error into the log, keeping the viewport pinned to the
@@ -1650,7 +1667,7 @@ class HarnessApp(App):
         # time: the box grows with its content, so a menu positioned once (or by
         # a stylesheet constant) ends up covering a multi-line draft.
         self._autocomplete.position_above(self.query_one(PromptInput).box_height)
-        self._autocomplete.filter(query)
+        self._autocomplete.filter(query, backend_inventory=self.link.info.backend_inventory)
 
     def _hide_autocomplete(self) -> None:
         if self._autocomplete is not None:
