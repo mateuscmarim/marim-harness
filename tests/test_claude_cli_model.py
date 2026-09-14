@@ -40,6 +40,7 @@ from marim_harness.config.claude_cli_model import (
     ThinkingChunk,
     ToolResultChunk,
     ToolUseChunk,
+    backend_turn_note,
     consume_cli_stream,
     extract_system,
     flatten_history,
@@ -48,6 +49,7 @@ from marim_harness.config.claude_cli_model import (
     request_usage_from_cli,
 )
 from marim_harness.config.external_cli import CliModelError
+from marim_harness.runtime.context import wrap_turn_context
 from marim_harness.usage import COST_DETAIL_KEY
 from tests.fakes import fake_claude_bin, read_claude_argv, read_claude_argvs, read_claude_log
 
@@ -1491,3 +1493,121 @@ async def test_a_failed_quota_poll_clears_the_previous_hint(tmp_path, monkeypatc
 
     await model._refresh_quota(SimpleNamespace(alive=True, read_usage=failing_read_usage))  # type: ignore[arg-type]
     assert model.quota_hint is None
+
+
+# --- background sub-agents: the turn Claude runs on its own ---------------------
+
+_NOTIFICATION = {
+    "type": "system",
+    "subtype": "task_notification",
+    "tool_use_id": "tu1",
+    "status": "completed",
+    "summary": "pong",
+}
+_OWN_TURN = {"prelude": [_NOTIFICATION], "steps": [{"text": "Agent completed: pong"}]}
+_SPAWN_TURN = [
+    {"tool_use": {"id": "tu1", "name": "Agent", "input": {"description": "Explore"}}},
+    {
+        "raw": {
+            "type": "system",
+            "subtype": "task_started",
+            "tool_use_id": "tu1",
+            "is_backgrounded": True,
+        }
+    },
+    {"tool_result": {"id": "tu1", "content": "Async agent launched successfully"}},
+    {"text": "Launched."},
+    {"after_turn": _OWN_TURN},
+]
+
+
+def test_backend_turn_note_lists_the_reports():
+    note = backend_turn_note([_NOTIFICATION, {"type": "system", "subtype": "init"}])
+    assert note.startswith("[background sub-agent reports")
+    assert "sub-agent tu1 completed: pong" in note and note.endswith("]")
+    bare = backend_turn_note([{"type": "system", "subtype": "init"}])
+    assert "ran a turn of its own" in bare
+
+
+def _autonomous(note: str) -> list:
+    """The prompt marim's autonomous turn carries: context only, nothing typed."""
+    prompt = wrap_turn_context(note, "")
+    return _user("hi") + [ModelRequest(parts=[UserPromptPart(content=prompt)])]
+
+
+async def _wait_for(predicate, timeout: float = 3.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        assert asyncio.get_running_loop().time() < deadline, "condition never held"
+        await asyncio.sleep(0.02)
+
+
+@pytest.mark.anyio
+async def test_autonomous_turn_shows_the_cli_own_turn_and_settles_the_card(tmp_path, monkeypatch):
+    """The spawn card opened in turn 1 settles in the autonomous turn that
+    shows Claude's reaction, and nothing is sent to the CLI for it: its
+    history already holds that turn."""
+    model = _model(tmp_path, monkeypatch, {"turns": [_SPAWN_TURN]})
+    notes: list[str] = []
+    activity: list = []
+
+    async def on_activity(events):
+        activity.extend(events)
+
+    async def on_subagent(sid, event, usage):
+        pass  # the demux runs only with a sub-agent sink bound
+
+    model.on_backend_turn = notes.append
+    model.on_activity = on_activity
+    model.on_subagent = on_subagent
+    try:
+        first = await _stream_text(model)
+        await _wait_for(lambda: bool(notes))
+        assert model._process is not None and model._process.has_unsolicited
+        second = await _stream_text(model, _autonomous(notes[0]))
+    finally:
+        await model.aclose()
+    assert first == "Launched." and second == "Agent completed: pong"
+    assert "sub-agent tu1 completed: pong" in notes[0]
+    assert _user_texts(tmp_path) == ["User: hi"]  # the autonomous turn sent nothing
+    calls = [e.part.tool_call_id for e in activity if isinstance(e, FunctionToolCallEvent)]
+    results = [
+        (e.part.tool_call_id, e.part.content)
+        for e in activity
+        if isinstance(e, FunctionToolResultEvent)
+    ]
+    assert calls == ["tu1"] and results == [("tu1", "pong")]
+
+
+@pytest.mark.anyio
+async def test_typed_turn_leaves_the_cli_own_turn_buffered(tmp_path, monkeypatch):
+    scenario = {"turns": [_SPAWN_TURN, [{"text": "two"}]]}
+    model = _model(tmp_path, monkeypatch, scenario)
+    notes: list[str] = []
+    model.on_backend_turn = notes.append
+    try:
+        await _stream_text(model)
+        await _wait_for(lambda: bool(notes))
+        typed = await _stream_text(
+            model, _user("hi") + [ModelRequest(parts=[UserPromptPart(content="more")])]
+        )
+        assert model._process is not None and model._process.has_unsolicited
+        shown = await _stream_text(model, _autonomous(notes[0]))
+    finally:
+        await model.aclose()
+    assert typed == "two" and shown == "Agent completed: pong"
+    assert _user_texts(tmp_path) == ["User: hi", "more"]
+
+
+@pytest.mark.anyio
+async def test_autonomous_turn_with_nothing_buffered_is_sent(tmp_path, monkeypatch):
+    """A finished-jobs digest is an autonomous turn too; with no CLI turn
+    waiting it goes to Claude like any other prompt."""
+    model = _model(tmp_path, monkeypatch, {"turns": [[{"text": "one"}], [{"text": "two"}]]})
+    try:
+        await _stream_text(model)
+        digest = "[background jobs finished since your last turn]"
+        assert await _stream_text(model, _autonomous(digest)) == "two"
+    finally:
+        await model.aclose()
+    assert _user_texts(tmp_path)[1].startswith("<turn-context")

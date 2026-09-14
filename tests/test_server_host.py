@@ -916,3 +916,33 @@ async def test_aclose_logs_and_continues_past_failing_teardown_steps(tmp_path, c
     failed = [r.getMessage() for r in caplog.records if "teardown step" in r.getMessage()]
     assert any("wait_autoname" in m for m in failed)
     assert any("session_end" in m for m in failed)
+
+
+async def test_backend_turn_enqueues_an_autonomous_turn_carrying_the_note(tmp_path):
+    """A CLI provider reporting a turn it ran on its own (`on_backend_turn`)
+    gets an autonomous turn straight away — not through the wake driver, so
+    the wake toggle does not apply — and that turn's prompt carries the note."""
+    prompts: list[str] = []
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    async def stream_fn(messages, info):
+        last = messages[-1].parts[-1]
+        prompts.append(str(getattr(last, "content", "")))
+        yield "done"
+
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    host = SessionHost(
+        _make_harness(FunctionModel(fn, stream_function=stream_fn), deps), EventBus()
+    )
+    host.harness.autonomous_wake = False  # the backend's turn is not a wake decision
+    events = _spy(host.bus)
+    host.harness._on_backend_turn("[sub-agent tu1 completed: pong]")
+    started = await _drain_until(events, "turn.started")
+    assert started.data["trigger"] == "autonomous" and started.data["prompt"] == ""
+    await _drain_until(events, "turn.finished")
+    await _wait_for(lambda: host.status == "idle")
+    assert len(prompts) == 1 and "[sub-agent tu1 completed: pong]" in prompts[0]
+    assert prompts[0].startswith("<turn-context")
+    await host.aclose()

@@ -39,6 +39,20 @@ from ..config.external_cli import CLI_ACTIVITY_KEY
 MISSING_RESULT_NOTE = (
     "No result was recorded for this tool call: the CLI turn ended before the tool returned."
 )
+# A spawn the turn ended without answering is the normal shape of Claude
+# Code's background Agent, not a cut-off tool: the report reaches the
+# conversation in a later turn (the CLI's own turn on the task notification).
+BACKGROUND_SPAWN_NOTE = (
+    "The sub-agent runs in the background; its report arrives as a task "
+    "notification in a later turn."
+)
+# The tool the sub-agent demux synthesizes for a Claude-side Agent/Task spawn.
+_SPAWN_TOOL = "spawn_agent"
+
+
+def unanswered_note(tool_name: str) -> str:
+    """The synthesized return for a call the sealed turn never answered."""
+    return BACKGROUND_SPAWN_NOTE if tool_name == _SPAWN_TOOL else MISSING_RESULT_NOTE
 
 
 def expand_cli_activity(history: list[ModelMessage]) -> list[ModelMessage]:
@@ -171,10 +185,12 @@ class _Expansion:
             self._request.append(
                 ToolReturnPart(
                     tool_name=name,
-                    content=MISSING_RESULT_NOTE,
+                    content=unanswered_note(name),
                     tool_call_id=call_id,
                     timestamp=self._msg.timestamp,
-                    outcome="interrupted",
+                    # A background spawn was not cut short — it simply
+                    # reports later — but its card has no result yet either.
+                    outcome="interrupted" if name != _SPAWN_TOOL else "success",
                 )
             )
         self._unanswered.clear()

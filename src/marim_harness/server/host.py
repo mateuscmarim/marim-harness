@@ -153,6 +153,11 @@ class SessionHost:
                 "compaction.finished", {"before": before, "after": after}
             ),
             on_notice=lambda message: self._publish("session.notice", {"message": message}),
+            # Not through the wake driver: this turn spends no model call of
+            # marim's (the CLI already ran it — the autonomous turn only reads
+            # the buffered output), so the wake policy and depth cap that
+            # bound job-digest wakes do not apply.
+            on_backend_turn=self._enqueue_autonomous_turn,
         )
         self._worker = loop.create_task(self._worker_loop())
 

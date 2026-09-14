@@ -697,6 +697,7 @@ class Harness:
         on_compact_start: Callable[[], None] | None = None,
         on_notice: Callable[[str], None] | None = None,
         on_rename: Callable[[str, str], None] | None = None,
+        on_backend_turn: Callable[[], None] | None = None,
     ) -> None:
         """Wire the interactive UI's callbacks into the harness in one place.
 
@@ -720,6 +721,7 @@ class Harness:
         self.deps.ui.on_subagent_usage = on_subagent_usage
         self.deps.ui.on_cli_activity = on_cli_activity
         self.deps.ui.on_ttft = on_ttft
+        self.deps.ui.on_backend_turn = on_backend_turn
         self.wire_cli_model(self.current_model)
         self.deps.ui.on_mode_change = on_mode_change
         self.deps.ui.on_present_plan = on_present_plan
@@ -1075,6 +1077,17 @@ class Harness:
             (lambda: session.saved_cli_thread_id) if session is not None else None
         )
         model.on_session_ref = session.set_cli_thread_id if session is not None else None
+        model.on_backend_turn = self._on_backend_turn
+
+    def _on_backend_turn(self, note: str) -> None:
+        """The CLI backend ran a turn of its own (claude-cli reacting to a
+        background sub-agent's report). Stash ``note`` as the next turn's
+        context — it is what marim's history will show above the reaction —
+        then ask the host for the autonomous turn that consumes it. Headless
+        (no host) the note waits for whatever turn comes next."""
+        self.turn_controller.note_backend_turn(note)
+        if self.deps.ui.on_backend_turn is not None:
+            self.deps.ui.on_backend_turn()
 
     def _build_advisor_model(self, model_id: str) -> Model:
         """Build the advisor's model: through the active model source when one

@@ -575,6 +575,16 @@ class TurnController:
         """Drop any re-stashed jobs digest (conversation context changed)."""
         self._pending_jobs_digest = None
 
+    def note_backend_turn(self, note: str) -> None:
+        """Stash the note for a turn the CLI backend ran on its own (see
+        ``Harness._on_backend_turn``) where the finished-jobs digest rides: it
+        is the same kind of context — background work reported back — and the
+        next prompt's envelope carries it, restored on failure the same way.
+        Appended, so two backend turns queued before marim runs one keep
+        both notes."""
+        pending = self._pending_jobs_digest
+        self._pending_jobs_digest = f"{pending}\n\n{note}" if pending else note
+
     def clear_pending_context(self) -> None:
         """Drop the one-shot prompt injections that belong to the departing
         conversation: the prior turn's actionable error note and any
