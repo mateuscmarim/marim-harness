@@ -165,7 +165,9 @@ def test_forget_deletes_memory_and_index_line(tmp_path: Path):
         sc, name="Build tool", description="d", mem_type="project", body="b", title="Build tool"
     )
     ctx = SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(memory_root=None, project_memory_root=None, root=tmp_path)
+        )
     )
     result = forget(ctx, name="Build tool")
     assert "deleted" in result.lower()
@@ -177,7 +179,9 @@ def test_forget_missing_memory_returns_notice(tmp_path: Path):
     from marim_harness.tools.memory_tools import forget
 
     ctx = SimpleNamespace(
-        deps=SimpleNamespace(workspace=SimpleNamespace(memory_root=None, root=tmp_path))
+        deps=SimpleNamespace(
+            workspace=SimpleNamespace(memory_root=None, project_memory_root=None, root=tmp_path)
+        )
     )
     result = forget(ctx, name="never-saved")
     assert "no project memory" in result.lower()

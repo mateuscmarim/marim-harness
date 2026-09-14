@@ -76,6 +76,22 @@ def test_set_model_clears_thread_ref_when_provider_changes(tmp_path: Path):
     assert mgr.store(store.session_id).cli_thread_id is None
 
 
+def test_set_model_trusts_the_provider_over_a_bare_id(tmp_path: Path):
+    """A bare id under a CLI default provider (`/model gpt-5.4-mini`) has no
+    prefix to read; the provider the harness passes keeps the thread."""
+    mgr = _manager(tmp_path)
+    store = mgr.create("Work")
+    ctrl = SessionController(store, mgr, _make_deps(tmp_path), 100_000, 20)
+    ctrl.set_cli_thread_id("codex-cli:thread-1")
+    ctrl.set_model("gpt-5.4-mini", provider="codex-cli")
+    assert ctrl.saved_cli_thread_id == "codex-cli:thread-1"
+    ctrl.set_model("gpt-5.4-mini")  # no provider known: the bare id can't vouch for it
+    assert ctrl.saved_cli_thread_id is None
+    ctrl.set_cli_thread_id("codex-cli:thread-2")
+    ctrl.set_model("foo/bar", provider=None)  # a non-CLI model orphans it
+    assert ctrl.saved_cli_thread_id is None
+
+
 class _Fake(ExternalCliModel):
     provider_id = "fake-cli"
 

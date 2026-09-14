@@ -18,6 +18,14 @@ class _Closable(ExternalCliModel):
     def __init__(self) -> None:
         super().__init__()
         self.closed = 0
+        self.released = 0
+        self.adopted: list[object] = []
+
+    def adopt(self, previous) -> None:
+        self.adopted.append(previous)
+
+    def release_conversation(self) -> None:
+        self.released += 1
 
     @property
     def model_name(self) -> str:
@@ -68,6 +76,78 @@ async def test_set_model_closes_the_outgoing_external_model(tmp_path):
     await asyncio.sleep(0)  # the close is scheduled, not awaited inline
     assert old.closed == 1
     assert h.current_model is new
+
+
+@pytest.mark.anyio
+async def test_set_model_lets_the_new_model_adopt_the_old_before_closing_it(tmp_path):
+    old, new = _Closable(), _Closable()
+    h = _make_harness(old, _make_deps(tmp_path))
+    h.model_source = _Source({"old": old, "new": new})
+    h.set_model("new", persist=False)
+    await asyncio.sleep(0)
+    # adopt() runs synchronously inside set_model, before the scheduled
+    # close, so claude-cli can move the live process across the switch and
+    # leave the outgoing model nothing to close.
+    assert new.adopted == [old] and old.closed == 1 and new.closed == 0
+
+
+@pytest.mark.anyio
+async def test_a_bare_id_switch_on_the_same_cli_keeps_the_persisted_thread_ref(tmp_path):
+    """`/model sonnet` under a CLI default provider is a bare id: the harness
+    tells the session which provider the new model runs on, so the ref the
+    adopted process will keep answering to is not orphaned on disk."""
+    from marim_harness.session import SessionManager
+
+    old, new = _Closable(), _Closable()
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    h = _make_harness(old, _make_deps(tmp_path / "ws"), store=manager.create("A"), manager=manager)
+    h.model_source = _Source({"old": old, "new": new, "other": _dummy()})
+    h.session.set_cli_thread_id("fake-cli:T1")
+    h.set_model("new")
+    assert h.session.saved_cli_thread_id == "fake-cli:T1"
+    h.set_model("other")  # a non-CLI model: the thread is orphaned
+    assert h.session.saved_cli_thread_id is None
+
+
+@pytest.mark.anyio
+async def test_every_store_rebind_releases_the_cli_conversation(tmp_path):
+    """A switch, /new and /clear each rebind the session store; the live
+    provider-side conversation belongs to the session being left, so the
+    model is told to let go before anything else (on a switch: before
+    _apply_saved_model, so a same-provider model change has nothing stale to
+    adopt)."""
+    from marim_harness.session import SessionManager
+
+    model = _Closable()
+    manager = SessionManager(tmp_path / "ws", base_dir=tmp_path / "data")
+    store_a = manager.create("A")
+    h = _make_harness(model, _make_deps(tmp_path / "ws"), store=store_a, manager=manager)
+    h.session.persist(force=True)
+    store_b = manager.create("B")
+    store_b.path.parent.mkdir(parents=True, exist_ok=True)
+    store_b.path.write_text("{}")
+
+    h.switch_session(store_b.session_id)
+    assert model.released == 1
+    h.new_session("C")
+    assert model.released == 2
+    h.reset()
+    assert model.released == 3
+    # Nothing here switched the model, so nothing closed it.
+    assert model.closed == 0 and h.current_model is model
+
+
+def test_base_release_conversation_and_adopt_keep_nothing():
+    class _Plain(ExternalCliModel):
+        @property
+        def model_name(self) -> str:
+            return "plain"
+
+        async def request(self, *a, **k):  # pragma: no cover
+            raise NotImplementedError
+
+    assert _Plain().adopt(_Plain()) is None
+    assert _Plain().release_conversation() is None
 
 
 @pytest.mark.anyio

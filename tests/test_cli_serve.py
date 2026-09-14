@@ -74,6 +74,7 @@ def test_serve_publishes_runtime_json_for_the_life_of_the_run(tmp_path, monkeypa
 
     def spy_init(self, *args, **kwargs):
         seen["endpoint"] = kwargs.get("endpoint")
+        seen["chat_memory_dir"] = kwargs.get("chat_memory_dir")
         real_init(self, *args, **kwargs)
 
     def fake_run(app, **kwargs):
@@ -93,6 +94,7 @@ def test_serve_publishes_runtime_json_for_the_life_of_the_run(tmp_path, monkeypa
     assert serve.main(["--port", "9998"], out=io.StringIO(), err=io.StringIO()) == 0
 
     assert seen["endpoint"] == "http://127.0.0.1:9998"
+    assert seen["chat_memory_dir"] == state_dir / "chat-memory"
     during = seen["during"]
     assert during is not None
     assert (during.host, during.port) == ("127.0.0.1", 9998)

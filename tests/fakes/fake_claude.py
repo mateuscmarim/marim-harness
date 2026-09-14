@@ -75,6 +75,22 @@ class Fake:
             }
         )
 
+    def fail(self, request_id: str, error: str) -> None:
+        self.send(
+            {
+                "type": "control_response",
+                "response": {"subtype": "error", "request_id": request_id, "error": error},
+            }
+        )
+
+    def _control_error(self, msg: dict) -> str | None:
+        request = msg.get("request") or {}
+        if request.get("subtype") != "set_model":
+            return None
+        if request.get("model") in (self.scenario.get("reject_models") or []):
+            return f"Model '{request['model']}' not found"
+        return None
+
     def _control_body(self, msg: dict) -> dict:
         """The between-turns control answers the scenario can script:
         ``initialize`` carries the model menu (``models``), ``get_usage`` the
@@ -155,8 +171,14 @@ class Fake:
                 # Between turns every control request (initialize, set_model,
                 # a late interrupt) gets an empty success — nothing to abort.
                 # `initialize` alone carries the scenario's model menu when
-                # one is given, the way the real CLI's handshake does.
-                self.respond(msg["request_id"], self._control_body(msg))
+                # one is given, the way the real CLI's handshake does; a
+                # `set_model` naming one of the scenario's `reject_models`
+                # gets the real CLI's error reply instead.
+                error = self._control_error(msg)
+                if error is not None:
+                    self.fail(msg["request_id"], error)
+                else:
+                    self.respond(msg["request_id"], self._control_body(msg))
             elif kind == "user" and not msg.get("isReplay"):
                 self.run_turn(msg)
 

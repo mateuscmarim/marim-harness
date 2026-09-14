@@ -48,6 +48,7 @@ from marim_harness.config.claude_cli_model import (
     latest_user_text,
     request_usage_from_cli,
 )
+from marim_harness.config.context_report import ContextReport
 from marim_harness.config.external_cli import CliModelError
 from marim_harness.runtime.context import wrap_turn_context
 from marim_harness.usage import COST_DETAIL_KEY
@@ -1668,3 +1669,237 @@ async def test_autonomous_turn_with_nothing_buffered_is_sent(tmp_path, monkeypat
     finally:
         await model.aclose()
     assert _user_texts(tmp_path)[1].startswith("<turn-context")
+
+
+# --- control sync: mode / model / thinking reach the process -----------------------
+
+
+def _controls_sent(tmp_path: Path) -> list[dict]:
+    """Every non-handshake control request the fake read, oldest first."""
+    return [
+        m["request"]
+        for m in read_claude_log(tmp_path)
+        if m.get("type") == "control_request" and m["request"]["subtype"] != "initialize"
+    ]
+
+
+def _levers(requests: list[dict]) -> list[str]:
+    return [r["subtype"] for r in requests]
+
+
+@pytest.mark.anyio
+async def test_mode_is_sent_once_per_process_and_again_only_when_it_changes(tmp_path, monkeypatch):
+    model = _model(tmp_path, monkeypatch, {"turns": [[{"text": "ok"}]]})
+    mode = "auto"
+    model.mode_getter = lambda: mode
+    try:
+        await model.request(_user("a"), None, ModelRequestParameters())
+        await model.request(_user("b"), None, ModelRequestParameters())
+        mode = "ask"  # same CLI mode as auto: the broker tells them apart
+        await model.request(_user("c"), None, ModelRequestParameters())
+        mode = "plan"
+        await model.request(_user("d"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    sent = _controls_sent(tmp_path)
+    # The launch --model matches the process, unset thinking matches the CLI's
+    # default: only the mode goes out, and only when the CLI-side value moves.
+    assert [r for r in sent if r["subtype"] != "get_usage"] == [
+        {"subtype": "set_permission_mode", "mode": "default"},
+        {"subtype": "set_permission_mode", "mode": "default"},
+        {"subtype": "set_permission_mode", "mode": "plan"},
+    ]
+
+
+@pytest.mark.anyio
+async def test_a_respawned_process_gets_the_mode_again(tmp_path, monkeypatch):
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {"session_id": "S4", "known_sessions": ["S4"], "turns": [[{"text": "one"}]]},
+    )
+    model.mode_getter = lambda: "plan"
+    try:
+        await model.request(_user("a"), None, ModelRequestParameters())
+        await model._process.aclose()  # idle reaper / crash stand-in
+        await model.request(_user("b"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    modes = [r["mode"] for r in _controls_sent(tmp_path) if r["subtype"] == "set_permission_mode"]
+    assert modes == ["plan", "plan"] and len(read_claude_argvs(tmp_path)) == 2
+
+
+@pytest.mark.anyio
+async def test_thinking_reaches_claude_from_settings_then_the_live_level(tmp_path, monkeypatch):
+    model = _model(tmp_path, monkeypatch, {"turns": [[{"text": "ok"}]]})
+    level: str | None = None
+    model.thinking_getter = lambda: level
+    try:
+        # Unset everywhere: marim has no opinion, nothing is sent.
+        await model.request(_user("a"), None, ModelRequestParameters())
+        # The per-turn ModelSettings (the main loop's path) wins ...
+        await model.request(_user("b"), {"thinking": "high"}, ModelRequestParameters())
+        # ... and an unchanged level costs nothing.
+        await model.request(_user("c"), {"thinking": "high"}, ModelRequestParameters())
+        # Without settings the live harness level is read (an aux clone path).
+        level = "off"
+        await model.request(_user("d"), None, ModelRequestParameters())
+        # Back to unset: both levers are handed back to the CLI's defaults.
+        level = None
+        await model.request(_user("e"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    thinking = [
+        r
+        for r in _controls_sent(tmp_path)
+        if r["subtype"] not in {"get_usage", "set_permission_mode"}
+    ]
+    assert thinking == [
+        {"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 32768},
+        {"subtype": "apply_flag_settings", "settings": {"effortLevel": "high"}},
+        {"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 0},
+        {"subtype": "apply_flag_settings", "settings": {"effortLevel": "low"}},
+        {"subtype": "set_max_thinking_tokens", "max_thinking_tokens": None},
+        {"subtype": "apply_flag_settings", "settings": {"effortLevel": None}},
+    ]
+
+
+@pytest.mark.anyio
+async def test_ephemeral_clones_send_no_controls(tmp_path, monkeypatch):
+    base = _model(tmp_path, monkeypatch, {"turns": [[{"text": "t"}]]})
+    base.thinking_getter = lambda: "high"
+    clone = base.ephemeral_clone(cwd=str(tmp_path))
+    clone.thinking_getter = base.thinking_getter
+    try:
+        await clone.request(_user("title this"), {"thinking": "high"}, ModelRequestParameters())
+    finally:
+        await base.aclose()
+    # Read-only comes from the broker's denial, not from Claude's plan mode
+    # (whose system prompt would leak into the title); thinking is not a
+    # titler's business either.
+    assert _levers(_controls_sent(tmp_path)) == []
+
+
+@pytest.mark.anyio
+async def test_release_conversation_makes_the_next_turn_follow_the_rebound_store(
+    tmp_path, monkeypatch
+):
+    """A session switch rebinds the store under the adapter. Without the
+    release the live process — session A's Claude conversation — would take
+    B's first prompt, and A's id would be persisted over B's ref. With it,
+    the next turn resumes what the store now says (here B) on a fresh
+    process, and every reading taken off the old process is gone."""
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "session_id": "A",
+            "known_sessions": ["B"],
+            "turns": [[{"text": "one"}], [{"text": "two"}]],
+        },
+    )
+    ref: dict[str, str | None] = {"v": None}
+    model.session_ref_getter = lambda: ref["v"]
+    refs: list[str] = []
+    model.on_session_ref = refs.append
+    try:
+        await _stream_text(model, _user("first"))
+        assert model.session_id == "A"
+        ref["v"] = SESSION_REF_PREFIX + "B"  # the harness switched to session B
+        model.release_conversation()
+        assert model._process is None and model.context_report is None
+        await asyncio.sleep(0.05)  # the scheduled close
+        await _stream_text(model, _user("second"))
+    finally:
+        await model.aclose()
+    argvs = read_claude_argvs(tmp_path)
+    assert len(argvs) == 2 and argvs[1][argvs[1].index("--resume") + 1] == "B"
+    assert "--resume" not in argvs[0]
+
+
+@pytest.mark.anyio
+async def test_release_conversation_with_no_process_is_a_no_op(tmp_path, monkeypatch):
+    model = _model(tmp_path, monkeypatch, {})
+    model.release_conversation()  # nothing spawned yet: nothing to schedule
+    assert model._process is None
+
+
+@pytest.mark.anyio
+async def test_adopt_moves_the_live_process_to_the_new_model(tmp_path, monkeypatch):
+    old = _model(tmp_path, monkeypatch, {"session_id": "S9", "turns": [[{"text": "one"}]]})
+    await old.request(_user("a"), None, ModelRequestParameters())
+    process = old._process
+    assert process is not None
+    old.context_report = ContextReport(4_000, 200_000)  # a reading the switch must keep
+    new = ClaudeCliModel("opus")
+    new.cwd, new.mode_getter = old.cwd, old.mode_getter
+    try:
+        # What Harness.set_model does: adopt, then close the outgoing model.
+        new.adopt(old)
+        await old.aclose()
+        assert old._process is None and old.context_report is None
+        assert new._process is process and process.alive
+        assert new.context_report == ContextReport(4_000, 200_000)
+        resp = await new.request(_user("a") + _user("b"), None, ModelRequestParameters())
+    finally:
+        await new.aclose()
+    assert resp.model_name == "opus"
+    # One launch for both models; the switch was a control request, sent
+    # once, and the turn went down the resumed process as new text only.
+    assert len(read_claude_argvs(tmp_path)) == 1
+    assert {"subtype": "set_model", "model": "opus"} in _controls_sent(tmp_path)
+    assert _user_texts(tmp_path)[-1] == "b"
+    assert process.controls.model == "opus"
+
+
+@pytest.mark.anyio
+async def test_adopt_is_refused_across_ephemeral_or_foreign_models(tmp_path, monkeypatch):
+    old = _model(tmp_path, monkeypatch, {"turns": [[{"text": "one"}]]})
+    await old.request(_user("a"), None, ModelRequestParameters())
+    try:
+        clone = old.ephemeral_clone(cwd=str(tmp_path))
+        clone.adopt(old)
+        assert clone._process is None and old._process is not None
+        new = ClaudeCliModel("opus")
+        new.adopt(object())  # type: ignore[arg-type]
+        new.adopt(new)
+        assert new._process is None
+    finally:
+        await old.aclose()
+
+
+@pytest.mark.anyio
+async def test_a_rejected_model_switch_fails_the_turn_and_keeps_the_process(tmp_path, monkeypatch):
+    old = _model(tmp_path, monkeypatch, {"reject_models": ["bogus"], "turns": [[{"text": "one"}]]})
+    await old.request(_user("a"), None, ModelRequestParameters())
+    new = ClaudeCliModel("bogus")
+    new.cwd, new.mode_getter = old.cwd, old.mode_getter
+    new.adopt(old)
+    try:
+        with pytest.raises(CliModelError, match="did not accept the model switch.*bogus"):
+            await new.request(_user("a") + _user("b"), None, ModelRequestParameters())
+        # The process is still there for the user's next pick; the turn text
+        # never went out on the wrong model.
+        assert new._process is not None and new._process.alive
+        assert new._process.controls.model == "sonnet"
+    finally:
+        await new.aclose()
+    assert _user_texts(tmp_path) == ["User: a"]
+
+
+@pytest.mark.anyio
+async def test_a_rejected_mode_is_logged_and_the_turn_goes_on(tmp_path, monkeypatch, caplog):
+    model = _model(tmp_path, monkeypatch, {"turns": [[{"text": "ok"}]]})
+
+    async def refuse(*a, **k):
+        raise claude_cli_model.ControlError("Cannot set permission mode")
+
+    try:
+        process, _ = await model._ensure_process(_user("a"))
+        monkeypatch.setattr(process, "set_mode", refuse)
+        with caplog.at_level("WARNING"):
+            resp = await model.request(_user("a"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+    assert resp.parts[0].content == "ok"
+    assert "ignored the mode switch" in caplog.text

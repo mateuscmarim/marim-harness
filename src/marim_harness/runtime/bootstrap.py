@@ -64,6 +64,7 @@ def build_harness(
     mode: Mode | None = None,
     resume: bool = False,
     session_id: str | None = None,
+    project_memory_root: Path | None = None,
 ) -> Harness:
     """Construct a ready-to-run Harness for ``workspace``. Shared by the TUI and
     the headless CLI so both wire up the model, session store, and aux agents
@@ -77,7 +78,10 @@ def build_harness(
 
     ``session_id`` opens exactly that session (used by the server, which picks
     sessions explicitly rather than "latest"); it replays any saved history,
-    and is mutually exclusive with ``resume``."""
+    and is mutually exclusive with ``resume``.
+
+    ``project_memory_root`` replaces only the project's memory directory.
+    Global memory remains in the user's configured global memory directory."""
     cfg = load_config()
     # Resolve project trust once, store-aware: an explicit env decision wins,
     # otherwise the per-project trust store is consulted (honored only while
@@ -116,6 +120,7 @@ def build_harness(
             command_policy=command_policy,
             tool_search=cfg.tool_search,
             tool_search_threshold=cfg.tool_search_threshold,
+            project_memory_root=project_memory_root,
         ),
         trust=TrustState(
             project=trusted, source=resolution.source, fingerprint=surface.fingerprint

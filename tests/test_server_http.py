@@ -140,7 +140,12 @@ def _edit_model() -> FunctionModel:
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
 
-    async def factory(workspace: Path, session_id: str, mode):
+    async def factory(
+        workspace: Path,
+        session_id: str,
+        mode,
+        project_memory_root: Path | None = None,
+    ):
         from marim_harness.session import SessionManager
 
         manager = SessionManager(workspace)
@@ -186,7 +191,12 @@ def client_with_supervisor(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     loop_holder: dict[str, asyncio.AbstractEventLoop] = {}
 
-    async def factory(workspace: Path, session_id: str, mode):
+    async def factory(
+        workspace: Path,
+        session_id: str,
+        mode,
+        project_memory_root: Path | None = None,
+    ):
         from marim_harness.session import SessionManager
 
         loop_holder["loop"] = asyncio.get_running_loop()

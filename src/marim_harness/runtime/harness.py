@@ -765,8 +765,22 @@ class Harness:
 
     def reset(self) -> None:
         self.session.reset()
+        self._release_cli_conversation()
         self.checkpoints.clear()
         self._clear_job_context()
+
+    def _release_cli_conversation(self) -> None:
+        """The session store was just rebound (a switch, ``/new``, ``/clear``):
+        an external-CLI model's live provider-side conversation — a ``claude``
+        process, a codex thread — belongs to the session we LEFT. Tell it to
+        let go so the next turn resumes from the incoming store's ref (or
+        starts cold) instead of continuing the old conversation and writing
+        its id over the new session's ref. Runs BEFORE ``_apply_saved_model``
+        on a switch, so a same-provider model change there has no stale
+        process to ``adopt``. A no-op for every other provider."""
+        model = self.current_model
+        if isinstance(model, ExternalCliModel):
+            model.release_conversation()
 
     def adopt_claim(self, claim: SessionClaim | None, *, kind: str) -> None:
         """Take ownership of an externally acquired claim (the CLI launch path
@@ -846,6 +860,7 @@ class Harness:
 
     def new_session(self, name: str | None = None) -> None:
         self.session.new_session(name)
+        self._release_cli_conversation()
         # Ownership follows the view: claim the fresh session, release the one
         # we're leaving.
         self._claim_active_session()
@@ -968,6 +983,7 @@ class Harness:
             raise
         # COMMITTED from here on — see switch_session's contract. Everything
         # below is best-effort by construction.
+        self._release_cli_conversation()
         self._restore_session_settings()
         return count
 
@@ -1028,15 +1044,24 @@ class Harness:
         self.model_label = self.model_source.label(model_id)
         self.session.update_model(model)
         if persist:
-            self.session.set_model(model_id)
+            # The provider decides whether the persisted CLI thread ref
+            # survives the switch; the id alone can't (a bare `sonnet`
+            # under a claude-cli default provider has no prefix to read).
+            provider = model.provider_id if isinstance(model, ExternalCliModel) else None
+            self.session.set_model(model_id, provider=provider)
         # Re-wire the late-bound hooks if the new model is an ExternalCliModel,
         # so switching TO such a provider at runtime honors live /mode, the
         # workspace cwd, and the TUI side-channels.
         self.wire_cli_model(model)
-        # The outgoing model may hold a live `claude` process / codex thread:
-        # release it now rather than when its idle reaper fires. Scheduled, not
-        # awaited — set_model is sync (called from the TUI's command path).
         if old is not model:
+            # A same-provider CLI switch keeps the live process (claude-cli
+            # sends `set_model` on the next turn instead of respawning) ...
+            if isinstance(model, ExternalCliModel):
+                model.adopt(old)
+            # ... and whatever the outgoing model still holds — a `claude`
+            # process nobody adopted, a codex thread — is released now rather
+            # than when its idle reaper fires. Scheduled, not awaited —
+            # set_model is sync (called from the TUI's command path).
             self._close_model_later(old)
 
     def _close_model_later(self, old: Model) -> None:

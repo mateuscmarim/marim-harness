@@ -37,10 +37,11 @@ Feedback on any of this is welcome — open an issue.
 - **CLI backend parity** — `claude-cli` and `codex-cli` expose far more than
   marim reads today: the backend's real context size and window, its rate
   limits, its compaction and fallback events, and control requests for mode,
-  model and thinking that would lift the documented `/think` no-op. The
-  phased plan is in
+  model and thinking. The phased plan is in
   [`docs/plans/cli-backend-parity-roadmap.md`](docs/plans/cli-backend-parity-roadmap.md);
-  context and quota reporting come first.
+  context and quota reporting (phase 1) and Claude control parity (phase 2:
+  `/mode`, `/model`, `/think` sent to the live process) have shipped; the
+  backend's lifecycle events in the transcript come next.
 - **`gh` forge backend** — the forge tools (list/view/check out PRs, CI
   status) currently ship a `tea`/Gitea backend behind a forge-agnostic
   protocol; a GitHub backend via the `gh` CLI is the obvious drop-in.
