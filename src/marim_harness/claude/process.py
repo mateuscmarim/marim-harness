@@ -31,7 +31,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config.external_cli import CliModelError
+from ..runtime.permissions import Mode
 from ..tools.impl.process import kill_process_tree
+from .controls import ControlState, ThinkingControls, claude_permission_mode
 from .env import INSTALL_HINT
 from .protocol import CLOSED, ProcessClosed, RequestHandler, StreamJsonClient
 
@@ -42,6 +44,10 @@ _INTERRUPT_GRACE = 2.0
 # Cap on the once-per-turn `get_usage` poll: a status-line nicety must never
 # hold the turn's settle for the default 30 s control timeout.
 _USAGE_TIMEOUT = 5.0
+# Cap on each mode/model/thinking control sent before a turn: the CLI answers
+# these from memory (no model round-trip), so a slow answer means a wedged
+# process and the turn should not wait the default 30 s to find out.
+_CONTROL_SYNC_TIMEOUT = 10.0
 _TERM_GRACE = 2.0
 # stdout EOF and the child reaper race: without a short settle the synthetic
 # CLOSED object would carry a half-read stderr tail and returncode None.
@@ -180,6 +186,10 @@ class ClaudeProcess:
         # The `initialize` control response (commands, models, account, ...);
         # {} until the handshake answers or when it never does.
         self.init_result: dict = {}
+        # The mode/model/thinking the process last acknowledged (see
+        # ``controls.ControlState``); reset on every spawn because a fresh
+        # process only knows its launch argv.
+        self.controls = ControlState(model=options.model or None)
         self.closed = asyncio.Event()
         # True while the idle reaper is inside aclose(). A close in flight is
         # NOT a usable process — see `alive` and `wait_closing`.
@@ -448,6 +458,46 @@ class ClaudeProcess:
         if self._client is None or self.closed.is_set():
             raise ProcessClosed("claude process is closed")
         return await self._client.control("get_usage", timeout=timeout, skip_behaviors=True)
+
+    # --- control sync ---------------------------------------------------------
+    # Thin wrappers over one control request each, mirroring ``read_usage``:
+    # they raise ``ProcessClosed`` on a closed process and let ``ControlError``
+    # (the CLI rejected the value) and ``asyncio.TimeoutError`` propagate — the
+    # adapter decides which of those a turn survives. ``controls`` is updated
+    # only on an acknowledged answer, so a failed send is retried next turn.
+
+    async def set_mode(self, mode: Mode, timeout: float = _CONTROL_SYNC_TIMEOUT) -> None:
+        """``set_permission_mode``: run the CLI in marim's mode (plan → the
+        CLI's own plan mode; auto/ask → ``default``, where the CLI keeps
+        asking marim's broker before every gated tool)."""
+        await self._control("set_permission_mode", timeout, mode=claude_permission_mode(mode))
+        self.controls.mode = mode
+
+    async def set_model(self, model: str | None, timeout: float = _CONTROL_SYNC_TIMEOUT) -> None:
+        """``set_model``: switch the session's model in place (``None`` resets
+        to the CLI's default). The CLI rejects an unknown id with a
+        ``ControlError`` and keeps the previous model."""
+        await self._control("set_model", timeout, model=model)
+        self.controls.model = model
+
+    async def set_thinking(
+        self, controls: ThinkingControls | None, timeout: float = _CONTROL_SYNC_TIMEOUT
+    ) -> None:
+        """``set_max_thinking_tokens`` + ``apply_flag_settings {effortLevel}``:
+        both levers of one marim level (see ``controls.ThinkingControls`` for
+        why both go out), or ``None`` to hand both back to the CLI's own
+        defaults. The two are sent as one unit — a level is not "applied"
+        until the model-kind that reads the second lever has it too."""
+        budget = controls.budget if controls is not None else None
+        effort = controls.effort if controls is not None else None
+        await self._control("set_max_thinking_tokens", timeout, max_thinking_tokens=budget)
+        await self._control("apply_flag_settings", timeout, settings={"effortLevel": effort})
+        self.controls.thinking = controls
+
+    async def _control(self, subtype: str, timeout: float, **fields: Any) -> dict:
+        if self._client is None or self.closed.is_set():
+            raise ProcessClosed("claude process is closed")
+        return await self._client.control(subtype, timeout=timeout, **fields)
 
     async def interrupt(self, handle: TurnHandle, grace: float = _INTERRUPT_GRACE) -> None:
         """Send ``interrupt`` and wait up to ``grace`` for the turn's aborted
