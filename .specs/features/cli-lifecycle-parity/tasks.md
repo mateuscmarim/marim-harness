@@ -116,8 +116,8 @@ T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8
 **Reuses**: Existing activity/notice/Room seams described in design.md.
 **Tools**: Repository shell and file tools; coding-guardrails, test-driven-development, verification-before-completion. No connector access required.
 **Done when**:
-- [ ] Verified: session detail snapshots, existing inventory views, built-in command precedence, verified invocation and no checkpoint writes.
-- [ ] Relevant gate passes with exact test outcomes recorded in evidence.md.
+- [x] Verified: session detail snapshots, existing inventory views, built-in command precedence, verified invocation and no checkpoint writes.
+- [x] Relevant gate passes with exact test outcomes recorded in evidence.md.
 **Tests**: integration
 **Gate**: full
 **Commit**: `feat(cli): backend inventory and telemetry surfaces`

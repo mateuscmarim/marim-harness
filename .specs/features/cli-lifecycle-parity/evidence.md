@@ -177,3 +177,47 @@ Fourteen lifecycle delivery tests pass, including both fake backends through Har
 
 Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
 Feature-wide AC mapping and adversarial checks follow in validation.md.
+
+## T5
+
+Inventory, telemetry, command and HTTP/client/stat regressions: 177 passed. Dynamic completion: 79 component and 11 integration tests passed. Owned Ruff and full Pyright pass. LIFE-17 observes a VCS revision; existing git views read on invocation, no live pane exists. No checkpoint writes. Command transport verified with official SDK docs and current terminal-only schema.
+
+| Assertion evidence | Result |
+| --- | --- |
+| tests/test_lifecycle_inventory.py:30 `assert fields["backend_inventory"] == info.backend_inventory` | PASS |
+| tests/test_lifecycle_inventory.py:31 `assert fields["backend_telemetry"] == info.backend_telemetry` | PASS |
+| tests/test_lifecycle_inventory.py:32 `assert fields["usage"]["input_tokens"] == 10` | PASS |
+| tests/test_lifecycle_inventory.py:34 `assert info.backend_inventory["tools"] == ["Bash"]` | PASS |
+| tests/test_lifecycle_inventory.py:36 `assert info.backend_inventory == {}` | PASS |
+| tests/test_lifecycle_inventory.py:37 `assert _live_session_fields(SimpleNamespace(harness=harness))["backend_telemetry"] == {}` | PASS |
+| tests/test_lifecycle_inventory.py:56 `assert info.backend_inventory == {"tools": ["new"]}` | PASS |
+| tests/test_lifecycle_inventory.py:57 `assert info.backend_telemetry == {"state": "idle", "thinking_tokens": 900}` | PASS |
+| tests/test_lifecycle_inventory.py:58 `assert info.mode == "ask"` | PASS |
+| tests/test_lifecycle_inventory.py:59 `assert info.usage.input_tokens == 17` | PASS |
+| tests/test_lifecycle_inventory.py:61 `assert info.backend_inventory == {"tools": ["new"]}` | PASS |
+| tests/test_lifecycle_inventory.py:63 `assert info.backend_inventory == info.backend_telemetry == {}` | PASS |
+| tests/test_lifecycle_inventory.py:67 `assert backend_telemetry_text({"thinking_tokens": 123, "state": "requires_action"}) == (` | PASS |
+| tests/test_lifecycle_inventory.py:70 `assert backend_telemetry_text({"thinking_tokens": True, "state": "complete"}) == ""` | PASS |
+| tests/test_lifecycle_inventory.py:71 `assert backend_telemetry_text({"thinking_tokens": -1}) == ""` | PASS |
+| tests/test_lifecycle_inventory.py:93 `assert "Declared tools: `mcp__search`" in help_text` | PASS |
+| tests/test_lifecycle_inventory.py:94 `assert "`/clear` — marim command takes precedence" in help_text` | PASS |
+| tests/test_lifecycle_inventory.py:95 `assert "`/custom` — available" in help_text` | PASS |
+| tests/test_lifecycle_inventory.py:96 `assert "Agents: `explore`" in help_text` | PASS |
+| tests/test_lifecycle_inventory.py:97 `assert "Backend permission mode: `default`" in help_text` | PASS |
+| tests/test_lifecycle_inventory.py:99 `assert "`search` — failed" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:101 `assert "Unknown command" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:112 `assert backend_snapshot(ClaudeAdapter(), "backend_inventory") == {}` | PASS |
+| tests/test_lifecycle_inventory.py:113 `assert "ClaudeAdapter backend_inventory refresh failed" in caplog.text` | PASS |
+| tests/test_lifecycle_inventory.py:114 `assert "PRIVATE" not in caplog.text` | PASS |
+| tests/test_lifecycle_inventory.py:139 `assert "`before`" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:142 `assert "`after`" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:143 `assert "`before`" not in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:150 `assert refs.stdout == ""` | PASS |
+| tests/test_lifecycle_inventory.py:172 `assert not app.queue.paused` | PASS |
+| tests/test_lifecycle_inventory.py:178 `assert "Compaction in progress" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:180 `assert "Unknown command" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:183 `assert "Unknown command" in app.post_system.call_args.args[0]` | PASS |
+| tests/test_lifecycle_inventory.py:184 `assert app.start_turn.await_count == app.queue.enqueue.call_count == 1` | PASS |
+
+Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
+Feature-wide AC mapping and adversarial checks follow in validation.md.

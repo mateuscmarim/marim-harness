@@ -37,7 +37,7 @@ def inventory_from(obj: dict) -> dict:
     ):
         return {}
     result: dict = {"backend": "claude-cli"}
-    for key in ("tools", "slash_commands", "agents"):
+    for key in ("tools", "slash_commands", "terminal_slash_commands", "agents"):
         values = obj.get(key)
         result[key] = [s for s in values if isinstance(s, str)] if isinstance(values, list) else []
     servers = obj.get("mcp_servers")

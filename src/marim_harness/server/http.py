@@ -26,6 +26,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..config import MultiModelSource, detect_active_providers
+from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
 from ..jobs import history_rows
@@ -487,6 +488,8 @@ def _live_session_fields(host) -> dict:
         "compact_threshold": session.compact_threshold,
         "context": report.to_payload() if report is not None else None,
         "quota": (hint.render() or None) if hint is not None else None,
+        "backend_inventory": backend_snapshot(harness.current_model, "backend_inventory"),
+        "backend_telemetry": backend_snapshot(harness.current_model, "backend_telemetry"),
     }
 
 

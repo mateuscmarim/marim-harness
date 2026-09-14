@@ -53,7 +53,60 @@ async def _cmd_help(app: HarnessApp, arg: str) -> None:
         "Drop an `AGENTS.md` in the workspace root for project-specific "
         "instructions; it's re-read every turn.",
     ]
+    lines.extend(_backend_inventory_lines(app))
     await app.post_system("\n".join(lines))
+
+
+def _backend_inventory_lines(app: HarnessApp) -> list[str]:
+    inventory = getattr(getattr(getattr(app, "link", None), "info", None), "backend_inventory", {})
+    if not inventory:
+        return []
+    lines = ["", f"**{inventory.get('backend', 'CLI')} inventory**", ""]
+    for key, label in (("tools", "Declared tools"), ("agents", "Agents")):
+        values = inventory.get(key, [])
+        if values:
+            lines.append(f"{label}: " + ", ".join(f"`{v}`" for v in values))
+    commands = inventory.get("slash_commands", [])
+    if commands:
+        available = _backend_commands(inventory)
+        for name in commands:
+            label = "available" if name in available else "inventory only"
+            if name.lower() in COMMANDS_BY_NAME:
+                label = "marim command takes precedence"
+            lines.append(f"- `/{name}` — {label}")
+    if inventory.get("permission_mode"):
+        lines.append(f"Backend permission mode: `{inventory['permission_mode']}`")
+    return lines
+
+
+def _backend_commands(inventory: dict) -> set[str]:
+    # Claude's public SDK accepts declared slash_commands as user-message
+    # text; terminal_slash_commands need an interactive terminal instead.
+    if inventory.get("backend") != "claude-cli":
+        return set()
+    names = inventory.get("slash_commands", [])
+    terminal = inventory.get("terminal_slash_commands", [])
+    if not isinstance(names, list) or not isinstance(terminal, list):
+        return set()
+    return {name for name in names if isinstance(name, str) and name not in terminal}
+
+
+def backend_command_completions(inventory: dict, query: str) -> list[tuple[str, str]]:
+    return [
+        (name, f"/{name}  — {inventory['backend']} command")
+        for name in sorted(_backend_commands(inventory))
+        if name.lower() not in COMMANDS_BY_NAME and name.lower().startswith(query.lower())
+    ]
+
+
+async def _submit_backend_command(app: HarnessApp, text: str) -> None:
+    if app.compact_busy:
+        await app.post_system("Compaction in progress — wait for it to finish.")
+    elif app.turn_busy:
+        app.queue.enqueue(text, None)
+    else:
+        app.queue.paused = False
+        await app.start_turn(text)
 
 
 async def _cmd_clear(app: HarnessApp, arg: str) -> None:
@@ -343,6 +396,16 @@ async def _cmd_mcp(app: HarnessApp, arg: str) -> None:
 
 
 async def _mcp_list(app: HarnessApp) -> None:
+    inventory = getattr(getattr(getattr(app, "link", None), "info", None), "backend_inventory", {})
+    if inventory:
+        lines = [f"**{inventory.get('backend', 'CLI')} MCP servers**", ""]
+        for server in inventory.get("mcp_servers", []):
+            lines.append(f"- `{server['name']}` — {server.get('status') or 'unknown'}")
+        if not inventory.get("mcp_servers"):
+            lines.append("No MCP servers reported by this backend.")
+        lines.append("\nDeclared tools do not imply an active MCP connection.")
+        await app.post_system("\n".join(lines))
+        return
     harness = app.require_local("/mcp")
     servers = getattr(harness.mcp, "mcp_servers", [])
     if not servers:
@@ -723,7 +786,11 @@ async def dispatch(app: HarnessApp, text: str) -> None:
     name, _, arg = text[1:].partition(" ")
     cmd = COMMANDS_BY_NAME.get(name.lower())
     if cmd is None:
-        await app.post_system(f"Unknown command: `/{name}`. Try `/help`.")
+        inventory = getattr(app.link.info, "backend_inventory", {})
+        if name in _backend_commands(inventory):
+            await _submit_backend_command(app, text)
+        else:
+            await app.post_system(f"Unknown command: `/{name}`. Try `/help`.")
         return
     try:
         await cmd.handler(app, arg.strip())

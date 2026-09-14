@@ -29,6 +29,7 @@ from ...server.wire_events import (
     CompactionFinished,
     CompactionStarted,
     JobsChanged,
+    SessionBackendState,
     SessionModeChanged,
     SessionNotice,
     SessionRenamed,
@@ -211,6 +212,14 @@ async def _handle_session_mode_changed(app: "HarnessApp", _wire: SessionModeChan
     app._refresh_mode_display()
 
 
+async def _handle_backend_state(app: "HarnessApp", _wire: SessionBackendState) -> None:
+    # The link has folded this snapshot before dispatch. Observations never
+    # drive TurnTracker or resolve an outstanding approval panel.
+    app.status.refresh_status()
+    if app._autocomplete is not None:
+        app._autocomplete.refresh_inventory(app.link.info.backend_inventory)
+
+
 async def _handle_session_notice(app: "HarnessApp", wire: SessionNotice) -> None:
     await app.stream.on_wire(wire)
 
@@ -362,6 +371,7 @@ _WIRE_HANDLERS: dict[type, _WireHandler] = {
     SessionTtft: _handle_session_ttft,
     SessionModeChanged: _handle_session_mode_changed,
     SessionNotice: _handle_session_notice,
+    SessionBackendState: _handle_backend_state,
     BackendTaskChanged: _handle_session_notice,
     SessionRenamed: _handle_session_renamed,
     TasksChanged: _handle_tasks_changed,
@@ -1652,7 +1662,7 @@ class HarnessApp(App):
         # time: the box grows with its content, so a menu positioned once (or by
         # a stylesheet constant) ends up covering a multi-line draft.
         self._autocomplete.position_above(self.query_one(PromptInput).box_height)
-        self._autocomplete.filter(query)
+        self._autocomplete.filter(query, backend_inventory=self.link.info.backend_inventory)
 
     def _hide_autocomplete(self) -> None:
         if self._autocomplete is not None:

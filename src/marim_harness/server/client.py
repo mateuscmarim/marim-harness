@@ -103,6 +103,8 @@ class RemoteInfo:
     context_report: ContextReport | None = None
     # The remote TUI has no model catalog of its own; the picker is local-only.
     model_source: Any = None
+    backend_inventory: dict = field(default_factory=dict)
+    backend_telemetry: dict = field(default_factory=dict)
 
     def apply_session(self, payload: dict) -> None:
         """Fold a ``GET session`` body in. Every field is optional on the
@@ -123,6 +125,10 @@ class RemoteInfo:
             self.compact_threshold = int(payload["compact_threshold"])
         if "context" in payload:
             self.context_report = ContextReport.from_payload(payload["context"])
+        for key in ("backend_inventory", "backend_telemetry"):
+            if key in payload:
+                value = payload[key]
+                setattr(self, key, value if isinstance(value, dict) else {})
         if "quota" in payload:
             quota = payload["quota"]
             self.quota_hint = str(quota) if quota else None
@@ -132,7 +138,9 @@ class RemoteInfo:
         Cheap per-event bookkeeping only; anything needing a round trip waits
         for ``refresh``."""
         data = event.data
-        if event.type == "session.renamed":
+        if event.type == "session.backend_state":
+            self.apply_backend_state(data)
+        elif event.type == "session.renamed":
             self.session_name = data.get("to", self.session_name)
         elif event.type == "session.mode_changed":
             self.mode = data.get("mode", self.mode)
@@ -142,6 +150,12 @@ class RemoteInfo:
             self.usage = usage_from_summary(data["usage"])
         elif event.type == "compaction.finished" and data.get("after") is not None:
             self.history_tokens = int(data["after"])
+
+    def apply_backend_state(self, data: dict) -> None:
+        for key in ("inventory", "telemetry"):
+            if key in data:
+                value = data[key]
+                setattr(self, f"backend_{key}", value if isinstance(value, dict) else {})
 
 
 def usage_from_summary(summary: dict) -> RunUsage:
