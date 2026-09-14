@@ -90,6 +90,11 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Fixed
 
+- **`codex-cli`: a blank `MARIM_MODEL` no longer fails every turn.** With
+  `MARIM_MODEL=` set but empty, `CodexCliModel` sent the app-server
+  `model: ""` on `thread/start` / `turn/start` and Codex answered 400 *"The
+  '' model is not supported"*. An empty id now means "Codex's own default",
+  exactly like an unset one.
 - **`claude-cli`: a background Agent's report was lost and its card spun
   forever.** Claude Code runs its Agent sub-agents in the background: the
   spawning turn ends at launch, and when the agent finishes while no turn
