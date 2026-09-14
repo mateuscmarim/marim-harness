@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
+import signal
 import time
 
 from marim_harness.tools.impl.process import kill_process_tree
@@ -138,17 +140,40 @@ class TestKillProcessTree:
 
     def test_single_process_in_custom_group(self):
         """Kills a process that created its own process group via setsid."""
-        pid = os.fork()
+        ready_read, ready_write = os.pipe()
+        try:
+            pid = os.fork()
+        except BaseException:
+            os.close(ready_read)
+            os.close(ready_write)
+            raise
         if pid == 0:
-            os.setsid()
-            os.execvp("sleep", ["sleep", "infinity"])
-        time.sleep(0.1)
+            os.close(ready_read)
+            try:
+                os.setsid()
+                os.write(ready_write, b"1")
+                os.close(ready_write)
+                os.execvp("sleep", ["sleep", "infinity"])
+            finally:
+                os._exit(1)  # Never return a failed child setup into pytest.
+        os.close(ready_write)
+        try:
+            # A loaded runner may not schedule the child within a fixed sleep.
+            # Only exercise group killing after the child confirms setsid ran.
+            readable, _, _ = select.select([ready_read], [], [], 5)
+            assert readable, "child did not establish its process group within 5s"
+            assert os.read(ready_read, 1) == b"1", "child exited before readiness"
+            assert os.getpgid(pid) == pid
 
-        # Verify it's in its own group
-        assert os.getpgid(pid) == pid
-
-        kill_process_tree(pid)
-        time.sleep(0.1)
-
-        assert not _alive(pid)
-        _reap(pid)
+            kill_process_tree(pid)
+            deadline = time.monotonic() + 5
+            while _alive(pid) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert not _alive(pid)
+        finally:
+            os.close(ready_read)
+            # On readiness failure it may still share pytest's group: target
+            # only the known child PID, then reap even if an assertion failed.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+            os.waitpid(pid, 0)
