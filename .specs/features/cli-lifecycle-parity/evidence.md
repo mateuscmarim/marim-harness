@@ -244,3 +244,13 @@ Normalized result stats and backward-compatible ledger reads passed in 177-test 
 
 Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
 Feature-wide AC mapping and adversarial checks follow in validation.md.
+
+## T6
+
+Mobile commit 9154b24: existing Room path renders session.notice and restores ordered metadata; stable identities deduplicate replay. Six new tests passed after initial four-test RED gate. Full ktlintCheck/detekt, 624 JVM tests (zero skipped), assembleDebug and diff check pass. Only additive expected whitelist assertion changed. No deployment.
+
+| Assertion evidence | Result |
+| --- | --- |
+
+Adequacy: assertions target this task’s specified behavior; no unrelated tests added.
+Feature-wide AC mapping and adversarial checks follow in validation.md.
