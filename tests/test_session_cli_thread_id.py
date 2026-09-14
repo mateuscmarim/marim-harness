@@ -105,7 +105,7 @@ class _Fake(ExternalCliModel):
     def model_name(self) -> str:
         return "fake"
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, attachments=None) -> bool:
         self.steered.append(text)
         return self.accept_steer
 

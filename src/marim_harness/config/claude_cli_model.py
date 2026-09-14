@@ -55,7 +55,6 @@ notification that settles a spawn card can arrive turns after the spawn.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
@@ -89,6 +88,16 @@ from ..claude.quota import quota_from_usage
 from ..runtime.context import strip_turn_context
 from ..runtime.permissions import Mode, UiSeams
 from ..usage import COST_DETAIL_KEY
+from .cli_input import (
+    attachment_content,
+    claude_input,
+    prompt_content,
+)
+from .cli_input import (
+    extract_system as extract_system,
+)
+from .cli_input import flatten_history as flatten_history
+from .cli_input import latest_user_text as latest_user_text
 from .context_report import CONTEXT_REPORT_KEY, ContextReport, prompt_tokens
 from .external_cli import (
     CLI_ACTIVITY_KEY,
@@ -102,7 +111,7 @@ from .quota import QuotaHint
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
 
-    from pydantic_ai.messages import ModelMessage, ModelRequest
+    from pydantic_ai.messages import ModelMessage
     from pydantic_ai.settings import ModelSettings
 
     from ..subagents.cli_demux import CliSubagentDemux
@@ -113,109 +122,6 @@ logger = logging.getLogger(__name__)
 # (SessionStore.cli_thread_id) is namespaced so a switch to another external
 # CLI never resumes a foreign id.
 SESSION_REF_PREFIX = "claude-cli:"
-
-
-def _part_text(content) -> str:
-    """A UserPromptPart/TextPart content reduced to plain text. Content is a str
-    or a list whose str items are joined (non-str multimodal items are skipped)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "\n".join(c for c in content if isinstance(c, str))
-    return "" if content is None else str(content)
-
-
-def latest_user_text(messages: list[ModelMessage]) -> str:
-    """Text of the newest user prompt (what we send to ``claude -p`` each turn)."""
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-
-    for msg in reversed(messages):
-        if isinstance(msg, ModelRequest):
-            texts = [_part_text(p.content) for p in msg.parts if isinstance(p, UserPromptPart)]
-            if texts:
-                return "\n".join(t for t in texts if t)
-    return ""
-
-
-def extract_system(messages: list[ModelMessage]) -> str:
-    """The system text for ``--append-system-prompt``: the most recent request's
-    ``instructions`` if present, else the concatenated SystemPromptPart content."""
-    from pydantic_ai.messages import ModelRequest, SystemPromptPart
-
-    for msg in reversed(messages):
-        if isinstance(msg, ModelRequest) and getattr(msg, "instructions", None):
-            return str(msg.instructions)
-    sys_parts: list[str] = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            sys_parts += [
-                _part_text(p.content) for p in msg.parts if isinstance(p, SystemPromptPart)
-            ]
-    return "\n".join(s for s in sys_parts if s)
-
-
-def _render_tool_args(args) -> str:
-    """A tool call's args as a compact one-line string. dicts are JSON-encoded so
-    the keys/values survive; a raw-string args payload is passed through."""
-    if isinstance(args, str):
-        return args
-    if args is None:
-        return ""
-    try:
-        return json.dumps(args, ensure_ascii=False, sort_keys=True)
-    except (TypeError, ValueError):
-        return str(args)
-
-
-def _request_lines(msg: ModelRequest) -> list[str]:
-    """The rendered lines for one ``ModelRequest`` in :func:`flatten_history`:
-    a user prompt's text and any tool-return results."""
-    from pydantic_ai.messages import ToolReturnPart, UserPromptPart
-
-    lines: list[str] = []
-    for p in msg.parts:
-        if isinstance(p, UserPromptPart):
-            text = _part_text(p.content)
-            if text:
-                lines.append(f"User: {text}")
-        elif isinstance(p, ToolReturnPart):
-            lines.append(f"Tool {p.tool_name} returned: {_part_text(p.content)}")
-    return lines
-
-
-def _response_lines(msg: ModelResponse) -> list[str]:
-    """The rendered lines for one ``ModelResponse`` in :func:`flatten_history`:
-    assistant prose and any tool calls it made."""
-    from pydantic_ai.messages import TextPart, ToolCallPart
-
-    lines: list[str] = []
-    for p in msg.parts:
-        if isinstance(p, TextPart) and p.content:
-            lines.append(f"Assistant: {p.content}")
-        elif isinstance(p, ToolCallPart):
-            lines.append(f"Assistant called {p.tool_name}({_render_tool_args(p.args)})")
-    return lines
-
-
-def flatten_history(messages: list[ModelMessage]) -> str:
-    """The whole conversation rendered to one prompt, for a cold first turn (no
-    Claude session to resume).
-
-    claude-cli's own responses are text-only, but a cold start can also happen
-    after switching providers mid-session — so the history may carry tool-call
-    and tool-return parts produced by another provider using marim's tools. We
-    render those too (``Assistant called <tool>(<args>)`` / ``Tool <tool>
-    returned: <result>``) so the switched-in Claude sees what the tools did,
-    not just the surrounding prose."""
-    from pydantic_ai.messages import ModelRequest, ModelResponse
-
-    lines: list[str] = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            lines.extend(_request_lines(msg))
-        elif isinstance(msg, ModelResponse):
-            lines.extend(_response_lines(msg))
-    return "\n\n".join(lines)
 
 
 def request_usage_from_cli(cli_usage: dict | None, total_cost_usd: float | None) -> RequestUsage:
@@ -846,7 +752,12 @@ def _is_autonomous(messages: list[ModelMessage]) -> bool:
     """True for a turn nobody typed: the newest prompt is a turn-context
     envelope around an empty typed text (the harness's autonomous / digest
     turns) — the kind that consumes a turn the CLI already ran."""
-    return not strip_turn_context(latest_user_text(messages)).strip()
+    # An image-only submission is still a user turn. Treating its empty text
+    # as autonomous would consume a buffered CLI response and drop the image.
+    return all(
+        isinstance(item, str) and not strip_turn_context(item).strip()
+        for item in prompt_content(messages, history=False)
+    )
 
 
 def _is_missing_session(obj: dict) -> bool:
@@ -1054,8 +965,13 @@ class ClaudeCliModel(ExternalCliModel):
         if buffered is not None:
             return process, buffered, await next_turn_object(process, buffered)
         await self._sync_controls(process, model_settings)
-        text = latest_user_text(messages) if resumed else flatten_history(messages)
-        handle = await process.send_turn(text)
+        content = claude_input(prompt_content(messages, history=not resumed))
+        logger.debug(
+            "claude turn input: images=%d, replay_history=%s",
+            sum(block["type"] == "image" for block in content),
+            not resumed,
+        )
+        handle = await process.send_turn(content)
         first = await next_turn_object(process, handle)
         if resumed and _is_missing_session(first):
             logger.warning(
@@ -1065,7 +981,7 @@ class ClaudeCliModel(ExternalCliModel):
             await process.aclose()
             process = await self._spawn(resume_id=None, system=extract_system(messages) or None)
             await self._sync_controls(process, model_settings)
-            handle = await process.send_turn(flatten_history(messages))
+            handle = await process.send_turn(claude_input(prompt_content(messages, history=True)))
             first = await next_turn_object(process, handle)
         return process, handle, first
 
@@ -1317,7 +1233,7 @@ class ClaudeCliModel(ExternalCliModel):
             await self._after_turn(process, handle)
 
     # --- live controls -------------------------------------------------------------
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> bool:
         """Fold ``text`` into the open turn (a mid-turn user message — probe s6).
         Fire-and-forget on the running loop: the harness calls this
         synchronously from the input path. False (harness keeps buffering) when
@@ -1325,7 +1241,8 @@ class ClaudeCliModel(ExternalCliModel):
         process = self._process
         if process is None or not process.turn_open:
             return False
-        task = asyncio.get_running_loop().create_task(process.send_user(text))
+        content = claude_input(attachment_content(text, attachments))
+        task = asyncio.get_running_loop().create_task(process.send_user(content))
         task.add_done_callback(_log_steer_failure)
         return True
 

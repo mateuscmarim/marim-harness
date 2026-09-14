@@ -370,6 +370,11 @@ renumber). Attachments ride along when a message is queued, steered, or
 edited back into the box. If the active model is known not to support
 images, the submission is blocked with a hint instead of failing.
 
+Image attachments also work with `claude-cli` and `codex-cli`, including
+mid-turn steering in a local session. Marim sends the image bytes directly
+to the CLI. When rebuilding a missing CLI conversation, it replays the
+images alongside their original user messages.
+
 ## Background jobs and autonomous wake
 
 Long-running work the agent starts in the background (detached commands,
