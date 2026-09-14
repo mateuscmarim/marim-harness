@@ -127,7 +127,9 @@ class CollabRouter:
     """Stateful router for one parent thread (see module docstring).
 
     ``adopt``/``release`` are the server hooks (``adopt_thread`` /
-    ``drop_thread`` for the child id) so the router itself stays pure;
+    ``drop_thread`` for the child id) so the router itself stays pure —
+    ``adopt`` is told which thread the spawn happened in, since a nested
+    spawn's children belong under the child that spawned them, not the root;
     ``announced`` reads the agent name the server recorded when it adopted
     the child on the reader task (``CodexServer.thread_label``)."""
 
@@ -135,7 +137,7 @@ class CollabRouter:
         self,
         parent_thread_id: str,
         *,
-        adopt: Callable[[str], object],
+        adopt: Callable[[str, str], object],  # (child id, the spawning thread's id)
         release: Callable[[str], object],
         announced: Callable[[str], str | None] | None = None,
     ) -> None:
@@ -366,7 +368,11 @@ class CollabRouter:
     def _bind(self, child: _Child, receivers: tuple[str, ...]) -> None:
         """Map (and adopt) the spawned thread once its id is known — on the
         ``item/started`` when Codex already reports it there, else on the
-        ``item/completed``."""
+        ``item/completed``. Adopted under the thread that spawned it: a
+        nested spawn goes under its container child, so that child going
+        away (``release``) takes its own children with it, and the server's
+        own adoption of the announced thread (which knows the real parent)
+        agrees with ours whichever lands first."""
         if child.thread_id is not None or not receivers:
             return
         tid = receivers[0]
@@ -375,7 +381,7 @@ class CollabRouter:
         self._by_thread[tid] = child
         if tid in self._stash:
             self._note_thread(child, self._stash.pop(tid))
-        self._adopt(tid)
+        self._adopt(tid, self._spawner_of(child))
         for extra in receivers[1:]:
             logger.debug("codex collab: extra receiver %s of %s not tracked", extra, tid)
 
@@ -389,6 +395,13 @@ class CollabRouter:
             self._by_thread.pop(child.thread_id, None)
             self._release(child.thread_id)
 
+    def _spawner_of(self, child: _Child) -> str:
+        """The thread ``child`` was spawned from: the container child's, or
+        the parent's for a top-level spawn (also the fallback for a container
+        whose own thread is somehow unknown — never a wrong ancestor)."""
+        holder = self._by_stream.get(child.container) if child.container is not None else None
+        return holder.thread_id if holder is not None and holder.thread_id else self._parent
+
     def _on_container(self, container: str | None, item: object) -> list[object]:
         """Deliver a synthesized spawn card item to the stream the spawn
         happened in: the parent's (a bare item) or a child's (routed)."""
@@ -400,8 +413,11 @@ class CollabRouter:
         return self._emit(holder, item)
 
     def _stash_thread(self, tid: str, params: dict) -> None:
+        """Keep the announcement of a thread spawned by the parent — or by a
+        mapped child (a nested spawn) — until its spawn item maps it."""
         thread = params.get("thread") or {}
-        if str(thread.get("parentThreadId") or "") == self._parent:
+        spawner = str(thread.get("parentThreadId") or "")
+        if spawner == self._parent or spawner in self._by_thread:
             self._stash[tid] = thread
 
     def _note_thread(self, child: _Child, thread: dict) -> None:
@@ -419,13 +435,18 @@ class CollabRouter:
 
 def router_for(server: CodexServer, handle: ThreadHandle) -> CollabRouter:
     """A router for ``handle`` whose adopt/release hooks register the children
-    on ``server`` under it (so dropping the parent drops them too) and whose
+    on ``server`` under the thread that spawned each (so dropping the parent
+    drops them all, and releasing a child drops its nested spawns) and whose
     early-request labels come from the server's own adoption record."""
+
+    def adopt(child_id: str, spawner_id: str) -> None:
+        # The spawner is ``handle`` itself or a child adopted under it; a
+        # spawner already released (gone) falls back to the root so the
+        # orphan's traffic is at least not dropped as an unknown thread.
+        server.adopt_thread(server.handle_for(spawner_id) or handle, child_id)
+
     return CollabRouter(
-        handle.thread_id,
-        adopt=lambda cid: server.adopt_thread(handle, cid),
-        release=server.release_thread,
-        announced=server.thread_label,
+        handle.thread_id, adopt=adopt, release=server.release_thread, announced=server.thread_label
     )
 
 

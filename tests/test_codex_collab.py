@@ -26,10 +26,15 @@ from marim_harness.codex.translate import (
 class _Hooks:
     def __init__(self) -> None:
         self.adopted: list[str] = []
+        self.spawner: dict[str, str] = {}  # child id → the thread it was adopted under
         self.released: list[str] = []
 
+    def adopt(self, child_id: str, spawner_id: str) -> None:
+        self.adopted.append(child_id)
+        self.spawner[child_id] = spawner_id
+
     def router(self, parent: str = "t1") -> CollabRouter:
-        return CollabRouter(parent, adopt=self.adopted.append, release=self.released.append)
+        return CollabRouter(parent, adopt=self.adopt, release=self.released.append)
 
 
 def _spawn(item_id: str = "k1", receivers: tuple[str, ...] = ("c1",), **kw) -> CollabCall:
@@ -302,6 +307,9 @@ def test_nested_spawn_from_a_child_renders_on_the_childs_stream():
     assert routed.stream_id == "k1" and routed.model == "codex-cli:gpt-5.4-mini"
     assert isinstance(routed.item, ActivityStart) and routed.item.item_id == "k2"
     assert hooks.adopted == ["c1", "g1"] and r.open_children == {"c1", "g1"}
+    # Adopted under the child that spawned it, not the root: releasing the
+    # child must take the grandchild with it (the server cascades by parent).
+    assert hooks.spawner == {"c1": "t1", "g1": "c1"}
     # The grandchild's own traffic streams to ITS card.
     [gtext] = r.route(*_child_msg("g1", "m1", "deep"))
     assert gtext == Routed("k2", TextDelta("m1", "deep"), None, "codex-cli:default")
@@ -379,7 +387,9 @@ def test_label_for_falls_back_to_the_servers_adoption_record():
     its spawn item): the name then comes from what the server recorded when
     it adopted the child there; a child nobody named is a bare ``agent``."""
     announced = {"c1": "scout"}
-    r = CollabRouter("t1", adopt=lambda _: None, release=lambda _: None, announced=announced.get)
+    r = CollabRouter(
+        "t1", adopt=lambda _c, _s: None, release=lambda _: None, announced=announced.get
+    )
     assert r.label_for("t1") is None
     assert r.label_for("c1") == "agent scout"  # not even spawned yet, as seen from here
     assert r.label_for("c2") == "agent"
@@ -415,3 +425,35 @@ def test_thread_started_model_badges_a_child_spawned_on_the_default_model():
     r.route("thread/started", {"thread": {"id": "c3", "parentThreadId": "t1", "model": "o5"}})
     [routed] = r.route(*_child_msg("c3", "m3", "hi"))
     assert cast(Routed, routed).model == "codex-cli:o5"
+
+
+def test_nested_spawn_announced_before_its_spawn_item_is_still_noted():
+    """A grandchild's ``thread/started`` names the child as its parent; when
+    the reader task dispatched it ahead of the child's spawn item, the
+    announcement is stashed all the same and its name/model land on the
+    nested card once the item maps it."""
+    hooks = _Hooks()
+    r = hooks.router()
+    r.route_item(_spawn(model=None))
+    meta = {
+        "thread": {"id": "g1", "parentThreadId": "c1", "agentNickname": "digger", "model": "o5"}
+    }
+    assert r.route("thread/started", meta) == []
+    stranger = {"thread": {"id": "x1", "parentThreadId": "someone-else"}}
+    assert r.route("thread/started", stranger) == []
+    assert r.label_for("g1") == "agent digger" and r.label_for("x1") == "agent"
+    nested = {
+        "threadId": "c1",
+        "item": {
+            "type": "collabAgentToolCall",
+            "id": "k2",
+            "tool": "spawnAgent",
+            "receiverThreadIds": ["g1"],
+            "status": "inProgress",
+        },
+    }
+    [start] = r.route("item/started", nested)
+    assert cast(ActivityStart, cast(Routed, start).item).args["model"] == "o5"
+    [routed] = r.route(*_child_msg("g1", "m1", "deep"))
+    assert cast(Routed, routed).model == "codex-cli:o5"
+    assert hooks.spawner == {"c1": "t1", "g1": "c1"}

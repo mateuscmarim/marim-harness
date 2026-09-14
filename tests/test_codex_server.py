@@ -800,3 +800,42 @@ async def test_release_thread_drops_by_id_and_ignores_unknown_ids():
     assert server.thread_ids == frozenset({"t1", "c1"})
     server.release_thread("c1")
     assert server.thread_ids == frozenset({"t1"})
+
+
+async def test_router_adopts_a_nested_spawn_under_the_child_that_spawned_it():
+    """``router_for``'s adopt hook names the spawning thread: a grandchild
+    the router maps before its ``thread/started`` is dispatched (the
+    reader task would otherwise get there first and file it under the child)
+    must still land under the child, or releasing that child — Codex
+    reporting it gone — could not cascade to the grandchild, which would sit
+    registered (pinning the shared server) until the root dropped."""
+    from marim_harness.codex.collab import router_for
+    from marim_harness.codex.translate import ItemTranslator
+
+    server = CodexServer()
+    root = server._register({"id": "t1"}, _decline)
+    router = router_for(server, root)
+    spawn = {
+        "type": "collabAgentToolCall",
+        "id": "k1",
+        "tool": "spawnAgent",
+        "receiverThreadIds": ["c1"],
+        "status": "inProgress",
+    }
+    [call] = ItemTranslator().translate("item/started", {"item": spawn})
+    router.route_item(call)
+    nested = {**spawn, "id": "k2", "receiverThreadIds": ["g1"]}
+    router.route("item/started", {"threadId": "c1", "item": nested})
+    assert server.handle_for("g1") is not None
+    assert server.handle_for("g1").parent_id == "c1"  # pyright: ignore[reportOptionalMemberAccess]
+    # The later announcement agrees (idempotent adopt) and still labels it.
+    meta = {"thread": {"id": "g1", "parentThreadId": "c1", "agentNickname": "digger"}}
+    await server._on_notification("thread/started", meta)
+    assert server.thread_label("g1") == "digger"
+    server.release_thread("c1")
+    assert server.thread_ids == frozenset({"t1"})
+    # A spawn from a child the server already let go (the router still maps
+    # it) is filed under the root rather than dropped as an unknown thread.
+    orphan = {**spawn, "id": "k3", "receiverThreadIds": ["g2"]}
+    router.route("item/started", {"threadId": "c1", "item": orphan})
+    assert server.handle_for("g2").parent_id == "t1"  # pyright: ignore[reportOptionalMemberAccess]

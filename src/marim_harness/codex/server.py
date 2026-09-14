@@ -223,6 +223,11 @@ class CodexServer:
         model can tell a stale handle from a usable one."""
         return frozenset(self._threads)
 
+    def handle_for(self, thread_id: str) -> ThreadHandle | None:
+        """The handle registered for ``thread_id`` (a started thread or an
+        adopted child), None once dropped or never known."""
+        return self._threads.get(thread_id)
+
     def thread_label(self, thread_id: str) -> str | None:
         """The announced agent name of an adopted child, if Codex sent one
         (``ThreadHandle.label``); None for unknown or top-level threads."""

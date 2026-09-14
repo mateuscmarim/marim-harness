@@ -118,7 +118,7 @@ async def test_router_routes_child_traffic_and_turns_collab_items_into_cards():
     handle.events.put_nowait(("item/agentMessage/delta", parent_text))
     handle.events.put_nowait(_completed("turn-1"))
     adopted: list[str] = []
-    router = CollabRouter("t", adopt=adopted.append, release=lambda _tid: None)
+    router = CollabRouter("t", adopt=lambda cid, _sid: adopted.append(cid), release=lambda _: None)
     state = TurnState(router=router)
     items = [item async for item in turn_events(server, handle, state, turn_id="turn-1")]
     assert adopted == ["c1"]
