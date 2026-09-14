@@ -1149,6 +1149,11 @@ def test_cost_meter_bills_the_delta_since_the_previous_result():
     # since the reset, so it is billed whole and becomes the baseline.
     assert meter.charge(0.001) == pytest.approx(0.001)
     assert meter.charge(0.002) == pytest.approx(0.001)
+    # `behind` tells a result produced BEFORE the one last billed (a buffered
+    # CLI turn served late) from a reset: the caller skips the charge.
+    assert meter.behind(0.0015) is True
+    assert meter.behind(0.002) is False and meter.behind(0.003) is False
+    assert meter.behind(None) is False
     meter.reset()
     assert meter.charge(0.0005) == pytest.approx(0.0005)
 
@@ -1597,6 +1602,58 @@ async def test_typed_turn_leaves_the_cli_own_turn_buffered(tmp_path, monkeypatch
         await model.aclose()
     assert typed == "two" and shown == "Agent completed: pong"
     assert _user_texts(tmp_path) == ["User: hi", "more"]
+
+
+@pytest.mark.anyio
+async def test_cli_own_turn_served_after_a_typed_turn_is_not_billed_twice(tmp_path, monkeypatch):
+    """The CLI's running total is cumulative, so the typed turn that went out
+    while the own turn sat buffered already paid for it (0.005 → 0.012 covers
+    the own turn's 0.008). Served late, the own turn's older total must not
+    read as a /clear reset billed whole, nor drag the baseline back so the
+    next turn pays for everything a second time."""
+    own_turn = {
+        "prelude": [_NOTIFICATION],
+        "steps": [{"text": "Agent completed: pong"}, {"result": {"total_cost_usd": 0.008}}],
+    }
+    spawn_turn = [
+        *_SPAWN_TURN[:-1],
+        {"result": {"total_cost_usd": 0.005}},
+        {"after_turn": own_turn},
+    ]
+    scenario = {
+        "turns": [
+            spawn_turn,
+            [{"text": "two"}, {"result": {"total_cost_usd": 0.012}}],
+            [{"text": "three"}, {"result": {"total_cost_usd": 0.015}}],
+        ]
+    }
+    model = _model(tmp_path, monkeypatch, scenario)
+    notes: list[str] = []
+    model.on_backend_turn = notes.append
+    params = ModelRequestParameters()
+    history = _user("hi")
+    try:
+        r1 = await model.request(history, None, params)
+        await _wait_for(lambda: bool(notes))
+        history = history + [r1, ModelRequest(parts=[UserPromptPart(content="more")])]
+        r2 = await model.request(history, None, params)
+        history = history + [
+            r2,
+            ModelRequest(parts=[UserPromptPart(content=wrap_turn_context(notes[0], ""))]),
+        ]
+        r3 = await model.request(history, None, params)
+        history = history + [r3, ModelRequest(parts=[UserPromptPart(content="again")])]
+        r4 = await model.request(history, None, params)
+    finally:
+        await model.aclose()
+    assert [r.parts[0].content for r in (r2, r3, r4)] == [  # type: ignore[union-attr]
+        "two",
+        "Agent completed: pong",
+        "three",
+    ]
+    billed = [r.usage.details[COST_DETAIL_KEY] for r in (r1, r2, r3, r4)]
+    assert billed == [5000, 7000, 0, 3000]
+    assert sum(billed) == 15_000  # the CLI's own final total
 
 
 @pytest.mark.anyio

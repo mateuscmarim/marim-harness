@@ -143,6 +143,9 @@ class TurnHandle:
     events: asyncio.Queue[dict] = field(default_factory=asyncio.Queue)
     open: bool = True
     closed: asyncio.Event = field(default_factory=asyncio.Event)
+    # True for a turn the CLI ran on its own (see the module docstring): its
+    # consumer may serve it after later turns were already accounted for.
+    own: bool = False
 
     def finish(self) -> None:
         self.open = False
@@ -525,7 +528,7 @@ class ClaudeProcess:
         self._cancel_idle()
         opening = [*self._prelude, init]
         self._prelude.clear()
-        handle = self._own_turn = TurnHandle()
+        handle = self._own_turn = TurnHandle(own=True)
         self._unsolicited.append(handle)
         for pre in opening[:-1]:
             handle.events.put_nowait(pre)

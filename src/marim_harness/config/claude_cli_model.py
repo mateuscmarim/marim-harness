@@ -281,6 +281,15 @@ class CostMeter:
         self._billed_micro = total
         return delta / 1_000_000
 
+    def behind(self, cumulative_usd: float | None) -> bool:
+        """True when ``cumulative_usd`` is older than the baseline: a result
+        produced BEFORE the one last billed. Only a turn the CLI ran on its
+        own can be served that late (a typed turn went out while it sat
+        buffered), and then its spend is already on the ledger — the typed
+        turn's delta covered it. Billing it through ``charge`` would read the
+        lower total as a reset and bill the whole thing a second time."""
+        return cumulative_usd is not None and round(cumulative_usd * 1_000_000) < self._billed_micro
+
 
 # Claude tool_use -> the single arg worth showing on the activity line. Tools not
 # listed render as the bare name. Mirrors the TUI's native label keys.
@@ -1067,7 +1076,7 @@ class ClaudeCliModel(ExternalCliModel):
         if chunk.session_id and not self.ephemeral and self.on_session_ref is not None:
             self.on_session_ref(SESSION_REF_PREFIX + chunk.session_id)
 
-    def _settle_turn(self, done: DoneChunk) -> RequestUsage:
+    def _settle_turn(self, done: DoneChunk, *, own: bool = False) -> RequestUsage:
         """The turn's usage with its per-turn cost billed (``CostMeter``), and
         the context report's window refreshed from the result.
 
@@ -1077,7 +1086,14 @@ class ClaudeCliModel(ExternalCliModel):
         ledger for good. Leaving the baseline where it was makes the next
         successful turn carry the failed one's cost — attributed late, but
         the session total stays equal to the CLI's own running total, which
-        is the number the ledger is meant to reproduce."""
+        is the number the ledger is meant to reproduce.
+
+        ``own`` marks a turn the CLI ran by itself, served from the buffer.
+        Played after a typed turn that went out first, its result is older
+        than the last one billed: the cost is on the ledger already and the
+        window is staler than the one shown, so both are left alone."""
+        if own and self._cost.behind(done.cumulative_cost_usd):
+            return charge_cost(done.usage, 0.0)
         window = done.context_windows.get(self._prompt_model or "") or done.context_window
         if window:
             self._context_window = window
@@ -1144,7 +1160,7 @@ class ClaudeCliModel(ExternalCliModel):
             # construction-time value — so a multi-turn history doesn't carry
             # identical, stale timestamps across every ModelResponse.
             timestamp=datetime.now(tz=timezone.utc),
-            usage=self._settle_turn(done),
+            usage=self._settle_turn(done, own=handle.own),
             provider_name="claude-cli",
             provider_details=self._response_details(),
         )
@@ -1167,7 +1183,7 @@ class ClaudeCliModel(ExternalCliModel):
             # opened, not once at model construction.
             _ts=datetime.now(tz=timezone.utc),
             _on_note=self._note,
-            _finish=self._settle_turn,
+            _finish=lambda done: self._settle_turn(done, own=handle.own),
             _details=self._response_details,
             _after=lambda: self._refresh_quota(process),
             _on_activity=self.on_activity,
