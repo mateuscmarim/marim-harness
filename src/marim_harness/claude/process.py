@@ -204,6 +204,7 @@ class ClaudeProcess:
         self._opts = options
         self._on_request = on_request
         self._on_unsolicited = on_unsolicited
+        self.on_closed: Callable[[], None] | None = None
         self.silence_timeout = silence_timeout
         self._idle_timeout = idle_timeout
         self._proc: asyncio.subprocess.Process | None = None
@@ -495,6 +496,12 @@ class ClaudeProcess:
         # notifications it did see in its own history.
         self._background.clear()
         self._changed.set()
+        callback, self.on_closed = self.on_closed, None
+        if callback is not None:
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning("claude close observer failed cause=%s", type(exc).__name__)
 
     async def aclose(self) -> None:
         self._cancel_idle()

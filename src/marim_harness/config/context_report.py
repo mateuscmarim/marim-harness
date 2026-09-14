@@ -110,6 +110,8 @@ def current_context_report(model: object, history: list[ModelMessage]) -> Contex
     else (a resumed session before its first turn) the one persisted on the
     newest response BY THE SAME PROVIDER; None for a model that never
     reports (marim's own providers), so the estimate stays in charge there."""
+    if getattr(model, "context_invalidated", False):
+        return None
     live = getattr(model, "context_report", _NOT_A_BACKEND)
     if live is _NOT_A_BACKEND:
         return None

@@ -321,7 +321,7 @@ class TextFolder:
                 yield ev
             return
         seg = f"\n\n{delta}" if self.after_tool else delta
-        async for ev in self._emit(seg, "text-0"):
+        async for ev in self._emit(seg, f"text-{self.part_n}"):
             yield ev
         self.folded_any = True
         self.after_tool = False
@@ -339,7 +339,7 @@ class TextFolder:
             return
         seg = self._fold_text(chunk, not self.folded_any)
         if seg:
-            async for ev in self._emit(seg, "text-0"):
+            async for ev in self._emit(seg, f"text-{self.part_n}"):
                 yield ev
             self.folded_any = True
             self.after_tool = True
