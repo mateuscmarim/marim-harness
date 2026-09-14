@@ -53,9 +53,9 @@ from ..codex.server import (
 )
 from ..codex.transcript import activity_events
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
-from ..codex.turn import TurnState, finish_turn, text_input, turn_events
+from ..codex.turn import TurnState, finish_turn, turn_events
 from ..runtime.permissions import Mode
-from .claude_cli_model import extract_system, flatten_history, latest_user_text
+from .cli_input import attachment_content, codex_input, extract_system, prompt_content
 from .context_report import CONTEXT_REPORT_KEY, ContextReport
 from .external_cli import (
     CLI_ACTIVITY_KEY,
@@ -225,6 +225,15 @@ class CodexCliModel(ExternalCliModel):
         else:
             self._drop_own_thread(server)
 
+    def release_conversation(self) -> None:
+        """Drop the live thread handle (see the base): the next turn then
+        ``thread/resume``s whatever the rebound store names, or starts a new
+        thread. The server stays — it is process-wide and serves every other
+        session on it. The context report goes with the thread it described."""
+        if self._server is not None:
+            self._drop_own_thread(self._server)
+        self.context_report = None
+
     def _drop_own_thread(self, server: CodexServer) -> None:
         if self.thread is not None:
             server.drop_thread(self.thread)  # cascades to the adopted children
@@ -367,13 +376,18 @@ class CodexCliModel(ExternalCliModel):
         server = await self._ensure_server()
         await self._load_efforts(server)
         handle, fresh = await self._thread_for(messages, server)
-        text = flatten_history(messages) if fresh else latest_user_text(messages)
+        inputs = codex_input(prompt_content(messages, history=fresh))
+        logger.debug(
+            "codex turn input: images=%d, replay_history=%s",
+            sum(item["type"] == "image" for item in inputs),
+            fresh,
+        )
         mode = self._mode()
         supported = (self._efforts or {}).get(self._model_id or "", None)
         turn_id = await server.start_turn(
             handle,
             options=TurnOptions(
-                inputs=[text_input(text)],
+                inputs=inputs,
                 model=self._model_id,
                 effort=effort_for(self._thinking(model_settings), supported),
                 approval_policy=policy_for(mode),
@@ -488,7 +502,7 @@ class CodexCliModel(ExternalCliModel):
             self.quota_hint = None
 
     # --- live controls ---------------------------------------------------------------
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> bool:
         """Forward a mid-turn steer to ``turn/steer``. Fire-and-forget on the
         running loop: the harness calls this synchronously from the input
         path. Returns False (harness keeps buffering) when no turn is live."""
@@ -497,7 +511,8 @@ class CodexCliModel(ExternalCliModel):
             return False
         server = self._server
         loop = asyncio.get_running_loop()
-        task = loop.create_task(server.steer(handle, text))
+        inputs = codex_input(attachment_content(text, attachments))
+        task = loop.create_task(server.steer(handle, text, inputs=inputs))
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
         return True
 

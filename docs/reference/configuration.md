@@ -128,8 +128,19 @@ LSP and MCP do not apply. The process is launched with `--safe-mode
 plugins and settings do NOT load; its skills and `CLAUDE.md` files are plain
 files under the workspace and remain readable (the CLI's `--bare` flag would
 close that gap but breaks subscription auth, so it is not used). Requires Claude
-Code 2.1 or newer (older versions log a warning). The thinking level (`/think`)
-is a no-op under this provider.
+Code 2.1 or newer (older versions log a warning). `/mode`, `/model` and
+`/think` reach the running process as control requests before the next
+turn (`set_permission_mode`, `set_model`, `set_max_thinking_tokens` +
+`apply_flag_settings {effortLevel}`), so none of them needs a restart; a
+same-provider `/model` switch keeps the process and its session (the launch
+`--model` still seeds the first spawn). Plan mode is enforced twice: Claude
+runs in its own plan mode AND marim denies every mutating `can_use_tool`.
+The thinking level maps to a token budget (`off` 0, `minimal` 1024, `low`
+4096, `medium` 16384, `high` 32768, `xhigh` 65536) plus an effort level
+(`off`/`minimal`/`low` → `low`, then `medium`, `high`, `xhigh`); each
+Claude model honours whichever of the two it supports — an
+adaptive-thinking model cannot switch thinking off, so `off` is its lowest
+effort. An unset level sends nothing and leaves the CLI's own defaults.
 
 The status bar's `ctx` field shows Claude's own context under this provider:
 each `assistant` event carries the prompt size of that request (uncached
@@ -141,6 +152,27 @@ usage ledger is per turn: the CLI's `result` reports a *running* total for
 the process (documented as resetting on a fresh or resumed session and on a
 mid-session `/clear`), so marim bills each turn the increase since the
 previous result and starts over whenever it launches a new process.
+
+Claude's own Agent sub-agents run in the background: the turn that spawns one
+ends as soon as it is launched (its spawn card stays open, and a resumed
+history records the call as "reports later", not as cut short), and when the
+agent finishes while no turn is open Claude Code reacts on its own — it
+injects the report into its history and runs a model turn nobody asked for.
+marim buffers that turn and plays it as an *autonomous* turn (trigger
+`autonomous`, an empty prompt) as soon as the session is idle: the card
+settles with the agent's report, the reaction renders as its own transcript
+entry, marim's history stays aligned with Claude's, and nothing is sent to
+the CLI for it. This bypasses the wake policy on purpose — it costs no marim
+model call and there is no decision to make, the turn already ran. A typed
+turn submitted first goes out first; the buffered one plays right after. The
+idle reaper stretches its clock tenfold while a background agent is still
+running (closing the process would kill it and lose the report; the
+stretched clock only bounds an agent that never reports, since a closed
+process resumes by id anyway) and starts the normal one when the report
+lands. Two things do not cover this: a `backend: claude-cli` *spawn*
+closes its process when its own turn ends, so a background agent inside a
+spawn is lost with it; and a headless/aux clone has no session to play the
+turn into, so its reaction stays in Claude's history only.
 
 No API key is read for this provider — the CLI owns its own subscription auth.
 The model picker's `claude-cli` catalog is the CLI's own `/model` menu, read

@@ -142,7 +142,12 @@ and `bash` (and `run_workflow` when workflows are enabled). Cycle modes with
 Under the `claude-cli` main-loop provider, Claude Code runs its own tools,
 but its approval requests are brokered into this same panel (labelled for
 Claude), so `auto`/`ask`/`plan` keep their meaning and `ask_user` routes
-through the ask-user panel too. Under `codex-cli`, Codex runs its own tools
+through the ask-user panel too. The mode is also sent to the process
+(`set_permission_mode`) before the next turn: in `plan` Claude runs in its
+own plan mode and presents a plan rather than running into denials (its
+`ExitPlanMode` request is refused with a note that `/mode` is how the user
+switches); `auto` and `ask` both run it in Claude's `default` mode, where it
+keeps asking marim before every gated tool. Under `codex-cli`, Codex runs its own tools
 but its approval requests are brokered into this same panel (with the Codex
 command or file diff), so `ask` mode still gates every privileged action and
 `plan` mode is read-only.
@@ -199,7 +204,7 @@ known command reports an error instead of being sent to the model.
 | `/trust` | — | Bare `/trust` shows the project trust decision (trusted/untrusted, and which layer decided) plus the gated project surface (hooks/MCP/skills/agents/plugins a grant would enable). `/trust on` grants it — persists the decision and hot-applies it (hooks reload, MCP config loads, LSP registry rebuilds). `/trust off` revokes it — persists the decision; already-running MCP servers and language servers stop only on restart. |
 | `/model` | — | Switch the model: `/model <id>` applies it directly; bare `/model` opens the model picker. Refused mid-turn. |
 | `/advisor` | — | Set the advisor model (a second model the agent can consult mid-task): `/advisor <id>`, `/advisor off`, or bare for a picker. Applies to the next consultation; persisted per session. |
-| `/think` | `/effort` | Set the thinking (reasoning-effort) level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; bare opens a picker. Applies from the next turn; persisted per session. No effect under the `claude-cli` main provider. |
+| `/think` | `/effort` | Set the thinking (reasoning-effort) level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; bare opens a picker. Applies from the next turn; persisted per session. |
 | `/theme` | — | List color themes or switch: `/theme [name]`. The choice persists as the startup theme. |
 | `/remember` | — | `/remember <fact>` starts a turn that has the agent save the fact to persistent memory (it picks scope, type, and title). |
 | `/skill` | — | Bare `/skill` lists discovered skills; `/skill <name> [context]` starts a turn that activates the skill and carries out its instructions. |
@@ -258,8 +263,12 @@ also works after a successful rewind you regret.
   mid-turn; each change applies to the next consultation.
 - `/think` sets the reasoning-effort level for the main model (and is
   inherited by sub-agents unless their spec overrides it). Levels:
-  `off minimal low medium high xhigh`. Unsupported models ignore it; under
-  the `claude-cli` main provider it is a no-op.
+  `off minimal low medium high xhigh`. Unsupported models ignore it. Under
+  the `claude-cli` main provider it is sent to the process as a
+  thinking-token budget (`off` = 0, `minimal` 1k … `xhigh` 64k) plus an
+  effort level (`low` … `xhigh`); token-budget models honour the budget,
+  adaptive-thinking models (the Claude 5 family) the effort — they cannot
+  switch thinking off, so `off` means the lowest effort there.
 
 If a model is known to be text-only, submitting an image is blocked with a
 hint to switch models rather than failing mid-turn.
@@ -360,6 +369,11 @@ Either way an `[Image #N]` marker appears in the text; markers are atomic
 renumber). Attachments ride along when a message is queued, steered, or
 edited back into the box. If the active model is known not to support
 images, the submission is blocked with a hint instead of failing.
+
+Image attachments also work with `claude-cli` and `codex-cli`, including
+mid-turn steering in a local session. Marim sends the image bytes directly
+to the CLI. When rebuilding a missing CLI conversation, it replays the
+images alongside their original user messages.
 
 ## Background jobs and autonomous wake
 

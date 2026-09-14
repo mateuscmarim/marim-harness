@@ -131,19 +131,38 @@ final `total_cost_usd`.
 
 ## Phase 2 — Claude control parity
 
+**Status: shipped** (unreleased at the time of writing). `claude/controls.py`
+maps marim's vocabulary onto the wire values and keeps what the process last
+acknowledged (`ControlState`); `ClaudeProcess.set_mode/set_model/
+set_thinking` are the thin wrappers; the adapter's `_sync_controls` sends
+only the deltas before each turn (skipped for aux clones); a same-provider
+`/model` hands the live process to the new model object (`adopt`, called by
+`Harness.set_model` before it closes the old one) so the switch is one
+`set_model`. Two facts found while verifying the wire changed the plan
+below: thinking has TWO levers — `set_max_thinking_tokens` for token-budget
+models and `apply_flag_settings {settings: {effortLevel}}` for
+adaptive-thinking ones (the Claude 5 family, Opus 4.6+, Sonnet 4.6, which
+ignore the budget) — so a level sends both; and `system/status` is not
+emitted on marim's headless transport, so the mode echo comes back in the
+`set_permission_mode` response instead (`{"mode": ...}`).
+
 **Goal.** marim's mode, model and thinking switches reach Claude Code
 instead of being emulated or documented as no-ops.
 
 **Wire** (control requests, all documented, none `@internal` in their
-primary fields):
+primary fields; verified on 2.1.270):
 
-- `set_permission_mode {mode}` — Claude echoes the mode now in effect in
-  `system/status.permissionMode`.
-- `set_model {model}` — omitted or `"default"` resets to the session
-  default.
+- `set_permission_mode {mode}` — answers `{"mode": <mode>}`; an unknown
+  mode is a control error naming the valid set.
+- `set_model {model}` — `null` or `"default"` resets to the session
+  default; an unknown id is a control error (`Model 'x' not found`) and the
+  previous model stays.
 - `set_max_thinking_tokens {max_thinking_tokens, thinking_display}` —
-  `null` resets to the session default; `thinking_display` is
-  `summarized` or `omitted`.
+  `null` resets to the session default; `0` disables; a positive budget is
+  clamped to ≥ 1024. Ignored by adaptive-thinking models.
+- `apply_flag_settings {settings: {effortLevel}}` — `low|medium|high|xhigh|
+  max`, `null` resets. Ignored by models without effort; `get_settings`
+  echoes the applied model + effort.
 
 **marim seams.**
 
@@ -159,13 +178,13 @@ primary fields):
   of a respawn on `--resume`; the launch `--model` stays for the first
   spawn.
 - Thinking: `TurnController._turn_model_settings` already resolves the
-  level per turn; the claude-cli adapter maps it to a token budget and
-  sends it when it changes. Lift the "no-op under claude-cli" note from the
-  docs and the `/think` UI annotation.
+  level per turn; the claude-cli adapter maps it to a token budget plus an
+  effort level and sends both when the level changes. Lift the "no-op under
+  claude-cli" note from the docs and the `/think` UI annotation.
 
 **Acceptance.** Switching mode, model or thinking level mid-session under
 claude-cli takes effect on the next turn without a process restart, and
-`system/status` echoes the mode marim set.
+the `set_permission_mode` answer echoes the mode marim set.
 
 ## Phase 2b — Codex sub-agents
 

@@ -172,7 +172,9 @@ async def create_workspace(request: Request) -> Response:
         if body.path is not None:
             record = _registry(request).register(body.name, Path(body.path))
         else:
-            record = _registry(request).create_managed(body.name, git_url=body.git_url)
+            record = _registry(request).create_managed(
+                body.name, git_url=body.git_url, chat=body.chat
+            )
     except ValueError as exc:
         return _error(400, "bad_request", str(exc))
     return JSONResponse(record.as_dict(), status_code=201)

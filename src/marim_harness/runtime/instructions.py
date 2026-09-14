@@ -154,9 +154,10 @@ def _memory_index_block(ctx: RunContext[Deps]) -> str:
     has a ``MEMORY.md``.
 
     Scopes are resolved through :func:`resolve_scope` — the same helper
-    ``remember``/``recall`` use — so an explicit ``workspace.memory_root``
-    (embedders, via HarnessBuilder.with_memory) is honored here too; otherwise
-    this is byte-identical to the historical ``global_scope()``/
+    ``remember``/``recall`` use — so the embedder's both-scope
+    ``workspace.memory_root`` and the server's project-only
+    ``workspace.project_memory_root`` are honored here too; otherwise this is
+    byte-identical to the historical ``global_scope()``/
     ``project_scope(root)`` mapping. Memoized under a stat fingerprint of the
     two ``MEMORY.md`` files so the per-request ``_memory_indexes`` closure
     re-reads them only when one changes. load_index still performs the actual
@@ -168,7 +169,7 @@ def _memory_index_block(ctx: RunContext[Deps]) -> str:
         project_scope_.root / _MEMORY_INDEX_FILE,
     ]
     # Keyed on the resolved scope roots (not just workspace_root) so a
-    # memory_root change invalidates the cache too.
+    # Either memory-root override changing invalidates the cache too.
     key = (str(global_scope_.root.resolve()), str(project_scope_.root.resolve()))
     return _cached_by_stat(
         _MEMORY_INDEX_CACHE,

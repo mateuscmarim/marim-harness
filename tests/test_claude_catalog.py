@@ -50,8 +50,9 @@ def test_entries_from_keeps_cli_order_and_names_the_resolved_model():
     assert entries[1].name == "Opus · claude-opus-5"
     assert {e.provider for e in entries} == {"claude-cli"}
     assert entries[0].qualified == "claude-cli:default"
-    # marim's thinking level does not reach Claude Code: never annotated.
-    assert all(e.supports_thinking is None for e in entries)
+    # marim's thinking level reaches Claude Code (budget + effort, one of
+    # which every Claude model honours): every entry is annotated.
+    assert all(e.supports_thinking is True for e in entries)
 
 
 def test_entries_from_tolerates_partial_and_junk_rows():

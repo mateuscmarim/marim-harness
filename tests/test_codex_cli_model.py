@@ -133,6 +133,28 @@ async def test_thread_is_reused_across_turns_and_reported(tmp_path):
     assert refs == ["codex-cli:thread-1"]
 
 
+async def test_release_conversation_makes_the_next_turn_follow_the_rebound_store(tmp_path):
+    """A session switch rebinds the store under the adapter: the live thread
+    is the conversation being left, so it is dropped and the next turn
+    resumes what the store now names (the server itself stays up)."""
+    m = _model(tmp_path, {"resumable": ["thread-9"], "turns": [_hello_turn("a"), _hello_turn("b")]})
+    ref: dict[str, str | None] = {"v": None}
+    m.session_ref_getter = lambda: ref["v"]
+    try:
+        await m.request(_msgs("one"), None, PARAMS)
+        ref["v"] = "codex-cli:thread-9"  # the harness switched sessions
+        m.release_conversation()
+        assert m.thread is None and m.context_report is None
+        await m.request(_msgs("two"), None, PARAMS)
+    finally:
+        await m.aclose()
+    log = read_request_log(tmp_path)
+    assert [r["method"] for r in log if r["method"].startswith("thread/")] == [
+        "thread/start",
+        "thread/resume",
+    ]
+
+
 async def test_resumes_persisted_thread_or_falls_back(tmp_path):
     m = _model(tmp_path, {"resumable": ["thread-9"], "turns": [_hello_turn()]})
     m.session_ref_getter = lambda: "codex-cli:thread-9"

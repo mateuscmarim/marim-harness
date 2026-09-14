@@ -75,6 +75,11 @@ class ExternalCliModel(Model):
         # after a resume, written whenever the CLI reports a new one.
         self.session_ref_getter: Callable[[], str | None] | None = None
         self.on_session_ref: Callable[[str], None] | None = None
+        # The backend ran a turn marim never sent (claude-cli: its reaction
+        # to a background sub-agent's report). Called with the turn-context
+        # note for the autonomous marim turn that should consume it; the
+        # harness stashes the note and asks its host to queue that turn.
+        self.on_backend_turn: Callable[[str], None] | None = None
 
     @property
     def system(self) -> str:
@@ -85,11 +90,33 @@ class ExternalCliModel(Model):
         override; the base raises so a forgotten override is loud."""
         raise NotImplementedError(f"{type(self).__name__} must implement ephemeral_clone")
 
-    def steer(self, text: str) -> bool:
-        """Inject ``text`` into the CLI's in-flight turn. Returns True when the
+    def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> bool:
+        """Inject text and images into the CLI's in-flight turn. Returns True when the
         CLI accepted it (so the harness must NOT also buffer it for the next
         turn), False when the provider cannot steer (default)."""
         return False
+
+    def adopt(self, previous: Model) -> None:
+        """Take over whatever ``previous`` (the model being switched away
+        from) holds that this model can keep using — claude-cli moves the
+        live process across a same-provider ``/model`` switch so the switch
+        is one control request instead of a respawn. Called by
+        ``Harness.set_model`` before it schedules ``previous.aclose()``; the
+        base keeps nothing."""
+        return None
+
+    def release_conversation(self) -> None:
+        """Let go of the provider-side conversation this model is driving —
+        WITHOUT closing the model. Called by the harness whenever the session
+        store is rebound under it (a session switch, ``/new``, ``/clear``): a
+        live ``claude`` process or codex thread belongs to the conversation
+        the user just LEFT, and the next turn must instead resume whatever
+        ``session_ref_getter`` now says (or start cold when it says nothing).
+        Left in place, the next prompt would continue the old conversation
+        and the CLI's reply would persist the old conversation's id over the
+        new session's ref. Sync, like the harness's switch path; an
+        implementation schedules any async teardown. The base holds nothing."""
+        return None
 
     async def compact_remote(self) -> None:
         """Ask the CLI to compact its own context (after marim compacts its

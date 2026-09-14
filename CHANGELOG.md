@@ -27,6 +27,23 @@ pre-1.0, minor versions may contain breaking changes.
   card, with each child's transcript persisted in its own sidecar). The
   opaque `codex_agent` tool card that stood in for a collab call before is
   gone; histories written with it still expand.
+- **`/mode`, `/model` and `/think` reach Claude Code.** Under the
+  `claude-cli` main provider the three switches are now sent to the live
+  process as control requests before the next turn instead of being
+  emulated or documented as no-ops: `plan` runs Claude in its own plan mode
+  (`set_permission_mode`; marim's broker keeps denying every mutating tool
+  on top, and Claude's `ExitPlanMode` is answered with "the user switches
+  with `/mode`"), `auto`/`ask` run it in Claude's `default` mode where it
+  keeps asking marim; a same-provider `/model` switch is one `set_model` on
+  the process you already have (no close + `--resume` respawn, the context
+  and quota readings carry over) and a rejected id fails that turn with the
+  CLI's message instead of running on the wrong model; `/think` is sent as
+  a thinking-token budget plus an effort level (`set_max_thinking_tokens` +
+  `apply_flag_settings {effortLevel}`), so both token-budget and
+  adaptive-thinking Claude models honour it (the latter cannot switch
+  thinking off, so `off` is their lowest effort). Each is sent once per process
+  and again only when it changes; the model picker's claude-cli entries are
+  now annotated as thinking-capable.
 - **The CLI backends report their own context.** Under `claude-cli` and
   `codex-cli` the status bar's `ctx` field now shows the backend's real
   numbers — the prompt size of its most recent model request (system
@@ -73,6 +90,37 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Fixed
 
+- **`claude-cli`: a background Agent's report was lost and its card spun
+  forever.** Claude Code runs its Agent sub-agents in the background: the
+  spawning turn ends at launch, and when the agent finishes while no turn
+  is open the CLI reacts on its own — it injects the report into its
+  history and runs a model turn nobody asked for. marim dropped every
+  object that arrived with no turn open, so the spawn card never settled,
+  the reaction was never shown, and the two histories diverged (Claude
+  would later insist it had "posted the summary above"). The process now
+  buffers that turn and marim plays it as an autonomous turn as soon as the
+  session is idle: the card settles, the reaction renders as its own
+  transcript entry, and nothing is re-sent to the CLI. A typed turn
+  submitted first goes out first (the CLI's own turn is let finish before
+  marim sends one), a report the CLI never reacts to still settles its card
+  at the start of the next turn, the idle reaper holds (bounded) while a
+  background agent runs, and a resumed history records the unanswered spawn as
+  "reports later" rather than as an interrupted call.
+- **Switching sessions under `claude-cli`/`codex-cli` kept driving the old
+  conversation.** A session switch, `/new` or `/clear` rebound marim's
+  session store but left the adapter's live `claude` process or codex thread
+  in place, so the next prompt continued the conversation the user had just
+  left — and the CLI's reply persisted the old conversation's id over the new
+  session's ref. The harness now tells the model to release its provider-side
+  conversation at every store rebind (`ExternalCliModel.release_conversation`),
+  so the next turn resumes what the incoming session recorded, or starts
+  cold.
+- **A bare-id `/model` switch orphaned the CLI thread ref.** `/model sonnet`
+  under a `claude-cli` (or `codex-cli`) default provider carries no provider
+  prefix, and the session read its first segment as the provider — so every
+  same-provider switch cleared the persisted thread ref and the next resume
+  started cold. The harness now tells the session which provider the new
+  model runs on.
 - **`claude-cli` cost was double-counted in the usage ledger.** On the
   bidirectional transport every `result` carries the process's *running*
   `total_cost_usd`, not the turn's cost, and marim billed each turn the

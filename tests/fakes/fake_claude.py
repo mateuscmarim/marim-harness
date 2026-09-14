@@ -42,6 +42,9 @@ class Fake:
         self.ended = False  # the current turn was ended by a step (exit/abort)
         self.denials: list[dict] = []
         self._request_n = 0
+        # Steps an ``after_turn`` step scheduled: run as one more turn, on the
+        # fake's own initiative, once the current turn's result is out.
+        self._after_turn: list[dict] | dict | None = None
 
     # --- wire ----------------------------------------------------------------
     def send(self, obj: dict) -> None:
@@ -71,6 +74,22 @@ class Fake:
                 "response": {"subtype": "success", "request_id": request_id, "response": body},
             }
         )
+
+    def fail(self, request_id: str, error: str) -> None:
+        self.send(
+            {
+                "type": "control_response",
+                "response": {"subtype": "error", "request_id": request_id, "error": error},
+            }
+        )
+
+    def _control_error(self, msg: dict) -> str | None:
+        request = msg.get("request") or {}
+        if request.get("subtype") != "set_model":
+            return None
+        if request.get("model") in (self.scenario.get("reject_models") or []):
+            return f"Model '{request['model']}' not found"
+        return None
 
     def _control_body(self, msg: dict) -> dict:
         """The between-turns control answers the scenario can script:
@@ -152,8 +171,14 @@ class Fake:
                 # Between turns every control request (initialize, set_model,
                 # a late interrupt) gets an empty success — nothing to abort.
                 # `initialize` alone carries the scenario's model menu when
-                # one is given, the way the real CLI's handshake does.
-                self.respond(msg["request_id"], self._control_body(msg))
+                # one is given, the way the real CLI's handshake does; a
+                # `set_model` naming one of the scenario's `reject_models`
+                # gets the real CLI's error reply instead.
+                error = self._control_error(msg)
+                if error is not None:
+                    self.fail(msg["request_id"], error)
+                else:
+                    self.respond(msg["request_id"], self._control_body(msg))
             elif kind == "user" and not msg.get("isReplay"):
                 self.run_turn(msg)
 
@@ -161,20 +186,45 @@ class Fake:
         self.send({**msg, "isReplay": True})
         if not self.init_sent:
             self.init_sent = True
-            self.send(
-                {
-                    "type": "system",
-                    "subtype": "init",
-                    "session_id": self.session_id,
-                    "model": self.model,
-                    "claude_code_version": self.version,
-                    "tools": ["Read", "Write", "Edit", "Bash"],
-                    "cwd": os.getcwd(),
-                }
-            )
+            self.send(self._init_object())
         turns = self.scenario.get("turns") or [[{"text": "ok"}]]
         script = turns[min(self.turn_n, len(turns) - 1)]
         self.turn_n += 1
+        self._run_steps(script)
+        while self._after_turn is not None and not self.ended:
+            # Claude Code queues a model turn of its own when a background
+            # sub-agent's notification lands (probed 2026-09-13): the stream
+            # shows a fresh ``system/init``, then the assistant's reaction and
+            # its ``result`` — no user message from the client in between.
+            # The dict form sends a ``prelude`` of raw objects (the
+            # notification itself) BEFORE that init, as the CLI does when
+            # the sub-agent finishes while no turn is open — after ``delay``
+            # seconds, so a test can put the notification past an idle clock.
+            # Without ``steps`` only the prelude goes out: a notification
+            # the CLI never reacts to.
+            script, self._after_turn = self._after_turn, None
+            if isinstance(script, dict):
+                time.sleep(float(script.get("delay", 0)))
+                for obj in script.get("prelude", []):
+                    self.send(obj)
+                if "steps" not in script:
+                    continue
+                script = list(script["steps"])
+            self.send(self._init_object())
+            self._run_steps(script)
+
+    def _init_object(self) -> dict:
+        return {
+            "type": "system",
+            "subtype": "init",
+            "session_id": self.session_id,
+            "model": self.model,
+            "claude_code_version": self.version,
+            "tools": ["Read", "Write", "Edit", "Bash"],
+            "cwd": os.getcwd(),
+        }
+
+    def _run_steps(self, script: list[dict]) -> None:
         self.ended = False
         self.denials = []
         overrides: dict = {}
@@ -203,6 +253,7 @@ class Fake:
             "exit": self._step_exit,
             "raw": self._step_raw,
             "result": self._step_result,
+            "after_turn": self._step_after_turn,
         }
         for key, handler in handlers.items():
             if key in step:
@@ -258,6 +309,10 @@ class Fake:
 
     def _step_result(self, result: dict, text_parts: list[str], overrides: dict) -> None:
         overrides.update(result)
+
+    def _step_after_turn(self, steps, text_parts: list[str], overrides: dict) -> None:
+        """Schedule ``steps`` as an unsolicited follow-up turn (see run_turn)."""
+        self._after_turn = dict(steps) if isinstance(steps, dict) else list(steps)
 
     def emit_text(self, text: str) -> None:
         for i in range(0, len(text), 3):

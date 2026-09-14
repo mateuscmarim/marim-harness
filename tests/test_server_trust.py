@@ -43,7 +43,12 @@ def app(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
 
-    async def factory(workspace: Path, session_id: str, mode):
+    async def factory(
+        workspace: Path,
+        session_id: str,
+        mode,
+        project_memory_root: Path | None = None,
+    ):
         from marim_harness.session import SessionManager
 
         manager = SessionManager(workspace)
