@@ -66,6 +66,7 @@ BACKEND = "codex-cli"
 SPAWN_AGENT = "spawnAgent"
 DETACHED_RESULT = "running (detached; continues next turn)"
 CLOSED_RESULT = "still running when the spawn finished (thread closed)"
+GONE_RESULT = "still running when the agent that spawned it went away (thread closed)"
 
 # ``CollabAgentStatus`` values after which the agent has nothing more to say
 # for now (its card settles); the subset that reads as a failure; and the
@@ -358,7 +359,7 @@ class CollabRouter:
             content = "".join(child.last_text) or (str(message) if message else "") or fallback
             out.extend(self._settle(child, content, status in _FAILED))
         if status in _GONE:
-            self._forget(child)
+            out.extend(self._forget(child))
         return out
 
     def _ping(self, item: AgentPing) -> list[object]:
@@ -402,10 +403,22 @@ class CollabRouter:
         child.ledger_open = False
         return self._on_container(child.container, ActivityEnd(child.stream_id, content, is_error))
 
-    def _forget(self, child: _Child) -> None:
+    def _forget(self, child: _Child) -> list[object]:
+        """The child's thread is gone for good. The server drops the threads
+        adopted under it along with it, so the cards of its own spawns —
+        which can never hear from their threads again — settle here first
+        (newest first, like ``close_open``) rather than spin until the turn
+        ends; then the child's mapping and handle go."""
+        out: list[object] = []
+        nested = [c for c in self._by_stream.values() if c.container == child.stream_id]
+        for grandchild in reversed(nested):
+            out.extend(self._forget(grandchild))  # its own spawns first: deepest closes first
+            if not grandchild.settled:
+                out.extend(self._settle(grandchild, GONE_RESULT, False))
         if child.thread_id is not None:
             self._by_thread.pop(child.thread_id, None)
             self._release(child.thread_id)
+        return out
 
     def _spawner_of(self, child: _Child) -> str:
         """The thread ``child`` was spawned from: the container child's, or

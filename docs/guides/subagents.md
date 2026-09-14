@@ -319,7 +319,9 @@ spawn).
   ends on an unanswered call. A `backend: codex-cli` *spawn* is one turn,
   so its children die with its thread: their cards close with `still
   running when the spawn finished (thread closed)` (`… was aborted …` when
-  the spawn itself failed mid-turn).
+  the spawn itself failed mid-turn). Likewise an agent that is shut down
+  takes its own sub-agents with it: their nested cards close with `still
+  running when the agent that spawned it went away (thread closed)`.
 - **Persistence.** The spawn call and its result persist with the turn
   (`GET .../history`, TUI replay, provider switch) as an ordinary
   `spawn_agent` tool call. A `backend: codex-cli` spawn also persists each

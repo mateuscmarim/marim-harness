@@ -491,3 +491,36 @@ def test_follow_up_on_a_settled_nested_child_reopens_it_on_the_childs_stream():
     assert start.item.item_id == "k2" and start.item.args["resumed"] is True
     assert out[1] == Routed("k2", Notice("sendInput: more"), None, "codex-cli:default")
     assert r.open_children == {"c1", "g1"}
+
+
+def test_a_gone_child_settles_and_forgets_its_own_nested_spawns():
+    """Codex drops an agent's sub-agents with it (the server cascades the
+    release by parent), so when a child reads ``shutdown``/``notFound`` the
+    router settles the cards of the child's own spawns — they can never
+    hear from their threads again — and forgets them along with it,
+    rather than leaving them mapped and spinning until the turn ends."""
+    from marim_harness.codex.collab import GONE_RESULT
+
+    hooks = _Hooks()
+    r = hooks.router()
+    r.route_item(_spawn())
+    spawn = {"type": "collabAgentToolCall", "tool": "spawnAgent", "status": "inProgress"}
+    r.route(
+        "item/started",
+        {"threadId": "c1", "item": {**spawn, "id": "k2", "receiverThreadIds": ["g1"]}},
+    )
+    r.route(
+        "item/started",
+        {"threadId": "g1", "item": {**spawn, "id": "k3", "receiverThreadIds": ["gg1"]}},
+    )
+    r.route(*_child_msg("g1", "m1", "deep"))
+    assert r.open_children == {"c1", "g1", "gg1"} and hooks.spawner["gg1"] == "g1"
+    out = r.route_item(_done("k9", "closeAgent", states={"c1": {"status": "shutdown"}}))
+    assert out == [
+        ActivityEnd("k1", "", False),
+        Routed("k2", ActivityEnd("k3", GONE_RESULT, False), None, None),
+        Routed("k1", ActivityEnd("k2", GONE_RESULT, False), None, None),
+    ]
+    assert r.open_children == frozenset() and hooks.released == ["gg1", "g1", "c1"]
+    # Trailing traffic for the forgotten threads is dropped, not rendered.
+    assert r.route(*_child_msg("gg1", "m2", "late")) == []
