@@ -788,8 +788,9 @@ async def test_child_put_back_to_work_in_the_same_turn_reopens_its_call_in_the_t
         "found it",
         "fixed it",
     ]
-    # The live nested card saw no second call event: it already exists.
-    assert sinks.kinds("s1").count("FunctionToolCallEvent") == 1
+    # The live nested card got the re-open call too (the TUI folds it into
+    # the existing, settled card rather than mounting a second one).
+    assert sinks.kinds("s1").count("FunctionToolCallEvent") == 2
     assert sinks.kinds("s1").count("FunctionToolResultEvent") == 2
 
 

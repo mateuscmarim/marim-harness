@@ -300,9 +300,10 @@ spawn).
   `close_agent` on an agent show as a status line on its card (with the
   message sent, for `send_input`), never as a second card; so do Codex's
   own agent activity pings (`agent <path> started/completed`). A follow-up
-  on an agent that already settled puts it back to work: the card shows
-  the notice and the persisted call is re-opened (`resumed`) so the next
-  completion is recorded again.
+  on an agent that already settled puts it back to work: the card flips
+  back to running (the same card, never a second one), shows the notice,
+  and the persisted call is re-opened (`resumed`) so the next completion
+  is recorded again.
 - **Approvals go through the panel.** A child's command or edit approval
   reaches marim's approval panel exactly like the parent's, labelled with
   the agent's nickname when Codex assigned one (`agent scout`, or

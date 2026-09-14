@@ -300,9 +300,21 @@ class CollabRouter:
         text = f"{item.tool}: {item.prompt}" if item.prompt else item.tool
         for child in self._receivers(item.receivers):
             if child.settled:
-                child.settled = False  # the parent is putting it back to work
+                out.extend(self._reopen(child))
             out.extend(self._emit(child, Notice(text)))
         return out
+
+    def _reopen(self, child: _Child) -> list[object]:
+        """The parent is putting a settled child back to work. Its card
+        really closed — the return went out live, not ledger-only as an
+        end-of-turn seal does — so the ``resumed`` call goes out live too,
+        to its container's stream: the UI folds it into the existing card
+        (back to running, never a second card) and the ledger gets the call
+        that the agent's next completion will answer."""
+        child.settled = False
+        child.ledger_open = child.container is None
+        args = {**child.args, "resumed": True}
+        return self._on_container(child.container, ActivityStart(child.stream_id, SPAWN_TOOL, args))
 
     def _spawn(self, item: CollabCall, container: str | None) -> list[object]:
         args = {

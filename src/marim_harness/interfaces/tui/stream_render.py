@@ -1174,8 +1174,13 @@ class StreamRenderer:
     ) -> None:
         # A gated tool re-emits its call event on the post-approval execution
         # pass; reuse the widget already mounted for this id rather than
-        # mounting an orphaned duplicate.
-        if tool_call_id in self.tool_widgets:
+        # mounting an orphaned duplicate. A spawn card's call re-fires with
+        # ``resumed`` when its agent is put back to work after settling (a
+        # Codex collab follow-up): that flips the same card live again.
+        known = self.tool_widgets.get(tool_call_id)
+        if known is not None:
+            if isinstance(known, SubAgentWidget) and call_args.get("resumed"):
+                known.reopen()
             return
         if await sink.intercept_tool(tool_call_id, tool_name, call_args, container):
             return

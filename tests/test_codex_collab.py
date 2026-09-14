@@ -197,12 +197,17 @@ def test_follow_ups_are_notices_and_reopen_a_settled_child():
     assert r.open_children == frozenset()
     send = CollabCall("k2", "sendInput", ("c1",), "now fix it", None, None, {})
     out = r.route_item(send)
-    # The settled card had its return in the ledger; putting the agent back to
-    # work re-opens it (ledger-only, `resumed`) ahead of the notice.
-    assert len(out) == 2 and isinstance(out[0], LedgerOnly)
-    assert isinstance(out[0].item, ActivityStart) and out[0].item.args["resumed"] is True
+    # The settled card's return went out live; putting the agent back to work
+    # re-opens it (`resumed`) live too, ahead of the notice — the UI flips the
+    # existing card back to running, the ledger gets the call to answer.
+    assert len(out) == 2 and isinstance(out[0], ActivityStart)
+    assert out[0].item_id == "k1" and out[0].args["resumed"] is True
     assert out[1] == Routed("k1", Notice("sendInput: now fix it"), None, "codex-cli:gpt-5.4-mini")
     assert r.open_children == {"c1"}
+    # Only once: the child's next traffic must not re-open it again.
+    assert r.route(*_child_msg("c1", "m2", "on it")) == [
+        Routed("k1", TextDelta("m2", "on it"), None, None)
+    ]
     # listAgents (and unknown tools) show nothing.
     assert r.route_item(CollabCall("k3", "listAgents", (), None, None, None, {})) == []
     # A failed follow-up is a notice too.
@@ -457,3 +462,32 @@ def test_nested_spawn_announced_before_its_spawn_item_is_still_noted():
     [routed] = r.route(*_child_msg("g1", "m1", "deep"))
     assert cast(Routed, routed).model == "codex-cli:o5"
     assert hooks.spawner == {"c1": "t1", "g1": "c1"}
+
+
+def test_follow_up_on_a_settled_nested_child_reopens_it_on_the_childs_stream():
+    """A grandchild's card lives in the child's pane: putting it back to
+    work re-fires its call there (routed), not on the parent's stream."""
+    hooks = _Hooks()
+    r = hooks.router()
+    r.route_item(_spawn())
+    nested = {
+        "type": "collabAgentToolCall",
+        "id": "k2",
+        "tool": "spawnAgent",
+        "receiverThreadIds": ["g1"],
+        "status": "inProgress",
+    }
+    r.route("item/started", {"threadId": "c1", "item": nested})
+    done = {**nested, "status": "completed", "agentsStates": {"g1": {"status": "completed"}}}
+    r.route("item/completed", {"threadId": "c1", "item": done})
+    assert r.open_children == {"c1"}
+    again = {"type": "collabAgentToolCall", "id": "k3", "tool": "sendInput", "prompt": "more"}
+    out = r.route(
+        "item/started", {"threadId": "c1", "item": {**again, "receiverThreadIds": ["g1"]}}
+    )
+    assert len(out) == 2
+    start = cast(Routed, out[0])
+    assert start.stream_id == "k1" and isinstance(start.item, ActivityStart)
+    assert start.item.item_id == "k2" and start.item.args["resumed"] is True
+    assert out[1] == Routed("k2", Notice("sendInput: more"), None, "codex-cli:default")
+    assert r.open_children == {"c1", "g1"}

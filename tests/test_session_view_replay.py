@@ -887,3 +887,39 @@ async def test_settle_rehydrates_card_stats_from_meta(tmp_path: Path):
         assert card.tool_count == 7
         assert card.tokens == 1000
         assert card._duration() == "1m 5s"  # frozen from meta, not replay wall-clock
+
+
+@pytest.mark.anyio
+async def test_replayed_resumed_spawn_call_reopens_the_card_not_a_second_one(tmp_path: Path):
+    """A collab child put back to work persists as call, return, call
+    (``resumed``), return under one id; replay must render ONE card that
+    ends in the second return's state, as the live path does."""
+    from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+
+    from marim_harness.interfaces.tui.subagents import SubAgentWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        sv = app.session
+        mounted: list = []
+
+        async def record(w):
+            mounted.append(w)
+
+        tool_widgets: dict = {}
+        args = {"type": "codex-agent", "task": "review", "backend": "codex-cli"}
+        call = ToolCallPart(tool_name="spawn_agent", args=args, tool_call_id="k1")
+        ret = ToolReturnPart(tool_name="spawn_agent", content="found it", tool_call_id="k1")
+        again = ToolCallPart(
+            tool_name="spawn_agent", args={**args, "resumed": True}, tool_call_id="k1"
+        )
+        ret2 = ToolReturnPart(tool_name="spawn_agent", content="fixed it", tool_call_id="k1")
+        for part in (call, ret):
+            await sv._replay_parts(part, None, record, tool_widgets, None, None)
+        [card] = mounted
+        assert isinstance(card, SubAgentWidget) and card.status == "done"
+        await sv._replay_parts(again, None, record, tool_widgets, None, None)
+        assert mounted == [card] and card.status == "pending"
+        await sv._replay_parts(ret2, None, record, tool_widgets, None, None)
+        assert mounted == [card] and card.status == "done" and card.report == "fixed it"

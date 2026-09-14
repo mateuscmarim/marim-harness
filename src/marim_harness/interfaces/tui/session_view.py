@@ -153,6 +153,12 @@ class SessionView:
         in mount_spawn_widget; replay skipped it historically, leaving the
         ctrl+x screen empty on a resumed session."""
         args = part.args_as_dict()
+        known = tool_widgets.get(part.tool_call_id)
+        if isinstance(known, SubAgentWidget) and args.get("resumed"):
+            # The same agent put back to work after settling (its return is
+            # already replayed): the live path reopens the card, so does this.
+            known.reopen()
+            return
         widget = SubAgentWidget(
             str(args.get("type", "")),
             str(args.get("task", "")),
