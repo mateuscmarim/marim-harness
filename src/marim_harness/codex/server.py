@@ -404,8 +404,11 @@ class CodexServer:
             # No threadId at all: a genuinely global notification (nothing in
             # the wire protocol names one today, but nothing rules it out
             # either) — fan out to every live thread.
+            queues: set[int] = set()
             for h in list(self._threads.values()):
-                h.events.put_nowait((method, params))
+                if id(h.events) not in queues:
+                    queues.add(id(h.events))
+                    h.events.put_nowait((method, params))
             return
         handle = self._threads.get(tid)
         if handle is None:

@@ -77,3 +77,43 @@ closure test covers the same shell task changing from running to interrupted.
 No speculative tests; existing background-agent and process tests still pass.
 LIFE-33 child-stream integration remains explicitly pending T4; no root notice
 is emitted for a child-tagged event. UI inventory rendering remains T5.
+
+## T3 Codex adapter
+
+Gate: 246 passed (Codex lifecycle/translator/model/server/turn plus Claude
+lifecycle/model/process/demux); Ruff scoped PASS; full Pyright 0 errors.
+The prior started-compaction assertion was corrected to require no success
+at start AND an exact completion notice; no tests were removed or skipped.
+
+| Obligation | Evidence | Outcome |
+| --- | --- | --- |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:23 `assert event("item/started", "c1") == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:25 `assert first[0].message == "Codex compacted its context"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:26 `assert first[0].kind == "compaction"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:27 `assert t.translate("thread/compacted", {"turnId": "t"}) == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:28 `assert event("item/completed", "c1") == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:30 `assert len(second) == 1 and second[0].id != first[0].id` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:31 `assert t.translate("thread/compacted", {"turnId": "t"}) == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:33 `assert len(other.translate("thread/compacted", {"turnId": "t"})) == 1` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:34 `assert (` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:50 `assert t.translate(method, params)[0].message == "warning"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:51 `assert t.translate(method, {"message": {}, "summary": None}) == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:53 `assert note.data == {"fromModel": "a", "toModel": "b", "reason": "future"}` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:54 `assert note.message == "Codex model rerouted: a → b"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:55 `assert t.translate("model/rerouted", {"toModel": "b"}) == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:61 `assert _outputs("thread/compacted", {"turnId": "old"}, state, "current") == []` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:62 `assert state.context == ContextReport(900, 1000)` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:64 `assert notes[0].message == "Codex is retrying: busy"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:65 `assert state.done is None` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:67 `assert seen == [None] and state.context is None and state.done is None` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:69 `assert state.done.status == "completed"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:84 `assert handle.events.get_nowait() == ("configWarning", {"summary": "bad config"})` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:85 `assert handle.events.empty()` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:86 `assert remote.events.empty()` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:113 `assert isinstance(seen[0], BackendNotice)` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:114 `assert seen[0].message == "Codex model rerouted: a → b"` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:117 `assert [part.content for part in parts if isinstance(part, TextPart)] == ["before", "", "after"]` | PASS |
+| LIFE-01/02/03/04/12/16/26/28/31/34 component outcomes | tests/test_codex_lifecycle.py:118 `assert notice_from_part(parts[1])["id"] == seen[0].id` | PASS |
+
+All new assertions exercise the listed notice, ordering, context, retry or routing obligations.
+Full transport-to-client proof remains T4/T6/T8.

@@ -1,7 +1,9 @@
 # CLI lifecycle parity tasks
 
 Status: In progress under the approved spec. Execute with tlc-spec-driven.
-Eight component-sized slices run inline; a fresh independent verifier follows.
+Eight component-sized slices; independent delivery, telemetry and Android work
+uses bounded workers under the standing delegation instructions. A fresh
+independent verifier follows integration.
 Each slice includes its direct wiring and tests so it is independently usable.
 Local commits are authorized; remote publication is not.
 
@@ -82,8 +84,8 @@ T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> T7 -> T8
 **Reuses**: Existing activity/notice/Room seams described in design.md.
 **Tools**: Repository shell and file tools; coding-guardrails, test-driven-development, verification-before-completion. No connector access required.
 **Done when**:
-- [ ] Verified: completed compaction, reroutes, retry notices, wrong-turn filtering and shared-server isolation.
-- [ ] Relevant gate passes with exact test outcomes recorded in evidence.md.
+- [x] Verified: completed compaction, reroutes, retry notices, wrong-turn filtering and shared-server isolation.
+- [x] Relevant gate passes with exact test outcomes recorded in evidence.md.
 **Tests**: integration
 **Gate**: full
 **Commit**: `feat(cli): codex lifecycle adapter`
