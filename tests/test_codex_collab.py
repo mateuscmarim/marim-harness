@@ -215,6 +215,53 @@ def test_follow_ups_are_notices_and_reopen_a_settled_child():
     assert out == [Routed("k1", Notice("sendInput failed: gone"), None, None)]
 
 
+def test_waiting_on_a_finished_agent_does_not_reactivate_it():
+    r = _Hooks().router()
+    r.route_item(_spawn())
+    r.route_item(_done(states={"c1": {"status": "completed"}}))
+    out = r.route_item(CollabCall("wait1", "wait", ("c1",), None, None, None, {}))
+    assert not any(isinstance(item, ActivityStart) for item in out)
+    assert not r.open_children
+
+
+def test_nested_child_turn_start_reopens_in_its_parent_stream_once():
+    r = _Hooks().router()
+    r.route_item(_spawn())
+    r.route(
+        "item/started",
+        {
+            "threadId": "c1",
+            "item": {
+                "type": "subAgentActivity",
+                "id": "nested",
+                "agentThreadId": "c2",
+                "agentPath": "/root/reviewer/nested",
+                "kind": "started",
+            },
+        },
+    )
+    r.route(
+        "item/started",
+        {
+            "threadId": "c1",
+            "item": {
+                "type": "subAgentActivity",
+                "id": "nested",
+                "agentThreadId": "c2",
+                "agentPath": "/root/reviewer/nested",
+                "kind": "completed",
+            },
+        },
+    )
+    [out] = r.route("turn/started", {"threadId": "c2", "turn": {"id": "second"}})
+    assert isinstance(out, Routed) and out.stream_id == "k1"
+    assert isinstance(out.item, ActivityStart) and out.item.item_id == "nested"
+    assert out.item.args["resumed"] is True
+    assert r.open_children == {"c1", "c2"}
+    assert r.route("turn/started", {"threadId": "c2", "turn": {"id": "second"}}) == []
+    assert r.route("turn/started", {"threadId": "unrelated", "turn": {"id": "other"}}) == []
+
+
 def test_agent_pings_are_notices_that_label_and_can_settle():
     hooks = _Hooks()
     r = hooks.router()

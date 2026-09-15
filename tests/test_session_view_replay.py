@@ -920,6 +920,42 @@ async def test_replayed_resumed_spawn_call_reopens_the_card_not_a_second_one(tmp
         [card] = mounted
         assert isinstance(card, SubAgentWidget) and card.status == "done"
         await sv._replay_parts(again, None, record, tool_widgets, None, None)
-        assert mounted == [card] and card.status == "pending"
+        assert len(mounted) == 2 and mounted[0] is card and card.status == "pending"
+        assert "Resumed subagent: review" in str(mounted[1].render())
+        await sv._replay_parts(again, None, record, tool_widgets, None, None)
+        assert len(mounted) == 2
         await sv._replay_parts(ret2, None, record, tool_widgets, None, None)
-        assert mounted == [card] and card.status == "done" and card.report == "fixed it"
+        assert len(mounted) == 2 and card.status == "done" and card.report == "fixed it"
+
+
+@pytest.mark.anyio
+async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.widgets import NoticeMessage
+    from marim_harness.server.wire_events import ToolCall, ToolResult
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        args = {"type": "codex-agent", "task": "", "description": "teste"}
+        await app.stream.on_wire(
+            ToolCall(type="tool.call", id="agent", name="spawn_agent", args=args)
+        )
+        await app.stream.on_wire(ToolResult(type="tool.result", id="agent", content="first report"))
+        card = app.stream.tool_widgets["agent"]
+        assert card.status == "done"
+        dirty = MagicMock()
+        monkeypatch.setattr(app.subagents, "mark_dirty", dirty)
+        resumed = ToolCall(
+            type="tool.call", id="agent", name="spawn_agent", args={**args, "resumed": True}
+        )
+        await app.stream.on_wire(resumed)
+        await app.stream.on_wire(resumed)
+        assert app.stream.tool_widgets["agent"] is card
+        assert card.status == "pending" and card.report == ""
+        dirty.assert_called_once()
+        notices = [str(w.render()) for w in app.query(NoticeMessage)]
+        assert sum("Resumed subagent: teste" in n for n in notices) == 1
+        await app.stream.on_wire(
+            ToolResult(type="tool.result", id="agent", content="second report")
+        )
+        assert card.status == "done" and card.report == "second report"

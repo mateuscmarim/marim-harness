@@ -59,6 +59,36 @@ def test_codex_nested_agents_and_unknown_threads_are_scoped():
     assert jobs.list()[1].status == "cancelled"
 
 
+def test_reused_codex_child_turn_reactivates_same_job_without_parent_collab_call():
+    changes = []
+    jobs = JobRegistry(on_change=lambda: changes.append(True))
+    observer = CodexJobObserver(jobs, "parent")
+    observer(*ping("started"))
+    observer(
+        "item/agentMessage/delta",
+        {
+            "threadId": "child",
+            "itemId": "old",
+            "delta": "First report",
+        },
+    )
+    observer(*ping("completed"))
+    [job] = jobs.list()
+    assert job.status == "done"
+    # Codex can reuse its native agent without sending a collabAgentToolCall.
+    # Interaction alone (wait/message) does not prove it is running again.
+    observer(*ping("interacted"))
+    assert job.status == "done"
+    observer("turn/started", {"threadId": "child", "turn": {"id": "next"}})
+    observer("turn/started", {"threadId": "child", "turn": {"id": "next"}})
+    assert jobs.list() == [job] and job.status == "running"
+    assert job.result is None
+    observer(*ping("completed"))
+    assert job.status == "done" and "First report" not in job.result
+    assert len(changes) == 4
+    assert jobs.take_finished_digest() == ""
+
+
 def test_claude_agent_launch_is_not_completion_and_report_arrives_between_turns():
     jobs = JobRegistry()
     observer = ClaudeJobObserver(jobs)

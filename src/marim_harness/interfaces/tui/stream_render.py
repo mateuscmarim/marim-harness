@@ -1184,8 +1184,15 @@ class StreamRenderer:
         # Codex collab follow-up): that flips the same card live again.
         known = self.tool_widgets.get(tool_call_id)
         if known is not None:
-            if isinstance(known, SubAgentWidget) and call_args.get("resumed"):
+            if (
+                isinstance(known, SubAgentWidget)
+                and call_args.get("resumed")
+                and known.status != "pending"
+            ):
                 known.reopen()
+                self.app.subagents.mark_dirty()
+                sink.set_run(None, None)
+                await container.mount(NoticeMessage(f"Resumed subagent: {known.display_title()}"))
             return
         if await sink.intercept_tool(tool_call_id, tool_name, call_args, container):
             return

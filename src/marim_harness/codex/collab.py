@@ -199,6 +199,11 @@ class CollabRouter:
             self._note_thread(child, params.get("thread") or {})
             return []
         out: list[object] = []
+        # Native followup_task can omit a parent collab item. The child's
+        # actual turn start is authoritative; an "interacted" ping could
+        # merely be a wait/message and must not reactivate a finished agent.
+        if method == "turn/started" and child.settled:
+            out.extend(self._reopen(child))
         for item in child.translator.translate(method, params):
             out.extend(self._child_item(child, item))
         return out
@@ -306,7 +311,7 @@ class CollabRouter:
         out: list[object] = []
         text = f"{item.tool}: {item.prompt}" if item.prompt else item.tool
         for child in self._receivers(item.receivers):
-            if child.settled:
+            if child.settled and item.tool not in {"wait", "closeAgent"}:
                 out.extend(self._reopen(child))
             out.extend(self._emit(child, Notice(text, transient=True)))
         return out
@@ -320,7 +325,10 @@ class CollabRouter:
         that the agent's next completion will answer."""
         child.settled = False
         child.status = "running"
+        child.last_text = []
+        child.last_text_id = None
         child.ledger_open = child.container is None
+        logger.debug("codex collab: resumed stream=%s", child.stream_id)
         args = {**child.args, "resumed": True}
         return self._on_container(child.container, ActivityStart(child.stream_id, SPAWN_TOOL, args))
 
