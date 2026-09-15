@@ -8,8 +8,15 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-15
+
 ### Changed
 
+- **Ordinary tool-output limits now use Pydantic AI Harness.** Large built-in,
+  custom, skill, and MCP results share session-owned storage, head-and-tail
+  previews, and the `read_tool_result` retrieval tool. Supported media stays
+  intact; native sub-agents use the same policy, and legacy saved pointers
+  remain readable. Requires Pydantic AI 2.43 or newer and Harness 0.31.0.
 - **Compaction and native sub-agent history clearing now use Pydantic AI
   Harness.** Upstream strategies own safe cutoffs, summary messages, fallback
   trimming, and stale tool-result clearing. Recent-pair retention is approximate;
@@ -18,6 +25,16 @@ pre-1.0, minor versions may contain breaking changes.
   embedders configure `compaction_strategy` instead of the former unstable
   `summarizer=` callback. `MARIM_MASK_MIN_CHARS` is accepted for one release but
   ignored with a deprecation warning.
+
+### Fixed
+
+- **Direct shell displays stay bounded.** TUI `!` commands collect a 4 KB
+  head-and-tail preview; background-shell output shown locally or through HTTP
+  uses a 20,000-character preview. Exit status and final output remain visible,
+  and background jobs retain their collected result for agent retrieval.
+- **Resumed Claude and Codex sub-agents become active again.** Reused agents
+  are announced and their cards reactivate, including nested agents and cards
+  whose previous turn was already pruned.
 
 ## [0.9.1] - 2026-09-15
 
