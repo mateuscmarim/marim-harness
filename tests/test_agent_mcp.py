@@ -62,7 +62,7 @@ def _named_model(model_id: str) -> FunctionModel:
     return FunctionModel(fn)
 
 
-def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
+def _switch_harness(tmp_path, *, source=None, compaction_strategy=None, titler=None):
     from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
@@ -78,7 +78,7 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
             manager=manager,
             model_source=source,
             model_id="startup",
-            summarizer=summarizer,
+            compaction_strategy=compaction_strategy,
             titler=titler,
         ),
     )

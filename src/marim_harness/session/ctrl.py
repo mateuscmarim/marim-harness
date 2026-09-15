@@ -15,27 +15,23 @@ if TYPE_CHECKING:
     from ..stats.recorder import StatsRecorder
 
 from pydantic_ai.messages import ModelMessage
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness.compaction import CompactionStrategy
 
 from ..compaction import (
     BREAKER_NOTICE,
     CompactionBreaker,
-    Summarizer,
     Titler,
     _measured_or_estimated,
-    _plan_tail_start,
-    compact_history,
-    compact_history_with_summary,
     estimate_tokens,
-    make_summarizer,
     make_titler,
-    mask_stale_observations,
     revalidate_elided_pointers,
+    summary_text,
 )
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
-from ..workspace.scratchpad import persist_elided
+from .compaction import Reduction, reduce_history
 from .store import SessionInfo, SessionLoadError, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -141,30 +137,30 @@ class SessionController:
         deps: Deps,
         max_context_tokens: int,
         keep_last_messages: int,
-        summarizer: Summarizer | None = None,
+        compaction_strategy: CompactionStrategy[None] | None = None,
         titler: Titler | None = None,
         mask_observations: bool = False,
         mask_keep_recent: int = 4,
-        mask_min_chars: int = 200,
         limits: ContextLimits | None = None,
         get_model_id: Callable[[], str | None] | None = None,
         stats_recorder: StatsRecorder | None = None,
+        auxiliary_model: Model | None = None,
     ) -> None:
         self.store = store
         self.manager = manager
         self.deps = deps
         self.max_context_tokens = max_context_tokens
         self.keep_last_messages = keep_last_messages
-        self.summarizer = summarizer
+        self.compaction_strategy = compaction_strategy
+        self.auxiliary_model = auxiliary_model
+        self.last_compaction_details: dict = {}
         self.titler = titler
         self.stats_recorder = stats_recorder
-        # When set, compaction also elides older tool-observation payloads in the
-        # retained tail (see mask_stale_observations). Off by default so the
-        # behaviour is opt-in for non-TUI/embedding callers; the harness wires the
+        # When set, upstream clearing removes older tool-result payloads.
+        # Off by default for low-level callers; the harness wires the
         # user-facing toggle through HarnessConfig.
         self.mask_observations = mask_observations
         self.mask_keep_recent = mask_keep_recent
-        self.mask_min_chars = mask_min_chars
         # The window/budget resolver, when the harness wires one (headless and
         # TUI both do via build_collaborators; embedders may leave it None and
         # keep the fixed max_context_tokens gate). get_model_id reads the LIVE
@@ -196,9 +192,9 @@ class SessionController:
         self.on_compact: Callable[[int, int], None] | None = None
         self.on_compact_start: Callable[[], None] | None = None
         # Fired right BEFORE the compacted history is persisted, but only when a
-        # compaction stage RESTRUCTURED the history (its message count changed, so
-        # absolute message indices moved). The TurnController wires this to
-        # CheckpointManager.invalidate_after_compaction so the checkpoint sidecar
+        # compaction stage RESTRUCTURED the history (absolute message indices may
+        # have moved, including same-length summary replacements). TurnController
+        # wires CheckpointManager.invalidate_after_compaction so the checkpoint sidecar
         # is rewritten before the shorter history hits disk — a crash between the
         # two writes then can't leave checkpoints indexing a history that no longer
         # exists. A mask-only (micro) compaction leaves the count unchanged and
@@ -240,7 +236,7 @@ class SessionController:
         if setter is not None:
             setter(session_id)
 
-    def add_usage(self, delta: RunUsage) -> None:
+    def add_usage(self, delta: RunUsage, *, model_id: str | None = None) -> None:
         """Bank ``delta`` into the session total and best-effort record it
         in the stats ledger. Every call site that used to do
         ``session.usage += x`` must go through here so spend cannot be
@@ -249,7 +245,10 @@ class SessionController:
         rec = self.stats_recorder
         if rec is not None:
             try:
-                rec.record(delta)
+                if model_id is None:
+                    rec.record(delta)
+                else:
+                    rec.record(delta, model_id=model_id)
             except Exception:
                 # Recorder implementations already swallow I/O errors; this
                 # guard keeps a buggy recorder from aborting a turn.
@@ -516,16 +515,16 @@ class SessionController:
                 self.persist(force=True)
 
     def update_model(self, model: Model) -> None:
-        """Rebuild aux agents (summarizer/titler) for a new model. Only
-        replaces those that were originally configured — a None stays None.
+        """Update the inherited summary model and rebuild a configured titler.
+
+        Explicit strategy models stay explicit; deterministic-only stays deterministic.
 
         The aux agents are built on ``aux_model_for(model)``, never the raw
         model: switching TO a claude-cli model must NOT hand the session-carrying
         instance to the summarizer/titler (see ``aux_model_for``), the same guard
         bootstrap applies at initial build."""
         aux = aux_model_for(model, cwd=str(self.deps.workspace.root))
-        if self.summarizer is not None:
-            self.summarizer = make_summarizer(aux)
+        self.auxiliary_model = aux
         if self.titler is not None:
             self.titler = make_titler(aux)
 
@@ -715,22 +714,6 @@ class SessionController:
         self.cancel_autoname()
         return result
 
-    def _elided_persist(self) -> Callable[[str, str], str | None] | None:
-        """The persist callback for mask_stale_observations, or None when the
-        scratchpad is unavailable — masking then degrades to plain placeholders."""
-        get = getattr(self.deps, "get_scratchpad", None)
-        if get is None:
-            return None
-        pad = get()
-        if pad is None:
-            return None
-
-        def persist(content: str, tool_name: str) -> str | None:
-            path = persist_elided(pad, content, tool_name)
-            return str(path) if path is not None else None
-
-        return persist
-
     async def _dispatch_pre_compact(self, trigger: str, instructions: str | None) -> HookVerdict:
         if self.deps.hooks is None:
             return HookVerdict()
@@ -824,83 +807,89 @@ class SessionController:
             model_id = self.get_model_id() if self.get_model_id else None
             await self.limits.resolve(model_id)
 
-    def _stage_mask(self, *, force: bool, manual: bool) -> bool:
-        """STAGE 1 — microcompact: elide stale tool observations (persisting
-        payloads to the scratchpad when available). Runs before the
-        summarizer so that when old tool output IS the bloat, we get under
-        threshold without a model call. Cache-safe: this only ever runs when
-        the gate has tripped, i.e. when a history rewrite (and its cache
-        miss) was about to happen anyway. Force/manual run it regardless of
-        the routine-hygiene toggle — force is recovery of last resort, and a
-        manual /compact asks for maximum reduction. Mutates ``self.history``
-        and returns whether it actually shrank."""
-        if not (self.mask_observations or force or manual):
-            return False
-        masked_history, n_masked = mask_stale_observations(
-            self.history,
-            self.mask_keep_recent,
-            min_chars=self.mask_min_chars,
-            persist=self._elided_persist(),
-        )
-        if not n_masked:
-            return False
-        self.history = masked_history
-        return True
+    def _compaction_model_id(self) -> str | None:
+        # SummarizingCompaction exposes its explicit model publicly. An inherited
+        # strategy uses the isolated auxiliary model, which /model updates.
+        if not hasattr(self.compaction_strategy, "model"):
+            # Opaque user strategies can invoke multiple models. Their aggregate
+            # spend is real, but guessing the main model would mislabel the ledger.
+            return "unknown"
+        model = getattr(self.compaction_strategy, "model", None) or self.auxiliary_model
+        return model if isinstance(model, str) else getattr(model, "model_name", None)
 
-    async def _stage_summarize(
-        self,
-        threshold: int,
-        *,
-        manual: bool,
-        force: bool,
-        has_masked: bool,
-        instructions: str | None,
-    ) -> bool:
-        """STAGE 2 — summarize-compact, only if still over (manual/force always
-        proceed: the user or the overflow retry asked for a real compaction).
-        After a stage-1 mask the provider's measured count is stale (the
-        history just shrank under it), so the tail planner runs on the
-        estimate alone in that case — but when stage 1 didn't touch the
-        history (masking off/ineffective, ``has_masked`` False),
-        last_input_tokens is still fresh and must keep gating here exactly as
-        it did the entry check in ``maybe_compact``; otherwise a measured-only
-        overflow (dense content the char/4 estimate undershoots) would trip
-        the initial gate, fire PreCompact, then silently do nothing. Mutates
-        ``self.history`` and returns whether it actually shrank."""
-        measured = None if has_masked else self.last_input_tokens
-        still_over = _measured_or_estimated(self.history, measured) > threshold
-        if not (manual or force or still_over):
-            return False
-        tail_start = _plan_tail_start(
-            self.history,
-            threshold,
-            self.keep_last_messages,
-            force=force or manual,
-            measured_tokens=measured,
+    def _commit_reduction(self, reduction: Reduction) -> str:
+        self.history = reduction.messages
+        self.last_input_tokens = None
+        # Absolute indices can move even when a replacement has the same length.
+        # Invalidate BEFORE persisting so a crash cannot publish stale rewind points.
+        if reduction.restructured and self.on_history_restructured is not None:
+            self.on_history_restructured()
+        self.persist()
+        self.breaker.note_compact()
+        stages = ["micro" if stage == "clear" else "summary" for stage in reduction.stages]
+        stage = "+".join(dict.fromkeys(stages))
+        summary = None
+        if "summary" in reduction.stages:
+            summary = next(
+                (
+                    text
+                    for message in self.history
+                    for part in message.parts
+                    if (text := summary_text(getattr(part, "content", None))) is not None
+                ),
+                None,
+            )
+        self.last_compaction_details = dict(
+            changed=True, summary=summary, post_tokens=estimate_tokens(self.history), stage=stage
         )
-        if tail_start is None:
+        return stage
+
+    async def _reduce_and_commit(
+        self,
+        *,
+        force: bool,
+        trigger: str,
+        instructions: str | None,
+        pre_tokens: int,
+        usage_limits: UsageLimits | None,
+        bank_usage: Callable[[RunUsage, str | None], None] | None,
+    ) -> bool:
+        if self.auxiliary_model is None:
+            raise ValueError("Compaction requires a concrete auxiliary_model")
+        usage = RunUsage()
+        model_id = self._compaction_model_id()
+        try:
+            reduction = await reduce_history(
+                list(self.history),
+                model=self.auxiliary_model,
+                summary=self.compaction_strategy,
+                target_tokens=self.compact_threshold,
+                keep_messages=self.keep_last_messages,
+                keep_pairs=self.mask_keep_recent,
+                clear=self.mask_observations or force or trigger == "manual",
+                force=force
+                or trigger == "manual"
+                or (
+                    pre_tokens > self.compact_threshold
+                    and estimate_tokens(self.history) <= self.compact_threshold
+                ),
+                focus=instructions,
+                usage=usage,
+                usage_limits=usage_limits,
+            )
+        finally:
+            # A fresh accumulator contains only this attempt, including failed or
+            # cancelled summaries. Never rebank a parent run's cumulative spend.
+            if usage.requests or usage.total_tokens:
+                if bank_usage is None:
+                    self.add_usage(usage, model_id=model_id)
+                else:
+                    bank_usage(usage, model_id)
+        if reduction.messages == self.history:
             return False
-        if self.summarizer is not None:
-            new_history, did = await compact_history_with_summary(
-                self.history,
-                threshold,
-                self.summarizer,
-                self.keep_last_messages,
-                force=force or manual,
-                tail_start=tail_start,
-                instructions=instructions,
-            )
-        else:
-            new_history, did = compact_history(
-                self.history,
-                threshold,
-                self.keep_last_messages,
-                force=force or manual,
-                tail_start=tail_start,
-            )
-        if did:
-            self.history = new_history
-        return did
+        stage = self._commit_reduction(reduction)
+        await self._dispatch_post_compact(trigger, pre_tokens, estimate_tokens(self.history), stage)
+        return True
 
     async def maybe_compact(
         self,
@@ -908,79 +897,57 @@ class SessionController:
         force: bool = False,
         trigger: str = "auto",
         instructions: str | None = None,
+        usage_limits: UsageLimits | None = None,
+        bank_usage: Callable[[RunUsage, str | None], None] | None = None,
     ) -> bool:
-        """Run the staged reduction pipeline: mask stale tool observations
-        first, then summarize-compact only if the history is still over
-        threshold. ``force`` is the post-overflow path (the estimate is known
-        to have undershot); ``trigger="manual"`` is the /compact command —
-        it bypasses the size gate and the breaker, and is the only trigger a
-        PreCompact hook can block. Returns True if the history shrank."""
-        before = len(self.history)
+        """Apply upstream reduction within Marim's gates, hooks and commit boundary."""
+        self.last_compaction_details = dict(
+            changed=False, summary=None, post_tokens=estimate_tokens(self.history), stage=None
+        )
         manual = trigger == "manual"
         await self._prepare_compact(manual=manual)
-        threshold = self.compact_threshold
         pre_tokens = _measured_or_estimated(self.history, self.last_input_tokens)
-        over = pre_tokens > threshold
-        if not (over or force or manual):
+        over = pre_tokens > self.compact_threshold
+        if not self.history or not (over or force or manual):
             return False
         if self._breaker_should_skip(over, manual, force):
             return False
         if await self._verdict_blocks(trigger, instructions, manual=manual):
             return False
-        # Fire PreCompact *before* the compaction work, while the transcript is
-        # still full — matching Claude Code, where the hook can snapshot the
-        # conversation before it's summarized/collapsed.
-        indicator_shown = self.on_compact_start is not None
-        if self.on_compact_start is not None:
-            self.on_compact_start()
-        stages: list[str] = []
-        if self._stage_mask(force=force, manual=manual):
-            stages.append("micro")
-        if await self._stage_summarize(
-            threshold,
-            manual=manual,
-            force=force,
-            has_masked="micro" in stages,
-            instructions=instructions,
-        ):
-            stages.append("summary")
-        compacted = bool(stages)
-        if compacted:
-            # The measurement that triggered this compaction described the old,
-            # larger history; carried forward it would gate the NEXT
-            # maybe_compact on max(estimate, stale_measured) and re-compact a
-            # history that now comfortably fits (detail loss and a busted
-            # prompt cache for nothing). Drop it — the estimate governs until
-            # the next real request reports usage.
-            self.last_input_tokens = None
-            # Invalidate checkpoints BEFORE persisting when the history was
-            # restructured (message count changed → absolute indices moved). This
-            # ordering is the crash-safety guarantee: if the process dies between
-            # the two writes, the checkpoint sidecar is already gone/consistent
-            # rather than left pointing into a history that the persist below is
-            # about to shorten. A mask-only compaction preserves the count, so its
-            # indices stay valid and we must NOT invalidate (that would throw away
-            # the user's rewind points for nothing). The controller owns the
-            # CheckpointManager and wires on_history_restructured.
-            if len(self.history) != before and self.on_history_restructured is not None:
-                self.on_history_restructured()
-            # Persist the compacted history now: the post-turn compaction runs
-            # after the turn's own persist, so without this the smaller history
-            # lives only in memory until the next turn — a process death
-            # between turns would lose it and leave the rollback baseline
-            # diverged from disk. The setter bumped the version, so a plain
-            # persist() writes.
-            self.persist()
-            self.breaker.note_compact()
-            await self._dispatch_post_compact(
-                trigger, pre_tokens, estimate_tokens(self.history), "+".join(stages)
+        before = len(self.history)
+        started = time.monotonic()
+        outcome = "failed"
+        try:
+            if self.on_compact_start is not None:
+                self.on_compact_start()
+            changed = await self._reduce_and_commit(
+                force=force,
+                trigger=trigger,
+                instructions=instructions,
+                pre_tokens=pre_tokens,
+                usage_limits=usage_limits,
+                bank_usage=bank_usage,
             )
-        # on_compact both reports the result AND clears the "compacting…"
-        # notice, so it must fire whenever the notice was shown — not only
-        # when history shrank.
-        if self.on_compact is not None and (compacted or indicator_shown):
-            self.on_compact(before, len(self.history))
-        return compacted
+            outcome = "committed" if changed else "unchanged"
+            return changed
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            logger.info(
+                "Compaction trigger=%s force=%s strategy=%s stage=%s before_tokens=%d "
+                "after_tokens=%d duration=%.3fs outcome=%s",
+                trigger,
+                force,
+                type(self.compaction_strategy).__name__,
+                self.last_compaction_details["stage"],
+                pre_tokens,
+                estimate_tokens(self.history),
+                time.monotonic() - started,
+                outcome,
+            )
+            if self.on_compact is not None:
+                self.on_compact(before, len(self.history))
 
     async def maybe_autoname(self) -> None:
         if (

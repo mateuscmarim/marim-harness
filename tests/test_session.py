@@ -13,11 +13,12 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
+from pydantic_ai_harness.compaction import SummarizingCompaction
 
 from marim_harness.compaction import (
-    ELIDED_POINTER_PREFIX,
     MASKED_OBSERVATION,
     _elided_pointer,
     estimate_tokens,
@@ -29,6 +30,16 @@ from marim_harness.runtime.permissions import Mode
 from marim_harness.session import SessionInfo, SessionManager, SessionStore, filter_sessions
 from marim_harness.session.ctrl import SessionController
 from tests.conftest import _make_deps
+
+
+def _strategy(callback, keep_messages=1):
+    async def summarize(messages, info):
+        text = await callback(messages)
+        return ModelResponse(parts=[TextPart(text)])
+
+    return SummarizingCompaction(
+        max_tokens=1, keep_messages=keep_messages, model=FunctionModel(summarize)
+    )
 
 
 def _history() -> list:
@@ -605,7 +616,14 @@ def test_switch_to_corrupt_session_does_not_clobber_target(tmp_path):
     corrupt_bytes = target.path.read_text()
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(source, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        source,
+        mgr,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.resume()  # load source into the controller
     assert len(ctrl.history) == len(source_history)
 
@@ -652,7 +670,14 @@ def test_switch_to_session_with_unimportable_state_does_not_commit(tmp_path):
     target.path.write_text(json.dumps(data))
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(source, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        source,
+        mgr,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.resume()
     outgoing_tasks = ctrl.deps.tasks.to_payload()
     outgoing_jobs = ctrl.deps.jobs.export_settled()
@@ -710,7 +735,14 @@ def test_resume_degrades_dangling_elided_pointers(tmp_path: Path):
     store.save(history, RunUsage())
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        store,
+        mgr,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.resume()
 
     returns = ctrl.history[2].parts
@@ -735,7 +767,14 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
 
     def _fresh_ctrl():
-        c = SessionController(None, None, deps, max_context_tokens=1000, keep_last_messages=1)
+        c = SessionController(
+            None,
+            None,
+            deps,
+            max_context_tokens=1000,
+            keep_last_messages=1,
+            auxiliary_model=TestModel(),
+        )
         c.history = [
             ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
             ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
@@ -762,7 +801,9 @@ async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
     near the budget (detail loss, a busted prompt cache, an invalidated checkpoint —
     all for nothing)."""
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, max_context_tokens=1000, keep_last_messages=1)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1000, keep_last_messages=1, auxiliary_model=TestModel()
+    )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="a" * 400)]),
         ModelRequest(parts=[UserPromptPart(content="b" * 400)]),
@@ -820,7 +861,9 @@ async def test_pre_compact_fires_when_compaction_runs(tmp_path):
         ),
     )
     # A tiny token budget forces compaction of a non-trivial history.
-    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=1, auxiliary_model=TestModel()
+    )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
         ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
@@ -860,7 +903,8 @@ async def test_pre_compact_fires_before_compaction_work(tmp_path):
         deps,
         max_context_tokens=1,
         keep_last_messages=1,
-        summarizer=_summarizer,
+        compaction_strategy=_strategy(_summarizer),
+        auxiliary_model=TestModel(),
     )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
@@ -884,7 +928,14 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
             {hook_events.PRE_COMPACT: [{"hooks": [{"type": "command", "command": cmd}]}]}
         ),
     )
-    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        None,
+        None,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.history = []  # nothing to compact
     await ctrl.maybe_compact()
     assert not log.exists()
@@ -893,7 +944,9 @@ async def test_pre_compact_does_not_fire_without_compaction(tmp_path):
 @pytest.mark.anyio
 async def test_on_compact_start_fires_before_finish_when_compacting(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=1, auxiliary_model=TestModel()
+    )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
         ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
@@ -909,7 +962,14 @@ async def test_on_compact_start_fires_before_finish_when_compacting(tmp_path):
 @pytest.mark.anyio
 async def test_on_compact_start_not_fired_without_compaction(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        None,
+        None,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.history = []  # nothing to compact
     fired: list[int] = []
     ctrl.on_compact_start = lambda: fired.append(1)
@@ -924,7 +984,14 @@ async def test_forced_compaction_clears_indicator_even_without_shrink(tmp_path):
     # indicator must still be cleared: on_compact fires with before == after so
     # the UI just drops the notice instead of leaving a stuck spinner.
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        None,
+        None,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
     events: list = []
     ctrl.on_compact_start = lambda: events.append("start")
@@ -955,7 +1022,9 @@ async def test_precompact_and_indicator_fire_even_when_nothing_droppable(tmp_pat
     )
     # Over threshold (tiny budget) but nothing to drop: keep_last_messages=20
     # retains the single message, and masking is off by default.
-    ctrl = SessionController(None, None, deps, max_context_tokens=1, keep_last_messages=20)
+    ctrl = SessionController(
+        None, None, deps, max_context_tokens=1, keep_last_messages=20, auxiliary_model=TestModel()
+    )
     ctrl.history = [ModelRequest(parts=[UserPromptPart(content="x" * 5000)])]
     before = list(ctrl.history)
     events: list = []
@@ -978,7 +1047,7 @@ async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
     tool-observation payloads in the retained tail (keeping the most recent)."""
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 
-    from marim_harness.compaction import MASKED_OBSERVATION
+    MASKED_OBSERVATION = "[tool result cleared]"
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
@@ -988,6 +1057,7 @@ async def test_compaction_masks_stale_observations_when_enabled(tmp_path):
         max_context_tokens=1,
         keep_last_messages=20,
         mask_observations=True,
+        auxiliary_model=TestModel(),
     )
 
     def _turn(n: int) -> list:
@@ -1022,7 +1092,7 @@ async def test_compaction_mask_keep_recent_threshold_threads_through(tmp_path):
     only the single most-recent tool return survives unmasked."""
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 
-    from marim_harness.compaction import MASKED_OBSERVATION
+    MASKED_OBSERVATION = "[tool result cleared]"
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
@@ -1033,7 +1103,7 @@ async def test_compaction_mask_keep_recent_threshold_threads_through(tmp_path):
         keep_last_messages=20,
         mask_observations=True,
         mask_keep_recent=1,
-        mask_min_chars=50,
+        auxiliary_model=TestModel(),
     )
 
     def _turn(n: int) -> list:
@@ -1065,7 +1135,7 @@ async def test_compaction_mask_keep_recent_threshold_threads_through(tmp_path):
 async def test_compaction_leaves_observations_intact_when_disabled(tmp_path):
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 
-    from marim_harness.compaction import MASKED_OBSERVATION
+    MASKED_OBSERVATION = "[tool result cleared]"
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
@@ -1075,6 +1145,7 @@ async def test_compaction_leaves_observations_intact_when_disabled(tmp_path):
         max_context_tokens=1,
         keep_last_messages=20,
         mask_observations=False,
+        auxiliary_model=TestModel(),
     )
 
     def _turn(n: int) -> list:
@@ -1109,7 +1180,9 @@ async def test_compaction_persists_the_compacted_history(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("compact me")
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=1, keep_last_messages=1, auxiliary_model=TestModel()
+    )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
         ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
@@ -1129,7 +1202,14 @@ async def test_no_compaction_does_not_force_a_write(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("untouched")
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, max_context_tokens=100_000, keep_last_messages=20)
+    ctrl = SessionController(
+        store,
+        mgr,
+        deps,
+        max_context_tokens=100_000,
+        keep_last_messages=20,
+        auxiliary_model=TestModel(),
+    )
     ctrl.history = [ModelRequest(parts=[UserPromptPart(content="small")])]
     ctrl.persist()  # establish the on-disk baseline
     before = store.path.read_text()
@@ -1203,8 +1283,9 @@ async def test_stage1_masking_alone_skips_the_summarizer(tmp_path):
         deps,
         max_context_tokens=8000,
         keep_last_messages=20,
-        summarizer=summarizer,
+        compaction_strategy=_strategy(summarizer),
         mask_observations=True,
+        auxiliary_model=TestModel(),
     )
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True
@@ -1221,6 +1302,7 @@ async def test_manual_bypasses_gate_and_resets_breaker(tmp_path):
         deps,
         max_context_tokens=10_000_000,
         keep_last_messages=1,
+        auxiliary_model=TestModel(),
     )
     ctrl.history = _bulky_tool_history()
     ctrl.breaker.consecutive_rapid_refills = 99
@@ -1232,11 +1314,7 @@ async def test_manual_bypasses_gate_and_resets_breaker(tmp_path):
 async def test_open_breaker_skips_auto_but_not_manual(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        None,
-        None,
-        deps,
-        max_context_tokens=10,
-        keep_last_messages=1,
+        None, None, deps, max_context_tokens=10, keep_last_messages=1, auxiliary_model=TestModel()
     )
     ctrl.history = _bulky_tool_history()
     notices: list[str] = []
@@ -1260,11 +1338,7 @@ def test_new_session_resets_breaker(tmp_path):
     store = mgr.create("Initial Session")
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
-        store,
-        mgr,
-        deps,
-        max_context_tokens=10,
-        keep_last_messages=1,
+        store, mgr, deps, max_context_tokens=10, keep_last_messages=1, auxiliary_model=TestModel()
     )
     # Set the breaker to an open state and mark the notice as shown
     ctrl.breaker.consecutive_rapid_refills = ctrl.breaker.trip_after
@@ -1285,11 +1359,7 @@ async def test_manual_block_verdict_aborts_with_notice(tmp_path):
     hooks = _FakeHooks(blocked=True, reason="snapshot first")
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
     ctrl = SessionController(
-        None,
-        None,
-        deps,
-        max_context_tokens=10,
-        keep_last_messages=1,
+        None, None, deps, max_context_tokens=10, keep_last_messages=1, auxiliary_model=TestModel()
     )
     ctrl.history = _bulky_tool_history()
     notices: list[str] = []
@@ -1305,11 +1375,7 @@ async def test_auto_ignores_block_verdict(tmp_path):
     hooks = _FakeHooks(blocked=True, reason="nope")
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
     ctrl = SessionController(
-        None,
-        None,
-        deps,
-        max_context_tokens=10,
-        keep_last_messages=1,
+        None, None, deps, max_context_tokens=10, keep_last_messages=1, auxiliary_model=TestModel()
     )
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True  # block logged, not honored
@@ -1317,8 +1383,7 @@ async def test_auto_ignores_block_verdict(tmp_path):
 
 @pytest.mark.anyio
 async def test_pipeline_order_and_post_compact_payload(tmp_path):
-    """Full pipeline: PreCompact verdict → mask (payload persisted to the
-    scratchpad) → summarize → PostCompact with stage + token counts."""
+    """Full pipeline: PreCompact → upstream clearing → summary → PostCompact."""
     hooks = _FakeHooks()
     order: list[str] = []
 
@@ -1330,20 +1395,15 @@ async def test_pipeline_order_and_post_compact_payload(tmp_path):
     pad.mkdir()
     deps = _make_deps(tmp_path, mode=Mode.ask, hooks=hooks)
     deps.get_scratchpad = lambda: pad  # if Deps is frozen, pass via _make_deps kwarg
-    # keep_last_messages=15 (not 1): large enough that the tail-cut boundary
-    # falls inside the masked prefix, so a persisted pointer placeholder
-    # survives into the retained tail alongside the synthetic summary — with
-    # keep_last_messages=1 the aggressive cut discards the whole masked
-    # region (indices 1..24), leaving nothing for the pointer assertion below
-    # to find even though masking/persisting still happened correctly.
     ctrl = SessionController(
         None,
         None,
         deps,
         max_context_tokens=10,
         keep_last_messages=15,
-        summarizer=summarizer,
+        compaction_strategy=_strategy(summarizer),
         mask_observations=True,
+        auxiliary_model=TestModel(),
     )
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True
@@ -1353,16 +1413,7 @@ async def test_pipeline_order_and_post_compact_payload(tmp_path):
     assert hooks.events[-1] == f"dispatch:{hook_events.POST_COMPACT}"
     assert order == ["summarizer"]
 
-    # Elided payloads landed in the scratchpad and placeholders point at them.
-    files = list((pad / "elided").glob("*.txt"))
-    assert files
-    pointers = [
-        p.content
-        for m in ctrl.history
-        for p in getattr(m, "parts", [])
-        if isinstance(p, ToolReturnPart) and str(p.content).startswith(ELIDED_POINTER_PREFIX)
-    ]
-    assert pointers and str(pad) in pointers[0]
+    assert not list(pad.rglob("*.txt"))  # upstream clearing creates no spill files
 
     # PostCompact payload carries the observability fields.
     post = hooks.payloads[hook_events.POST_COMPACT]
@@ -1381,13 +1432,13 @@ def test_saved_model_id_returns_store_model(tmp_path: Path):
     store = mgr.create("with-model")
     store.model = "anthropic/claude-3-7"
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20, auxiliary_model=TestModel())
     assert ctrl.saved_model_id == "anthropic/claude-3-7"
 
 
 def test_saved_model_id_none_without_store(tmp_path: Path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, 100_000, 20)
+    ctrl = SessionController(None, None, deps, 100_000, 20, auxiliary_model=TestModel())
     assert ctrl.saved_model_id is None
 
 
@@ -1415,14 +1466,16 @@ async def test_update_model_rebuilds_summarizer_and_titler(tmp_path: Path):
         deps,
         100_000,
         20,
-        summarizer=_stub_summarizer,
+        compaction_strategy=_strategy(_stub_summarizer),
         titler=_stub_titler,
+        auxiliary_model=TestModel(),
     )
-    original_summarizer = ctrl.summarizer
+    original_summarizer = ctrl.compaction_strategy
     original_titler = ctrl.titler
     ctrl.update_model(model_b)
     # The aux agents were replaced (new callable objects).
-    assert ctrl.summarizer is not original_summarizer
+    assert ctrl.compaction_strategy is original_summarizer
+    assert ctrl.auxiliary_model is model_b
     assert ctrl.titler is not original_titler
 
 
@@ -1435,9 +1488,11 @@ def test_update_model_leaves_none_aux_agents_as_none(tmp_path: Path):
         return ModelResponse(parts=[TextPart(content="ok")])
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, 100_000, 20)  # no summarizer/titler
+    ctrl = SessionController(
+        None, None, deps, 100_000, 20, auxiliary_model=TestModel()
+    )  # no summarizer/titler
     ctrl.update_model(FunctionModel(fn))
-    assert ctrl.summarizer is None
+    assert ctrl.compaction_strategy is None
     assert ctrl.titler is None
 
 
@@ -1492,7 +1547,7 @@ async def test_maybe_compact_gates_on_the_resolved_threshold(tmp_path):
 
     limits = ContextLimits(budget=1_000_000, fetch_local=fake_local)
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, 1_000_000, 1)
+    ctrl = SessionController(None, None, deps, 1_000_000, 1, auxiliary_model=TestModel())
     ctrl.limits = limits
     ctrl.get_model_id = lambda: "tiny"
     ctrl.history = _over_budget_history()
@@ -1502,7 +1557,9 @@ async def test_maybe_compact_gates_on_the_resolved_threshold(tmp_path):
 @pytest.mark.anyio
 async def test_maybe_compact_without_limits_keeps_legacy_budget_gate(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, 100_000, 20)  # max_context_tokens as before
+    ctrl = SessionController(
+        None, None, deps, 100_000, 20, auxiliary_model=TestModel()
+    )  # max_context_tokens as before
     assert ctrl.compact_threshold == ctrl.max_context_tokens
 
 
@@ -1510,7 +1567,7 @@ def test_compact_threshold_reads_the_warm_cache(tmp_path):
     from marim_harness.config.context_limits import ContextLimits
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
-    ctrl = SessionController(None, None, deps, 100_000, 20)
+    ctrl = SessionController(None, None, deps, 100_000, 20, auxiliary_model=TestModel())
     ctrl.limits = ContextLimits(budget=42_000)
     ctrl.get_model_id = lambda: "m"
     assert ctrl.compact_threshold == 42_000  # sync, no resolve needed
@@ -1619,7 +1676,7 @@ async def test_forced_compaction_falls_back_to_masking_single_huge_turn(tmp_path
         ToolReturnPart,
     )
 
-    from marim_harness.compaction import MASKED_OBSERVATION
+    MASKED_OBSERVATION = "[tool result cleared]"
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(
@@ -1629,6 +1686,7 @@ async def test_forced_compaction_falls_back_to_masking_single_huge_turn(tmp_path
         max_context_tokens=100_000,
         keep_last_messages=20,
         mask_keep_recent=1,
+        auxiliary_model=TestModel(),
     )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="one giant turn")]),
@@ -1816,7 +1874,7 @@ def test_persist_snapshots_tasks_and_jobs_with_history(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("gen")
     deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20, auxiliary_model=TestModel())
     ctrl.history = _history()
     deps.tasks.load([{"text": "t0", "status": "pending"}])
 
@@ -1852,7 +1910,7 @@ def test_reset_purges_subagent_image_and_scratchpad_sidecars(tmp_path, monkeypat
     store.save(_history(), RunUsage())
     sid = store.session_id
     deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, 100_000, 20)
+    ctrl = SessionController(store, mgr, deps, 100_000, 20, auxiliary_model=TestModel())
 
     TranscriptStore(store.path, sid).write(
         "call-1",
@@ -1884,7 +1942,9 @@ async def test_restructuring_compaction_invalidates_before_persist(tmp_path):
     mgr = _manager(tmp_path)
     store = mgr.create("order")
     deps = _make_deps(mgr.workspace_root, mode=Mode.ask)
-    ctrl = SessionController(store, mgr, deps, max_context_tokens=1, keep_last_messages=1)
+    ctrl = SessionController(
+        store, mgr, deps, max_context_tokens=1, keep_last_messages=1, auxiliary_model=TestModel()
+    )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="x" * 5000)]),
         ModelRequest(parts=[UserPromptPart(content="y" * 5000)]),
@@ -1926,7 +1986,7 @@ async def test_mask_only_compaction_does_not_invalidate(tmp_path):
         keep_last_messages=20,
         mask_observations=True,
         mask_keep_recent=0,
-        mask_min_chars=1,
+        auxiliary_model=TestModel(),
     )
     ctrl.history = [
         ModelRequest(parts=[UserPromptPart(content="do a thing")]),
@@ -1941,6 +2001,8 @@ async def test_mask_only_compaction_does_not_invalidate(tmp_path):
     assert await ctrl.maybe_compact() is True
     assert len(ctrl.history) == before  # masked in place, count unchanged
     assert fired == []  # so no checkpoint invalidation
+    reloaded, *_ = store.load()
+    assert reloaded == ctrl.history  # clear-only changes are still persisted
 
 
 def _sessions_for_filter():

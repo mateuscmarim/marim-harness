@@ -195,3 +195,64 @@ async def test_non_overflow_failure_reraises_original_and_banks_usage(tmp_path):
         )
     assert compacts == []
     assert tc.session.usage.input_tokens == 42
+
+
+async def test_overflow_summary_consumes_remaining_turn_budget_once(tmp_path):
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai.usage import UsageLimits
+    from pydantic_ai_harness.compaction import SummarizingCompaction
+
+    from tests.test_session_upstream import history
+
+    tc = _make_tc(tmp_path)
+    tc.session.history = history()
+    tc.session.keep_last_messages = 2
+    tc.session.compaction_strategy = SummarizingCompaction(max_tokens=1, keep_messages=2)
+    tc.session.auxiliary_model = TestModel(custom_output_text="recap")
+    tc._usage_limits = UsageLimits(request_limit=4)
+    result = await tc._handle_run_failure(
+        _overflow_exc(), [], [], None, RunUsage(requests=1, input_tokens=100), set()
+    )
+    assert result is _RunRetry.COMPACTED
+    assert tc._turn_usage.requests == tc.session.usage.requests == 2
+    assert tc._turn_usage.input_tokens == tc.session.usage.input_tokens
+    assert tc._round_usage_limits().request_limit == 2
+    tc._bank_usage(RunUsage(requests=1, input_tokens=25))
+    assert tc._turn_usage.requests == tc.session.usage.requests == 3
+    # A completed turn's spend must not restrict a separate manual compaction.
+    tc.session.history = history()
+    tc._usage_limits = UsageLimits(request_limit=0)
+    assert await tc.manual_compact()
+    assert tc._turn_usage.requests == 3
+    assert tc.session.usage.requests == 4
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_failed_overflow_summary_banks_usage_without_committing(tmp_path, cancelled):
+    import asyncio
+
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    from tests.test_session_upstream import history
+
+    class Interrupted:
+        async def compact(self, messages, ctx):
+            ctx.usage.requests += 1
+            ctx.usage.input_tokens += 7
+            if cancelled:
+                raise asyncio.CancelledError
+            raise UsageLimitExceeded("spent budget")
+
+    tc = _make_tc(tmp_path)
+    tc.session.history = history()
+    original = list(tc.session.history)
+    tc.session.compaction_strategy = Interrupted()
+    error = asyncio.CancelledError if cancelled else UsageLimitExceeded
+    with pytest.raises(error):
+        await tc._handle_run_failure(
+            _overflow_exc(), [], [], None, RunUsage(requests=1, input_tokens=100), set()
+        )
+    assert tc._turn_usage.requests == tc.session.usage.requests == 2
+    assert tc._turn_usage.input_tokens == tc.session.usage.input_tokens == 107
+    assert tc.session.history == original
+    assert not tc.session.last_compaction_details["changed"]

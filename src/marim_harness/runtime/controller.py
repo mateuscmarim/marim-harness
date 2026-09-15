@@ -662,13 +662,17 @@ class TurnController:
         #
         # The invalidation itself is stage-aware and crash-safe, and now lives
         # INSIDE session.maybe_compact via the on_history_restructured seam wired
-        # in __init__: it fires only when the message count changed (a restructure,
-        # not a mask-only micro compaction) and BEFORE the compacted history is
+        # in __init__: it fires when upstream restructures the history (including
+        # same-length summaries, excluding clear-only changes) BEFORE history is
         # persisted, so a crash between the two writes can't leave the sidecar
         # indexing a history the persist is about to shorten. This wrapper stays as
         # the single funnel; it no longer invalidates after the fact.
         return await self.session.maybe_compact(
-            force=force, trigger=trigger, instructions=instructions
+            force=force,
+            trigger=trigger,
+            instructions=instructions,
+            usage_limits=self._round_usage_limits() if force else None,
+            bank_usage=self._bank_compaction_usage if force else None,
         )
 
     async def _ensure_session_baseline(self) -> None:
@@ -911,6 +915,10 @@ class TurnController:
         ``usage``."""
         self._turn_usage.incr(delta)
         self.session.add_usage(delta)
+
+    def _bank_compaction_usage(self, delta: RunUsage, model_id: str | None) -> None:
+        self._turn_usage.incr(delta)
+        self.session.add_usage(delta, model_id=model_id)
 
     def _round_usage_limits(self) -> UsageLimits | None:
         """The turn's usage limit expressed for the next agent.run round.
