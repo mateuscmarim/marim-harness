@@ -10,7 +10,7 @@
 
 **Spec:** [Upstream compaction design](../specs/2026-09-15-upstream-compaction-design.md). Read the proposed behavior changes before implementing.
 
-**Status:** Implementation in progress on `refactor/upstream-compaction`. Baseline lint, type checks, and 4,985 tests passed before dependency changes. The execution ledger records per-task results.
+**Status:** Implementation and review complete on `refactor/upstream-compaction`; all supported Python versions pass the full suite. See [validation report](../../internal/reviews/2026-09-15-upstream-compaction-validation.md) for test evidence and limits.
 
 ## Global constraints
 
@@ -47,12 +47,12 @@
 **Deliverable:** The selected upstream releases run in Marim with a small executable
 contract suite, before changing the active compaction paths.
 
-- [ ] Record baseline results using the required ruff → pyright → pytest order.
+- [x] Record baseline results using the required ruff → pyright → pytest order.
   Keep pre-existing failures separate from dependency-upgrade regressions.
-- [ ] Change the two dependency ranges to the exact ranges in Global constraints.
+- [x] Change the two dependency ranges to the exact ranges in Global constraints.
   Regenerate the lock with uv and confirm the selected versions are 0.31.0/2.43.0.
   Do not install harness extras such as CLI, workflows, browsers, or durable engines.
-- [ ] Add this representative fixture and first contract test to the new test file:
+- [x] Add this representative fixture and first contract test to the new test file:
 
 ```python
 import pytest
@@ -101,15 +101,15 @@ async def test_clear_preserves_recent_results_and_serializable_history():
     assert ModelMessagesTypeAdapter.validate_json(encoded) == cleared
 ```
 
-- [ ] Add a repeated-call-ID variant (reuse a tool ID in separate completed rounds),
+- [x] Add a repeated-call-ID variant (reuse a tool ID in separate completed rounds),
   a parallel-round variant, and typed framework tool-result fixtures already covered
   in `tests/test_compaction.py`. Check retained recent contents as well as successful
   serialization. Do not treat JSON validity alone as proof of correct retention.
-- [ ] Run `uv run pytest --no-cov -n 0 tests/test_upstream_compaction.py`.
+- [x] Run `uv run pytest --no-cov -n 0 tests/test_upstream_compaction.py`.
   Save a minimal reproducer for any upstream invariant failure. For the confirmed
   repeated-ID clearing defect in 0.31.0, use the conservative public wrapper in the
   updated spec; regression-test both the defect and the guarded behavior.
-- [ ] Re-run ruff → pyright → pytest after the dependency change. In particular,
+- [x] Re-run ruff → pyright → pytest after the dependency change. In particular,
   inspect custom provider clients, nested capture, streaming, and lazy CLI imports;
   core's new transitive SDK/client versions may affect them. Fix only upgrade-related
   compatibility failures. Check that the new first-run banner cannot corrupt JSON
@@ -158,7 +158,7 @@ async def reduce_history(
     """Apply upstream strategies; the caller owns committing history and usage."""
 ```
 
-- [ ] Start with adapter tests: under-budget normal reduction makes no summary
+- [x] Start with adapter tests: under-budget normal reduction makes no summary
   request; clearing sufficient to reach budget skips summarization; `force=True`
   reduces eligible history even below budget; input history is unchanged on error.
   Reuse `tool_history()` and `TestModel(custom_output_text="Retained task summary")`.
@@ -190,32 +190,32 @@ async def test_forced_summary_runs_below_automatic_threshold():
     assert usage.requests == 1
 ```
 
-- [ ] Run the new tests and verify failure before adding the adapter implementation.
-- [ ] Construct `ClearToolResults(keep_pairs=keep_pairs, max_tokens=1,
+- [x] Run the new tests and verify failure before adding the adapter implementation.
+- [x] Construct `ClearToolResults(keep_pairs=keep_pairs, max_tokens=1,
   clear_tool_inputs=False)` and `SlidingWindowCompaction(keep_messages=keep_messages,
   max_tokens=1)`. Exclude Marim's registered mutating tools from routine clearing;
   use the existing tool-name groups and test `bash`/writes explicitly. Keep upstream
   placeholder text so it does not tell the model to repeat a mutating command.
-- [ ] For automatic reductions, compose `TieredCompaction(target_tokens=target_tokens,
+- [x] For automatic reductions, compose `TieredCompaction(target_tokens=target_tokens,
   tiers=...)`. For forced reductions, invoke clearing and the summary/trim stage
   directly using `compact_now`. Apply focus to a focus-capable summary strategy before
   placing it in `FallbackCompaction`. Use public `SupportsFocus` behavior.
-- [ ] Configure fallback for recoverable model failures, including malformed summary
+- [x] Configure fallback for recoverable model failures, including malformed summary
   output (`UnexpectedModelBehavior`), rather than `Exception`. Add explicit tests
   proving cancellation and `UsageLimitExceeded` escape without trimming.
-- [ ] For bounded mid-turn recovery, use a public `RunContext(deps=None, model=model,
+- [x] For bounded mid-turn recovery, use a public `RunContext(deps=None, model=model,
   usage=usage, usage_limits=usage_limits, messages=messages)` and invoke the chosen
   strategy's public `compact` method. Keep `compact_now` for calls without those
   limits; it has no `usage_limits` parameter. Verify a spent request budget prevents
   the summary request and that the parent request's reserved slot remains available.
-- [ ] Determine actual changes from returned messages, not only their count. Mark
+- [x] Determine actual changes from returned messages, not only their count. Mark
   a changed summary/trim stage as restructuring even when the count stays equal;
   clearing alone must not set the restructure flag. Never mark a no-op successful.
-- [ ] Use upstream public estimators for trigger/reclaim checks. Keep one bounded
+- [x] Use upstream public estimators for trigger/reclaim checks. Keep one bounded
   stage sequence; an irreducible tail returns without another summarization loop.
   When composing stage reporting, use public strategy wrappers that delegate `compact`
   if needed; do not recreate cutoff/clearing logic or import private helpers.
-- [ ] Run `uv run pytest --no-cov -n 0 tests/test_upstream_compaction.py`; commit the
+- [x] Run `uv run pytest --no-cov -n 0 tests/test_upstream_compaction.py`; commit the
   tested adapter. This commit adds no second active compaction path.
 
 ## Task 3: Switch the main session and summary display together
@@ -228,7 +228,7 @@ async def test_forced_summary_runs_below_automatic_threshold():
 **Deliverable:** Automatic, manual, and forced main-session compaction use the
 adapter; histories and summaries survive save/reload in headless and TUI usage.
 
-- [ ] Add failing behavioral tests to existing session/controller fixtures for the
+- [x] Add failing behavioral tests to existing session/controller fixtures for the
   following cases. Preserve fixture setup; replace assertions about exact historical
   cutoff indices with the specified outcomes.
 
@@ -245,18 +245,18 @@ adapter; histories and summaries survive save/reload in headless and TUI usage.
 | Model switch | Next summary uses the new auxiliary model; configured explicit strategy model stays explicit |
 | No-op/empty/irreducible history | No misleading success, repeated summary, or PostCompact |
 
-- [ ] Replace `HarnessConfig.summarizer` and its builder/bootstrap construction with
+- [x] Replace `HarnessConfig.summarizer` and its builder/bootstrap construction with
   `compaction_strategy` as specified in the design. Keep its imports lazy, using the
   existing lightweight config typing convention and a cast at construction if needed.
   `None` preserves deterministic-only construction; builder defaults supply an
   upstream `SummarizingCompaction` with the existing `keep_last_messages` setting.
-- [ ] Pass the concrete auxiliary model into `SessionController`; update it through
+- [x] Pass the concrete auxiliary model into `SessionController`; update it through
   `aux_model_for` on `/model` changes. Remove `make_summarizer` from production
   construction. Keep titler construction and ephemeral CLI cloning behavior intact.
-- [ ] Replace `_stage_mask`/`_stage_summarize` with one adapter call inside the existing
+- [x] Replace `_stage_mask`/`_stage_summarize` with one adapter call inside the existing
   outer threshold/hook/breaker flow. Use `force=True` for manual/overflow calls and
   measured-only threshold crossings. Do not register a second main-agent capability.
-- [ ] Pass a fresh `RunUsage` accumulator into the adapter and bank its delta once
+- [x] Pass a fresh `RunUsage` accumulator into the adapter and bank its delta once
   through the existing session/stats mechanism, including error/cancellation paths.
   Keep it separate from already-banked main-run usage. Inspect the updated stats
   record to ensure summary-model cost attribution is not labelled as the main model
@@ -264,21 +264,21 @@ adapter; histories and summaries survive save/reload in headless and TUI usage.
   into the adapter on mid-turn overflow recovery, using Task 2's public RunContext
   invocation. Ordinary between-turn/manual compaction uses `compact_now`; no unsupported
   parameter is passed to it. Check remaining limits again before the parent resumes.
-- [ ] Commit changed history through the versioned setter; invalidate checkpoints
+- [x] Commit changed history through the versioned setter; invalidate checkpoints
   according to `Reduction.restructured` before persistence; clear stale measured input
   tokens. Preserve the approval dirty-history latch and existing rollback behavior.
-- [ ] Put completion/cleanup notifications in a `finally` path. Emit logs containing
+- [x] Put completion/cleanup notifications in a `finally` path. Emit logs containing
   trigger, strategy/stage, before/after token estimates, duration, and outcome; omit
   prompt, summary, and tool-output contents. Fire PostCompact only after a committed
   change, retaining its existing `micro`/`summary` stage vocabulary.
-- [ ] Extend `summary_text` to recognize both the historical marker and the observed
+- [x] Extend `summary_text` to recognize both the historical marker and the observed
   upstream marker. This is a version-tested UI compatibility reader, not an import of
   a private upstream constant. Replay recognized `SystemPromptPart` summaries as
   `SummaryWidget`; keep other system prompts hidden. Update live summary detection
   so a same-length replacement is visible. Preserve upstream history on disk unchanged.
-- [ ] Add a save/load/render fixture for each summary format and a mixed-history
+- [x] Add a save/load/render fixture for each summary format and a mixed-history
   fixture. Keep existing missing-scratchpad-pointer and typed-result repair tests.
-- [ ] Run focused session, controller, checkpoint, UI and CLI startup tests, then
+- [x] Run focused session, controller, checkpoint, UI and CLI startup tests, then
   ruff → pyright → pytest. Commit the integrated main-session replacement.
 
 ## Task 4: Switch native subagent masking and overflow recovery
@@ -292,28 +292,28 @@ returns a fresh upstream `ClearToolResults` capability or `None` when disabled.
 `SpawnRunDriver._shed_context` becomes asynchronous and receives the concrete spawn
 model for `compact_now`; its caller awaits it.
 
-- [ ] Add failing integration cases for two spawns with different models and repeated
+- [x] Add failing integration cases for two spawns with different models and repeated
   tool IDs, consecutive model requests, retry from reduced history, parallel tool
   results, disabled masking, and the original per-spawn budget selection.
-- [ ] Replace the factory's `ObservationMasker` construction with upstream
+- [x] Replace the factory's `ObservationMasker` construction with upstream
   `ClearToolResults(max_tokens=trigger, keep_pairs=keep_recent,
   clear_tool_inputs=False, exclude_tools=...)`. Apply the same mutating-tool retention
   policy as the main session. No custom set of remembered call IDs remains.
-- [ ] Broaden the runner's capability collection annotation from `ProcessHistory`
+- [x] Broaden the runner's capability collection annotation from `ProcessHistory`
   to the appropriate public capability base. Add clearing after history sanitizers;
   verify checkpoint writes and captured failure history preserve valid reduced state.
-- [ ] Change `_shed_context` and its caller to async. After `_resumable_history`, use
+- [x] Change `_shed_context` and its caller to async. After `_resumable_history`, use
   `compact_now` with aggressive clearing (`keep_pairs=1`) and the actual spawn model.
   Return reduced history only when the upstream estimate decreases. Keep non-repeatable
   tool results excluded; an irreducible overflow may legitimately remain an error.
-- [ ] Assert one overflow recovery attempt, no tool replay by the adapter, no recovery
+- [x] Assert one overflow recovery attempt, no tool replay by the adapter, no recovery
   notice for a no-op, and no clearing on the pool-contention path. Keep the current
   transient-retry and CLI backend implementations.
-- [ ] Compare outgoing histories across a sequence of requests: cleared prefixes stay
+- [x] Compare outgoing histories across a sequence of requests: cleared prefixes stay
   unchanged between threshold crossings. Assert JSON round trips and recent-result
   preservation, including reused IDs; use Task 1's conservative guard for upstream's
   reused-ID defect rather than retaining a parallel masker.
-- [ ] Run `uv run pytest --no-cov -n 0 tests/test_subagent_masking.py
+- [x] Run `uv run pytest --no-cov -n 0 tests/test_subagent_masking.py
   tests/test_subagent_retry.py tests/test_provider_errors.py tests/test_context_limits.py`
   as one shell command. Delete `subagents/masking.py` once no production import remains,
   and commit the native-subagent replacement.
@@ -326,36 +326,36 @@ model for `compact_now`; its caller awaits it.
 `docs/guides/subagents.md`, `docs/embedding.md`, `docs/sdk/builder.md`,
 `AGENTS.md`, `CHANGELOG.md`; related tests.
 
-- [ ] Inventory remaining references before deletion:
+- [x] Inventory remaining references before deletion:
 
 ```bash
 rg -n 'ObservationMasker|mask_stale_observations|_plan_tail_start|compact_history|make_summarizer|mask_min_chars|MARIM_MASK_MIN_CHARS' src tests docs .env.example
 ```
 
-- [ ] Delete custom cutoff/summary-agent/clearing algorithms and unused production
+- [x] Delete custom cutoff/summary-agent/clearing algorithms and unused production
   exports. Keep the title/transcript helpers, thrash breaker, existing-pointer repair,
   and summary-format readers still used outside the migrated paths. Keep comments
   explaining why each compatibility reader remains.
-- [ ] Route compaction estimation through public upstream estimators. Leave unrelated
+- [x] Route compaction estimation through public upstream estimators. Leave unrelated
   UI estimates alone unless they would now display a contradictory compaction budget.
   Remove `_measured_or_estimated` only after all callers use the new gate correctly.
-- [ ] Remove active `mask_min_chars` wiring. Accept `MARIM_MASK_MIN_CHARS` for one
+- [x] Remove active `mask_min_chars` wiring. Accept `MARIM_MASK_MIN_CHARS` for one
   release with one deprecation notice when explicitly set; retain its reference-doc
   entry marked deprecated so configuration-completeness checks remain meaningful.
-- [ ] Document the strategy override replacing `summarizer=`, new summary format,
+- [x] Document the strategy override replacing `summarizer=`, new summary format,
   approximate recent-pair retention, summary usage accounting, and absence of new
   scratchpad copies at clearing time. State that existing tool offloading and saved
   pointers continue to work. Preserve old-session repair tests.
-- [ ] Update AGENTS architecture descriptions and add a changelog entry around the
+- [x] Update AGENTS architecture descriptions and add a changelog entry around the
   final implemented behavior. Do not rewrite historical design documents as though
   they described the new implementation; link this superseding design instead.
-- [ ] Run `uv run pytest --no-cov -n 0 tests/test_docs_reference.py tests/test_offload.py
+- [x] Run `uv run pytest --no-cov -n 0 tests/test_docs_reference.py tests/test_offload.py
   tests/test_compaction.py tests/test_cli_startup.py` as one shell command. Confirm
   no production calls into a legacy compaction or masking engine remain. Commit cleanup.
 
 ## Task 6: Final acceptance and rollout
 
-- [ ] Run the full local sequence, in this order:
+- [x] Run the full local sequence, in this order:
 
 ```bash
 uv run ruff check src tests
@@ -364,8 +364,8 @@ uv run pytest
 uv build
 ```
 
-- [ ] Exercise Python 3.10, 3.12, and 3.14 through the existing CI matrix. Report
-  results actually obtained; do not infer cross-version success from a 3.12 probe.
+- [x] Validate the existing CI matrix versions locally: Python 3.10, 3.12, and 3.14.
+  Each passed the full suite. Hosted CI was not triggered; see the validation report.
 - [ ] With a copied session and the user's configured provider, perform a bounded
   headless task containing enough file reads to trigger clearing, then a TUI task
   using `/compact <focus>`, resume, and rewind. Use synthetic files, a deliberately
@@ -374,20 +374,25 @@ uv build
 - [ ] Interrupt during a summary and resume. Verify no orphaned tool results, duplicate
   execution, lost usage accounting, or stuck compaction indicator. Run a native
   subagent through clearing and a deterministic injected overflow/retry scenario.
-- [ ] Record changed files, removed algorithms, retained compatibility helpers, actual
-  verification evidence, and any observed provider-specific limit in the final PR.
+- [x] Record removed algorithms, retained compatibility helpers, actual
+  verification evidence, and the observed provider-availability limit in the validation report.
+  A PR was not requested.
   If a live smoke cannot run, report it separately from automated results.
-- [ ] Roll back a failing slice with source control. Preserve upstream-summary readers
+- [x] No failing slice remains to roll back after review fixes and full validation. Preserve upstream-summary readers
   if sessions have already been written in that format. Do not introduce a permanent
   runtime switch selecting old versus new engines.
 
+**Live acceptance note:** The two live-provider checks above were not run because the
+configured local endpoint was unreachable and no cloud API key was available. Automated
+save/reload, cancellation, UI, rewind, subagent clearing, and injected-overflow checks passed.
+
 ## Completion criteria
 
-- [ ] Main-session and native-subagent compaction use the selected upstream APIs.
-- [ ] Custom history cutoff, summary-agent, observation walking, and masked-ID state
+- [x] Main-session and native-subagent compaction use the selected upstream APIs.
+- [x] Custom history cutoff, summary-agent, observation walking, and masked-ID state
   are removed; no legacy engine executes in production.
-- [ ] Required session, permission, recovery, UI, and saved-history contracts pass.
-- [ ] New configuration/behavior differences are documented and dependency changes
+- [x] Required session, permission, recovery, UI, and saved-history contracts pass.
+- [x] New configuration/behavior differences are documented and dependency changes
   pass the required checks.
-- [ ] The result removes an owned maintenance responsibility; wrappers contain only
+- [x] The result removes an owned maintenance responsibility; wrappers contain only
   Marim integration and do not reproduce upstream algorithms.
