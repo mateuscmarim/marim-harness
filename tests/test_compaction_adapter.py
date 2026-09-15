@@ -86,7 +86,9 @@ async def test_safe_clearer_skips_tool_name_with_reused_call_id(caplog):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("tool_name", ["bash", "write_file", "edit_file", "run_workflow"])
+@pytest.mark.parametrize(
+    "tool_name", ["bash", "write_file", "edit_file", "run_workflow", "ask_user"]
+)
 async def test_safe_clearer_never_clears_mutating_tool_results(tool_name):
     history = _distinct_ids(_repeated_id_history(tool_name))
 

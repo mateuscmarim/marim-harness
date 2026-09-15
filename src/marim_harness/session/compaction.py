@@ -30,14 +30,15 @@ from ..tools.names import GATED_TOOLS
 logger = logging.getLogger(__name__)
 AgentDepsT = TypeVar("AgentDepsT")
 
-# These tools change session or external process state. Their result placeholder must
-# never invite the model to repeat the action merely to recover cleared information.
+# These tools change state or capture non-repeatable interactions such as user answers.
+# Their results must not invite repeating an action or asking again to recover information.
 KNOWN_MUTATING_TOOLS = GATED_TOOLS | frozenset(
     {
         "remember",
         "forget",
         "update_tasks",
         "present_plan",
+        "ask_user",
         "cancel_job",
         "job",
         "spawn_agent",
