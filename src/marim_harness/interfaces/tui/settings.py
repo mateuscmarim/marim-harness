@@ -523,15 +523,11 @@ class SettingsScreen(Screen[None]):
         self.query_one("#badge-providers", Static).update(provider)
 
     def _toggle_workflows(self, enabled: bool) -> None:
-        """Persist MARIM_WORKFLOWS and flip the harness's live run_workflow seam
-        in the same gesture. Disabling always takes effect at once; enabling is
-        live only when an engine was built at launch — otherwise (workflows off
-        at launch, or pydantic-monty missing) the harness reports False and the
-        status line falls back to the usual next-launch promise."""
+        """Persist availability and apply it to the next workflow call live."""
         if not self._env.save({"MARIM_WORKFLOWS": env_flag(enabled)}):
             return
         applied = self.harness.set_workflows_enabled(enabled)
-        suffix = "applied" if applied else "applies next launch"
+        suffix = "applied" if applied else "unavailable; install the workflows extra"
         self._status(f"✓ saved MARIM_WORKFLOWS · {suffix}")
 
     def _toggle_tiering(self, enabled: bool) -> None:

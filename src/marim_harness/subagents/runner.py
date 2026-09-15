@@ -261,6 +261,23 @@ class SubagentRunner:
                 return d
         return find_agent(self.deps.workspace.root, type_, trust_project=self.deps.trust.project)
 
+    def available_agents(self) -> list[AgentDef]:
+        """Workflow catalog, with the same trust and programmatic precedence as spawning."""
+        discovered = discover_agents(
+            self.deps.workspace.root, trust_project=self.deps.trust.project
+        )
+        roles = {role.qualified_name: role for role in discovered}
+        for role in reversed(self._extra_agents):
+            roles[role.qualified_name] = role
+        # Programmatic short names also shadow unqualified built-ins. Expose
+        # only identities that the actual dispatch resolver can still address.
+        return [
+            roles[name]
+            for name in sorted(roles)
+            if (resolved := self._resolve_agent(name)) is not None
+            and resolved.qualified_name == name
+        ]
+
     def _open_worktree(self, stream_id: str) -> tuple[SpawnWorktree | None, str | None]:
         """Open an isolated worktree for a fresh spawn, naming its branch from the
         spawn's stream id (unique per tool call, so parallel spawns don't collide)

@@ -1,6 +1,5 @@
-"""Dynamic workflows: model-authored orchestration scripts sandboxed in Monty.
+"""Marim integration for upstream dynamic workflows.
 
-Deliberately re-exports nothing (matching the runtime package): the engine
-imports pydantic_monty at module level, so importers must target submodules
-directly and guard the import — see _build_workflow_engine in runtime/harness.py.
+No eager exports: catalog declarations work without the optional dependency;
+imports of integration/agents are guarded by runtime.harness._build_workflows.
 """

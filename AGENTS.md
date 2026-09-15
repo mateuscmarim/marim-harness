@@ -169,11 +169,13 @@ to avoid import cycles.
   (the optional `Codex -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
-  model-authored Python script in a pydantic-monty sandbox (`engine.py`);
-  `agent()`/`log()` host functions delegate to `SubagentRunner.run` through
-  the `services.run_workflow` seam. Schema validation of agent() reports is
-  engine-level (`schema.py`, jsonschema). Never cancel the Monty VM task —
-  aborts flow through host functions (see engine.py's module docstring).
+  model-authored `code` script through Pydantic AI Harness `DynamicWorkflow`.
+  Named catalog agents delegate to `SubagentRunner.run`; upstream owns the
+  sandbox, dispatch, and compute budget. `services.workflows` owns availability,
+  wall timeout, UI callbacks, and output spill. Typed CLI reports are validated
+  at the runner bridge (`schema.py`, jsonschema). On abort, cancel upstream once
+  and drain cleanup through `runtime.backend_jobs.drain_task` before releasing
+  session ownership; repeated interrupts must not abandon active workers.
   Optional extra `[workflows]`; `MARIM_WORKFLOWS` gates it.
 - `stats/` — dual-JSONL usage ledger collecting per-turn token counts and cost
   deltas via `SessionController.add_usage`. Query via `load_overview()`/`load_models()`.

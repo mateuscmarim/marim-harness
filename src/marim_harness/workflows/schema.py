@@ -1,5 +1,8 @@
-"""Pure helpers for workflow scripts: report validation and result shaping.
-No I/O — the engine owns all effects (spawning, spill writes, UI callbacks)."""
+"""Validate full runner reports at the typed workflow boundary.
+
+Native reports are already structured; CLI reports may need JSON extraction.
+These pure helpers perform no retries or orchestration.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +12,6 @@ import re
 import jsonschema
 import jsonschema.validators
 
-from ..workspace.agents import cap_subagent_output
 from .errors import WorkflowResultError
 
 _FENCED = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
@@ -33,7 +35,7 @@ def extract_json(report: str) -> object | None:
 
 def check_valid_schema(schema: dict) -> None:
     """Validate that ``schema`` is itself a well-formed JSON Schema, before
-    it's used to gate an agent() call. Raises WorkflowResultError with a
+    it's used to declare a typed worker. Raises WorkflowResultError with a
     model-actionable message on a malformed schema; returns None on success.
     Catching this up front avoids spawning a sub-agent whose report can never
     validate because the schema itself is broken."""
@@ -42,12 +44,12 @@ def check_valid_schema(schema: dict) -> None:
         validator_cls.check_schema(schema)
     except jsonschema.SchemaError as exc:
         raise WorkflowResultError(
-            f"agent(schema=...) is not a valid JSON Schema: {exc.message}"
+            f"Workflow output schema is not a valid JSON Schema: {exc.message}"
         ) from exc
 
 
 def validate_report(report: str, schema: dict) -> tuple[object | None, str | None]:
-    """Validate a sub-agent report against the agent() schema. Returns
+    """Validate a sub-agent report against its fixed output schema. Returns
     (data, None) on success or (None, reason) with a model-readable reason."""
     data = extract_json(report)
     if data is None:
@@ -57,27 +59,3 @@ def validate_report(report: str, schema: dict) -> tuple[object | None, str | Non
     except jsonschema.ValidationError as exc:
         return None, f"the JSON does not match the schema: {exc.message}"
     return data, None
-
-
-def shape_result(value: object, max_chars: int, spill_path: str) -> tuple[str, str | None]:
-    """Serialize the script's final expression for the tool result, capping
-    with the same lossless head-plus-pointer spill spawn reports use. Returns
-    (text, spill): spill is the full serialization for the caller to persist
-    at spill_path, or None when under budget."""
-    if value is None:
-        raise WorkflowResultError(
-            "the workflow's final expression is None. This usually means the "
-            "script ended on a statement (e.g. print(result), asyncio.run(...)) "
-            "instead of a bare expression — the tool returns whatever the LAST "
-            "EXPRESSION evaluates to. If you have a value to report, end the "
-            "script with it directly (e.g. just `result`), not print(result)."
-        )
-    try:
-        text = json.dumps(value, indent=2, ensure_ascii=False)
-    except (TypeError, ValueError) as exc:
-        raise WorkflowResultError(
-            "the workflow's final expression is not JSON-serializable "
-            f"({exc}); end the script with plain data — dicts, lists, "
-            "strings, numbers"
-        ) from exc
-    return cap_subagent_output(text, max_chars, spill_path)

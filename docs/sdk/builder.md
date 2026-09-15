@@ -161,6 +161,42 @@ regular setters can't express what you need.
   auxiliary model. Usage from opaque composite strategies is recorded under
   `unknown` because their internal models are not public.
 
+## Workflow bindings
+
+Install `marim-harness[workflows]` and enable the workflow tool group with
+`with_defaults()`. Add fixed aliases through `HarnessConfig` overrides:
+
+```python
+from pathlib import Path
+
+from marim_harness import HarnessBuilder
+from marim_harness.workflows.catalog import WorkflowBinding
+
+harness = (
+    HarnessBuilder(workspace=Path("."), model="openai:gpt-5")
+    .with_defaults()
+    .with_config_overrides(
+        workflow_timeout_secs=1800,
+        workflow_bindings=(WorkflowBinding("review_diff", "explore"),),
+    )
+    .build()
+)
+```
+
+The script can then call `await review_diff(task="Review the working diff")`.
+Bindings supplement the trusted discovered catalog. `agent_type` is an existing
+role's qualified name; the runner still resolves its grants, model, and backend.
+Catalog discovery and role/collision validation run when an agent run prepares
+the toolset, so role changes are reflected on subsequent runs.
+
+`WorkflowBinding(name, agent_type, output_schema=None, isolation=None)` accepts
+an object-rooted JSON Schema for typed results, or `isolation="worktree"` for
+text reports. Structured worktree bindings are rejected. Names must be safe
+Python identifiers; `research_findings` and `verify_claim` are reserved for the
+shipped deep-research contracts. No per-call model/schema/isolation override is
+exposed to scripts. See [Dynamic workflows](../guides/workflows.md) for the
+`code` interface, budgets, and migration from older scripts.
+
 ## `build()` validation
 
 `build()` checks the whole composition and reports **every** problem in one

@@ -1,8 +1,9 @@
-import inspect
 from pathlib import Path
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from marim_harness import BuilderError, HarnessBuilder
@@ -16,14 +17,46 @@ def _tool_names(harness) -> set[str]:
     return set(harness.agent._function_toolset.tools.keys())
 
 
-def _instruction_closure_names(harness) -> set[str]:
-    # See test_config_seams.test_global_instructions_gate for how this
-    # reaches into pydantic-ai's Agent._instructions (no public accessor).
-    return {
-        fn.__name__
-        for registered in harness.agent._instructions  # noqa: SLF001
-        if callable(fn := getattr(registered, "instruction", registered))
-    }
+def _instruction_text(harness) -> str:
+    """Capture exactly what the public model request receives, including async sources."""
+    captured = []
+
+    def observe(messages, info):
+        captured.append(info.instructions)
+        return ModelResponse(parts=[TextPart("done")])
+
+    with harness.agent.override(model=FunctionModel(observe)):
+        harness.agent.run_sync("Inspect instructions", deps=harness.deps)
+    assert len(captured) == 1
+    assert captured[0], "The instruction check must observe an actual nonempty prompt"
+    return captured[0]
+
+
+@pytest.fixture
+def instruction_sources(monkeypatch):
+    """Give every gated reader distinct output and track whether it was reached."""
+    import marim_harness.runtime.instructions as instr
+
+    reads = set()
+
+    def reader(name, result):
+        def read(*args, **kwargs):
+            reads.add(name)
+            return result
+
+        return read
+
+    monkeypatch.setattr(instr, "load_global_instructions", reader("global", "GLOBAL-MARKER"))
+    monkeypatch.setattr(instr, "load_project_instructions", reader("project", "PROJECT-MARKER"))
+    monkeypatch.setattr(
+        instr, "plugin_instruction_texts", reader("plugins", [("fixture", "PLUGIN-MARKER")])
+    )
+    monkeypatch.setattr(instr, "discover_agents", reader("agents", []))
+    monkeypatch.setattr(instr, "agents_index_text", lambda _: "AGENT-MARKER")
+    monkeypatch.setattr(instr, "discover_skills", reader("skills", []))
+    monkeypatch.setattr(instr, "skills_index_text", lambda _: "SKILL-MARKER")
+    monkeypatch.setattr(instr, "load_index", reader("memory", "MEMORY-MARKER"))
+    return reads
 
 
 def test_deps_is_a_top_level_export():
@@ -223,39 +256,24 @@ def test_with_lsp_disabled_folds_tools_off_even_when_requested(tmp_path: Path):
 # grants.
 
 
-def test_bare_build_excludes_group_gated_instruction_closures(tmp_path: Path):
+def test_bare_build_never_reads_disabled_instruction_sources(tmp_path: Path, instruction_sources):
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).build()
-    names = _instruction_closure_names(h)
-    # Gated on tool groups the bare build doesn't load (spawn/skills/memory).
-    assert "_agent_index" not in names
-    assert "_skill_index" not in names
-    assert "_memory_indexes" not in names
-    # Gated on global_instructions (bare build never reaches into the
-    # embedding user's ~/.config/marim).
-    assert "_global_instructions" not in names
-    assert "_plugin_instructions" not in names
-    # Gated on project_instructions (a bare build never lets the workspace's
-    # own AGENTS.md into the system prompt — see with_instructions(project=)).
-    assert "_project_instructions" not in names
-    # Ungated closures still register.
-    assert "_mcp_index" in names
-    assert "_memory_policy" in names
+    text = _instruction_text(h)
+    assert instruction_sources == set()
+    assert "-MARKER" not in text
+    assert "You are a coding agent" in text
+    assert "Do not save proactively" in text  # the ungated embedding policy still renders
 
 
-def test_with_defaults_includes_group_gated_instruction_closures(tmp_path: Path):
+def test_with_defaults_includes_group_gated_instructions(tmp_path: Path, instruction_sources):
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).with_defaults().build()
-    names = _instruction_closure_names(h)
-    assert {
-        "_agent_index",
-        "_skill_index",
-        "_memory_indexes",
-        "_global_instructions",
-        "_plugin_instructions",
-        "_project_instructions",
-    } <= names
+    text = _instruction_text(h)
+    assert instruction_sources == {"global", "project", "plugins", "agents", "skills", "memory"}
+    for marker in ("GLOBAL", "PROJECT", "PLUGIN", "AGENT", "SKILL", "MEMORY"):
+        assert f"{marker}-MARKER" in text
 
 
-def test_with_instructions_project_opts_in_and_is_sticky(tmp_path: Path):
+def test_with_instructions_project_opts_in_and_is_sticky(tmp_path: Path, instruction_sources):
     h = (
         HarnessBuilder(workspace=tmp_path, model=TestModel())
         .with_instructions(project=True)
@@ -263,28 +281,45 @@ def test_with_instructions_project_opts_in_and_is_sticky(tmp_path: Path):
         .with_instructions(extra="be brief")
         .build()
     )
-    assert "_project_instructions" in _instruction_closure_names(h)
+    text = _instruction_text(h)
+    assert instruction_sources == {"project"}
+    assert "PROJECT-MARKER" in text
+    assert "be brief" in text
 
 
-def test_with_defaults_then_project_false_drops_project_instructions(tmp_path: Path):
+def test_with_defaults_then_project_false_drops_project_instructions(
+    tmp_path: Path, instruction_sources
+):
     h = (
         HarnessBuilder(workspace=tmp_path, model=TestModel())
         .with_defaults()
         .with_instructions(project=False)
         .build()
     )
-    assert "_project_instructions" not in _instruction_closure_names(h)
+    text = _instruction_text(h)
+    assert "project" not in instruction_sources
+    assert "PROJECT-MARKER" not in text
+    assert "GLOBAL-MARKER" in text  # other opted-in sources still reach the model
 
 
-def test_with_files_write_off_removes_write_tools(tmp_path: Path):
+def test_with_files_write_off_removes_write_tools(tmp_path: Path, monkeypatch):
+    import marim_harness.runtime.instructions as instr
+
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).with_files_write(False).build()
     names = _tool_names(h)
     assert "write_file" not in names
     assert "edit_file" not in names
     assert {"read_file", "glob", "tree", "grep"} <= names
-    # The scratchpad closure advertises an approval bypass for write/edit;
-    # with the tools gone it must not register either.
-    assert "_scratchpad" not in _instruction_closure_names(h)
+
+    def forbidden_scratchpad(ctx):
+        pytest.fail("disabled write tools must not evaluate the scratchpad instruction source")
+
+    # Output limits may still resolve the shared scratchpad getter for result
+    # storage. This gate concerns only the model's write-tool instructions.
+    monkeypatch.setattr(instr, "_scratchpad_block", forbidden_scratchpad)
+    text = _instruction_text(h)
+    assert "Scratchpad directory" not in text
+    assert "write_file/edit_file writes there" not in text
 
 
 def test_with_files_write_off_rejects_subagent_write_grant(tmp_path: Path):
@@ -335,24 +370,10 @@ def test_with_usage_limits_rejects_non_positive(tmp_path: Path, kwargs):
 
 
 def test_bare_build_instructions_never_mention_ungranted_tools(tmp_path: Path):
-    """Behavioral (not just identity) check: evaluate every registered
-    synchronous instruction closure on a bare build and confirm none of them
-    mention spawn_agent/activate_skill — the tools _agent_index/_skill_index
-    would have advertised had they registered. (The async _tool_catalog
-    closure is skipped: it needs a live mcp_manager RunContext dance that's
-    impractical to fake here, and it never mentions these tool names anyway
-    — it just reports search knobs.)"""
+    """Inspect the complete model prompt, including asynchronous instruction sources."""
     h = HarnessBuilder(workspace=tmp_path, model=TestModel()).build()
-
-    class _Ctx:
-        deps = h.deps
-
-    rendered = []
-    for fn in h.agent._instructions:  # noqa: SLF001
-        if not callable(fn) or inspect.iscoroutinefunction(fn):
-            continue
-        rendered.append(fn(_Ctx()) or "")
-    text = "\n".join(rendered)
+    text = _instruction_text(h)
+    assert "You are a coding agent" in text
     assert "spawn_agent" not in text
     assert "activate_skill" not in text
 

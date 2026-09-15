@@ -70,6 +70,13 @@ def test_factory_other_languages_unchanged(monkeypatch, tmp_path):
         TypeScriptLanguageServer,
     )
 
+    # This checks factory routing, not server installation. Fresh Python matrix
+    # environments must not trigger multilspy's npm downloads during construction.
+    monkeypatch.setattr(
+        TypeScriptLanguageServer,
+        "setup_runtime_dependencies",
+        lambda *args: "/x/typescript-language-server --stdio",
+    )
     mgr = LspManager(tmp_path, registry=_bundled_reg())
     server = mgr._default_factory("typescript", tmp_path)
     assert isinstance(server, TypeScriptLanguageServer)

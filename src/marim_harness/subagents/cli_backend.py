@@ -454,9 +454,19 @@ class ClaudeCliRunner:
             # next_turn_object's silence timeout (already interrupted the turn).
             raise CliRunError(str(exc)) from exc
         finally:
-            # One process per spawn: whatever happened (a sink raised, the
-            # spawn was cancelled, the CLI died), nothing outlives the spawn.
-            await process.aclose()
+            try:
+                # Growth checkpoints run before the next stream object. A CLI
+                # interrupted after its last assistant message may never send
+                # that next object, so preserve the current partial transcript
+                # and resume id even when there will be no successful result.
+                if checkpoint is not None:
+                    checkpoint(translator.transcript(), state.session_id)
+            except Exception:
+                logger.warning("Claude spawn final checkpoint failed: %s", stream_id, exc_info=True)
+            finally:
+                # One process per spawn: even a failed checkpoint must not
+                # leave a process running after the spawn relinquishes it.
+                await process.aclose()
         return self._finalize(state, translator, demux)
 
     async def _settle_background(

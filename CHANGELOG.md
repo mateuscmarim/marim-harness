@@ -8,6 +8,23 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Dynamic workflows use Pydantic AI Harness.** Scripts now use
+  `run_workflow(code=...)` and named worker functions such as
+  `explore(task=...)`. Host bindings supply fixed schemas and isolation;
+  injected `args`, `log`, and per-call worker/timeout overrides are removed.
+  The wall deadline defaults to 1800 seconds with a separate 30-second sandbox
+  compute cap. Deep research uses typed research and verification bindings.
+  Historical workflow previews remain readable; pending legacy calls receive
+  migration guidance. The Monty upgrade and engine replacement ship together.
+
+### Fixed
+
+- **Interrupted Claude workers retain their latest partial response.** Final
+  cleanup checkpoints the transcript and resume ID, including when no next
+  stream event arrives; checkpoint failures still allow process cleanup.
+
 ## [0.10.0] - 2026-09-15
 
 ### Changed

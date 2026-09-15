@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, ModelRetry
 from pydantic_ai.models.test import TestModel
 
 from marim_harness.runtime.deps import Deps, WorkspaceConfig
@@ -18,7 +18,24 @@ def _build_agent() -> Agent:
 
 
 def _tool_names(agent: Agent) -> set[str]:
-    return set(agent._function_toolset.tools.keys())
+    """Observe the public model schema, including dynamically registered toolsets."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    names = set()
+
+    def observe(messages, info):
+        names.update(tool.name for tool in info.function_tools)
+        return ModelResponse(parts=[TextPart("done")])
+
+    async def advise(messages):
+        return "unused"
+
+    deps = _make_deps(Path.cwd())
+    deps.services.advise = advise  # expose the optional advisor for inventory checks
+    with agent.override(model=FunctionModel(observe)):
+        agent.run_sync("List available tools", deps=deps)
+    return names
 
 
 def test_register_excludes_lsp_tools_now_toolset_only():
@@ -1144,14 +1161,40 @@ def test_workflow_group_off_removes_it():
     assert "run_workflow" not in _tool_names(agent)
 
 
-def test_run_workflow_requires_approval():
-    # Pins the requires_approval=True flag on the registration itself (in
-    # provider.py), independent of the plan-mode denial test below, which
-    # exercises resolve_approvals directly and would stay green even if the
-    # registration dropped requires_approval entirely.
-    agent = _build_agent()
-    tool = agent._function_toolset.tools["run_workflow"]
-    assert tool.requires_approval is True
+@pytest.mark.anyio
+async def test_run_workflow_requires_approval(tmp_path):
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def request(messages, info):
+        if any(isinstance(part, ToolReturnPart) for part in messages[-1].parts):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart("run_workflow", {"code": "1 + 1"}, "wf")])
+
+    agent = Agent(FunctionModel(request), output_type=[str, DeferredToolRequests], deps_type=Deps)
+    BuiltinToolProvider().register(agent)
+    deps = _make_deps(tmp_path)
+    pending = await agent.run("run", deps=deps)
+    assert isinstance(pending.output, DeferredToolRequests)
+    assert [call.tool_name for call in pending.output.approvals] == ["run_workflow"]
+    assert not any(
+        isinstance(part, ToolReturnPart)
+        for message in pending.all_messages()
+        for part in message.parts
+    )
+    completed = await agent.run(
+        deps=deps,
+        message_history=pending.all_messages(),
+        deferred_tool_results=DeferredToolResults(approvals={"wf": True}),
+    )
+    returns = [
+        part
+        for message in completed.all_messages()
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert len(returns) == 1
+    assert "unavailable" in str(returns[0].content)
 
 
 def test_run_workflow_is_not_grantable_to_subagents():

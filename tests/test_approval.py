@@ -253,6 +253,13 @@ def test_format_detail_run_workflow_without_args_omits_args_line():
     assert "args:" not in detail.plain
 
 
+def test_format_detail_run_workflow_shows_code_with_real_newlines():
+    code = 'report = await explore(task="Review the diff")\nreport'
+    detail = format_detail("run_workflow", {"code": code})
+    assert detail.plain == code + "\n"
+    assert ADDED_STYLE in _styled_text(detail, "report")
+
+
 def test_format_detail_fallback_formats_args():
     detail = format_detail("some_tool", {"a": 1, "b": "two"})
     assert "a: 1" in detail.plain
@@ -334,6 +341,12 @@ def test_fallback_arg_dump_neutralizes_escapes():
             {"script": "log('hi')\x1b[2K\x1b[1Gspoof"},
             "log('hi')",
             id="append_workflow_script_script",
+        ),
+        pytest.param(
+            "run_workflow",
+            {"code": "print('hi')\x1b[2K\x1b[1Gspoof"},
+            "print('hi')",
+            id="append_workflow_script_code",
         ),
         pytest.param(
             "write_file",

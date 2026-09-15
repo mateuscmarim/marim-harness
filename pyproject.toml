@@ -56,10 +56,8 @@ tui = ["textual>=0.80", "flatlatex>=0.15", "websockets>=13"]
 # (`marim serve qr`) — pure Python, no runtime deps, and used only as an
 # encoder: the terminal rendering is ours, in interfaces/qr.py.
 serve = ["starlette>=0.40", "uvicorn>=0.30", "segno>=1.6"]
-# Dynamic workflows: model-authored orchestration scripts sandboxed in
-# pydantic-monty. Bare installs leave the run_workflow tool returning an
-# install hint (services.run_workflow stays None).
-workflows = ["pydantic-monty>=0.0.18,<0.1", "jsonschema>=4"]
+# Upstream sandboxed workflows. Bare installs keep an actionable tool hint.
+workflows = ["pydantic-ai-harness[dynamic-workflow]>=0.31.0,<0.32", "pydantic-monty>=0.0.23,<0.1"]
 # The preferred Python language server (ships basedpyright-langserver, which
 # the LSP manager auto-selects over multilspy's jedi fallback when on PATH).
 # Optional because it's a per-machine tool choice, not a library dependency.
@@ -101,10 +99,9 @@ dev = [
     # The QR-rendering tests need segno even though it lives in the optional
     # `serve` extra, so plain `uv sync` keeps developing/CI working.
     "segno>=1.6",
-    # Dynamic workflows: model-authored orchestration scripts sandboxed in
-    # pydantic-monty. Bare installs leave the run_workflow tool returning an
-    # install hint (services.run_workflow stays None).
-    "pydantic-monty>=0.0.18,<0.1",
+    # Exercise the optional upstream integration in normal development/CI.
+    "pydantic-ai-harness[dynamic-workflow]>=0.31.0,<0.32",
+    "pydantic-monty>=0.0.23,<0.1",
     "jsonschema>=4",
 ]
 

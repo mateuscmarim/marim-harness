@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..hooks.runner import HookRunner
     from ..lsp.manager import LspManager
     from ..notifications import Notifier
+    from ..workflows.integration import WorkflowIntegration
 
 from ..ask_user import Choice, Question
 from ..jobs import JobRegistry
@@ -31,7 +32,7 @@ ApprovalFn = Callable[[object], Awaitable[DeferredToolApprovalResult | bool]]
 # the spawned child runs at caller_depth + 1. It must come from the caller's
 # deps, not the runner's own.
 # ``output_schema`` sits between ``tier`` and ``thinking`` on
-# ``SubagentRunner.run`` itself (workflows-only — the run_workflow engine
+# ``SubagentRunner.run`` itself (workflows-only — the workflow bridge
 # calls ``run`` directly, bypassing this seam, so spawn_agent's dispatch
 # always passes ``None`` here). The alias keeps that slot explicit rather
 # than dropping it: a caller that instead tacked ``thinking`` on as a bare
@@ -103,12 +104,6 @@ BackgroundAgentRunner = Callable[
 # non-None job_id on success (message is a user-renderable confirmation), or
 # None with a user-renderable refusal reason otherwise.
 ResumeSubagent = Callable[[str], Awaitable[tuple[str | None, str]]]
-# (script, args, tool_call_id, requested timeout_secs | None) -> tool result.
-# None when workflows are disabled (MARIM_WORKFLOWS=0) or pydantic-monty is
-# not installed — the run_workflow tool returns an install hint in that
-# case. Wired by the Harness (see _build_workflow_engine).
-WorkflowRunner = Callable[[str, object, str, float | None], Awaitable[str]]
-
 # (messages) -> advice text. The advisor tool forwards the in-flight run
 # history (ctx.messages) to the configured advisor model; failures come back
 # as text so the turn never fails on advisor failure. None ⇒ no advisor is
@@ -162,9 +157,8 @@ class HarnessServices:
     # Lets the sub-agents screen resume an interrupted spawn from its persisted
     # transcript as a background job (spec 2026-07-03-subagent-resume, §4).
     resume_subagent: "ResumeSubagent | None" = None
-    # Lets the run_workflow tool execute a model-authored orchestration
-    # script in the Monty sandbox. None ⇒ workflows unavailable.
-    run_workflow: WorkflowRunner | None = None
+    # Upstream integration; enabled is read per call, budgets belong to toolsets.
+    workflows: "WorkflowIntegration | None" = None
     # Returns the active session's id live (it changes on session switch), or None
     # when no session is active. Lets a tool stamp session-scoped artifacts (e.g.
     # plan files) without reaching into the session controller. None in headless /
@@ -178,7 +172,7 @@ class HarnessServices:
     # auto-approves writes into it; an instructions closure advertises it.
     get_scratchpad: Callable[[], Path | None] | None = None
     # Lets the advisor tool consult the configured advisor model. Live on/off
-    # seam (like run_workflow): Harness.set_advisor_model flips it at runtime,
+    # seam: Harness.set_advisor_model flips it at runtime,
     # and both the tool's prepare hook and the steering-instructions closure
     # read it per request, so tool schema and prompt toggle together.
     advise: AdviseFn | None = None
@@ -261,29 +255,26 @@ class UIHooks:
     on_mode_change: "Callable[[], None] | None" = None
     on_present_plan: "OnPresentPlanFn | None" = None
     # (stream_id, type, task, parent_tool_call_id) -> None. Fired by the
-    # workflow engine BEFORE each child spawn so the TUI can claim a card for
+    # workflow bridge BEFORE each child spawn so the TUI can claim a card for
     # a stream id that has no spawn_agent tool call to intercept (cards are
     # otherwise created only when a literal spawn_agent call renders).
     on_workflow_spawn: "Callable[[str, str, str, str], Awaitable[None]] | None" = None
-    # (tool_call_id, message) -> None. A workflow script's log() line, keyed
-    # by the run's tool_call_id so the TUI can route it to the run's card.
-    # None when headless (the engine falls back to DEBUG logging).
+    # (tool_call_id, message) -> None. Historical workflow log() records route
+    # to the run's card. Upstream scripts capture print output in the result.
     on_workflow_log: "Callable[[str, str], None] | None" = None
-    # (stream_id, report) -> None. Fired by the workflow engine AFTER each
-    # child agent() call resolves, so the card claimed by on_workflow_spawn
+    # (stream_id, report) -> None. Fired by the workflow bridge AFTER each
+    # child call settles, so the card claimed by on_workflow_spawn
     # can leave "pending" -- it has no literal tool-call/tool-return pair for
     # on_tool_result to intercept the way a real spawn_agent call does.
     on_workflow_spawn_done: "Callable[[str, str], None] | None" = None
-    # (tool_call_id, title) -> None. Fired by the workflow engine once the
-    # script has PARSED (a parse failure creates no run worth tracking), so
-    # the TUI can claim a first-class card for the run itself in the
-    # sub-agents screen — children then nest under it and log() lines have a
-    # pane to land in.
+    # (tool_call_id, title) -> None. Fired before upstream validates/executes
+    # the script, so even static errors have a completed workflow card.
+    # Children nest under that card in the sub-agents screen.
     on_workflow_start: "Callable[[str, str], None] | None" = None
     # (tool_call_id, outcome, failed) -> None. Fired exactly once at EVERY
     # exit of a run announced by on_workflow_start — success, script raise,
     # timeout, and cancellation — so the claimed card always settles. The
-    # failed flag is explicit because the engine knows which exit it took;
+    # failed flag is explicit because the integration knows which exit it took;
     # the UI never re-sniffs result text.
     on_workflow_done: "Callable[[str, str, bool], None] | None" = None
     # () -> None. An external CLI backend (claude-cli) ran a turn of its own

@@ -62,8 +62,8 @@ Curated index of every Marim documentation file, mapped to purpose, keywords, an
 **When to ask:** "sub-agents", "how do I spawn?", "model tiers", "background jobs"
 
 #### `docs/guides/workflows.md`
-**Purpose:** Dynamic workflows: sandboxed orchestration scripts, host functions, budgets, safety
-**Topics:** workflows, run_workflow, monty, sandbox, agent(), orchestration
+**Purpose:** Dynamic workflows: upstream sandbox, named worker catalog, budgets, migration
+**Topics:** workflows, run_workflow, pydantic-ai-harness, monty, sandbox, WorkflowBinding, orchestration
 **When to ask:** "dynamic workflows", "run_workflow", "orchestration scripts"
 
 #### `docs/guides/hooks.md`

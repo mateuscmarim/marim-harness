@@ -870,10 +870,10 @@ class StreamRenderer:
 
     def claim_workflow_card(self, tool_call_id: str, title: str) -> None:
         """A first-class card for the workflow RUN itself, claimed when the
-        engine announces a parsed script (on_workflow_start). It registers in
+        integration announces a script (on_workflow_start). It registers in
         the ordered ``subagents`` list — so the sub-agents screen shows the
         run and ``tree_order`` nests its children under it (their parent_id
-        is this tool_call_id) — and gets a pane so log() lines have a
+        is this tool_call_id) — and gets a pane so workflow notices have a
         transcript to land in. It is NOT mounted into the main transcript:
         the run_workflow tool widget already represents the run there. An
         unmounted card is safe — its header/activity Statics exist from
@@ -886,9 +886,11 @@ class StreamRenderer:
         self.app.subagents.mark_dirty()
 
     def append_workflow_log(self, tool_call_id: str, message: str) -> None:
-        """Persist a script's log() line into the run card's pane (the toast
-        the app also raises is transient). Unknown ids are dropped — the same
-        tolerance every optional UI callback has."""
+        """Render legacy workflow log events from saved/remote streams.
+
+        New scripts use upstream captured print output. Unknown ids are dropped,
+        matching the tolerance of other optional UI callbacks.
+        """
         widget = self.workflow_cards.get(tool_call_id)
         if widget is None:
             return
@@ -897,10 +899,10 @@ class StreamRenderer:
             pane.append_log(message)
 
     def finish_workflow_card(self, tool_call_id: str, outcome: str, failed: bool) -> None:
-        """Settle the run's card. The engine fires on_workflow_done on EVERY
+        """Settle the run's card. The integration fires on_workflow_done on EVERY
         exit path (success, raise, timeout, cancel) with an explicit failed
         flag, so — unlike finish_workflow_child — there is no report-text
-        sniffing here: the engine knows which exit it took."""
+        sniffing here: the integration knows which exit it took."""
         widget = self.workflow_cards.get(tool_call_id)
         if widget is None:
             return

@@ -422,7 +422,7 @@ without hard-coding install paths. See `docs/plugins.md`.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MARIM_WORKFLOWS` | `1` (on) | Boolean. Dynamic workflows (the `run_workflow` tool; requires the `[workflows]` extra). |
-| `MARIM_WORKFLOW_TIMEOUT` | `1800` | Positive int, seconds. Ceiling on the wall-clock budget one `run_workflow` call may request via its `timeout_secs` parameter. |
+| `MARIM_WORKFLOW_TIMEOUT` | `1800` | Positive int, seconds. Wall-clock deadline per `run_workflow(code)` call, including child waits. Separate from the 30-second sandbox compute cap; no per-call timeout override. |
 
 With `MARIM_WORKFLOWS=0` the engine is never built, even when pydantic-monty
 is installed.

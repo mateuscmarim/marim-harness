@@ -435,7 +435,7 @@ def spill_target(
     fallback path for ``fs.write_file`` when no scratchpad is available, or
     ``None`` when the scratchpad is used (caller writes there directly).
     Pure — no filesystem access; shared by the sub-agent runner and the
-    workflow engine so the two spill paths cannot drift."""
+    workflow integration so the two spill paths cannot drift."""
     if scratchpad is not None:
         return str(scratchpad / subdir / filename), None
     rel = f".marim/{subdir}/{filename}"

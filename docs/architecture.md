@@ -162,9 +162,11 @@ cycles.
   (`run_driver.py`), context masking, model tiers (`tiers.py`), and the
   `backend: claude-cli` orchestration (`cli_spawn.py`, `cli_backend.py`)
   that drives one bidirectional `claude` process per spawn.
-- **`workflows/`** — the gated `run_workflow` tool executes model-authored
-  Python in a pydantic-monty sandbox; never cancel the Monty VM task — aborts
-  flow through host functions (see `engine.py`'s module docstring).
+- **`workflows/`** — Pydantic AI Harness owns dynamic workflow validation,
+  sandbox execution, and concurrent dispatch. Marim wraps its public toolset
+  for approval, availability, wall deadlines, output offload, and lifecycle
+  events. Fixed named catalog bindings dispatch through `SubagentRunner.run`,
+  preserving permissions, tiers, CLI backends, and session accounting.
 - **`interfaces/tui/`** — Textual app, widgets, streaming render, inline
   interaction panels (mounted above the status bar, not modals, so the
   transcript stays scrollable). **`interfaces/cli/`** — router + per-command

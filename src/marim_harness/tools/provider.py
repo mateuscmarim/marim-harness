@@ -159,7 +159,7 @@ def _register_action_tools(agent: HarnessAgent, g: ToolGroups) -> None:
     if g.spawn:
         agent.tool(spawn_tools.spawn_agent)
     if g.workflow:
-        agent.tool(requires_approval=True)(workflow_tools.run_workflow)
+        agent.toolset(per_run_step=False)(workflow_tools.workflow_toolset)
     if g.files_write:
         agent.tool(requires_approval=True)(edit_tools.write_file)
         agent.tool(requires_approval=True)(edit_tools.edit_file)
