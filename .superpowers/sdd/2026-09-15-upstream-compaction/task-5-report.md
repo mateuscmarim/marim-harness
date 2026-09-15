@@ -32,3 +32,17 @@ Cleanup commit: `0ea2cceb` (`refactor: remove legacy compaction engines`).
   `mask_stale_observations`, `_plan_tail_start`, `compact_history`, or
   `make_summarizer`. The `mask_min_chars` name remains only in the one-release
   environment deprecation reader.
+
+## Full-suite follow-up
+
+Full integration testing exposed one TUI rewind test that stored plain strings as
+model history. The upstream estimator correctly requires `ModelMessage` objects, so
+the fixture now uses a `ModelRequest`/`ModelResponse` pair and retains the same
+busy-state assertion. No permissive production fallback was added.
+
+- `uv run pytest --no-cov -n 0 tests/test_app.py::test_rewind_command_refuses_while_busy`
+  — 1 passed.
+- `uv run pytest --no-cov -n 0 tests/test_app.py -k rewind`
+  — 5 passed, 210 deselected.
+- `uv run ruff check tests/test_app.py` — passed.
+- `uv run ruff format --check tests/test_app.py` — already formatted.

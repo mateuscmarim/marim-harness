@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
@@ -4642,11 +4643,15 @@ async def test_rewind_command_refuses_while_busy(tmp_path: Path):
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.harness.checkpoints.snapshot("t1")
-        app.harness.session.set_history(["u1", "a1"])
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="u1")]),
+            ModelResponse(parts=[TextPart(content="a1")]),
+        ]
+        app.harness.session.set_history(history)
         app.status.set_busy(True)
         await app.rewind_to_checkpoint(0)
         # Busy → refused, history untouched.
-        assert app.harness.session.history == ["u1", "a1"]
+        assert app.harness.session.history == history
         app.status.set_busy(False)
 
 
