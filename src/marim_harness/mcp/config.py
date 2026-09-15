@@ -36,7 +36,6 @@ from ..atomic_io import atomic_write_text
 from ..config import config_dir
 from ..runtime.permissions import Mode
 from ..tools.impl.coerce import coerce_by_schema
-from ..tools.impl.offload import _INLINE_CHAR_LIMIT, offload_if_large
 from ..trust import project_trusted
 
 # fastmcp (transports) and pydantic_ai (MCPToolset) are imported lazily, inside
@@ -50,65 +49,6 @@ if TYPE_CHECKING:
     from fastmcp.client.transports import SSETransport, StdioTransport, StreamableHttpTransport
 
 logger = logging.getLogger(__name__)
-
-
-def _bound_tool_result(
-    result, *, label: str, name: str, args: dict | None, offload_dir: Path | None
-):
-    """Bound an MCP tool result so a huge server response can't flood context.
-
-    MCP results are an open union (``str | BinaryContent | dict | list | …``).
-    Unlike the builtin tools — which build their output under our own byte budget
-    — this payload is produced by a third-party server we don't control, so it's
-    the one tool surface with no inherent size bound. We clamp the two real flood
-    vectors and leave everything else untouched:
-
-      * a plain ``str`` (the common case — a text content block) is routed through
-        the shared :func:`offload_if_large`, so a large body is written to a file
-        and replaced by a handle + preview the model can page;
-      * structured content (``dict``) or a ``list`` of parts is sized by its JSON
-        serialization and offloaded *whole* when it exceeds the inline limit. Big
-        structured blobs are exactly the ones we don't want inline, and the model
-        still gets a file handle to read.
-
-    A bare ``BinaryContent`` (image/audio) is passed through verbatim — it isn't a
-    text flood and the model needs the bytes. (A *mixed* list of binary + large
-    text is rare; it falls into the JSON branch and offloads as text, so the
-    binary part is lost — acceptable for that corner.) Anything we can't cheaply
-    serialize is left as-is rather than risk corrupting it.
-
-    The offload ``key`` includes ``args`` so two large results from the same tool
-    with different arguments land in different files — keying on the tool name
-    alone would clobber one handle with the other (the builtins key on inputs for
-    the same reason: bash→command, grep→pattern)."""
-    # Distinct file per (tool, args) so concurrent/sequential large results don't
-    # clobber each other's offload handle.
-    try:
-        arg_key = json.dumps(args or {}, sort_keys=True, default=str)
-    except (TypeError, ValueError):
-        arg_key = repr(args)
-    key = f"{label}/{name}\0{arg_key}"
-    if isinstance(result, str):
-        return offload_if_large(result, kind="mcp", key=key, offload_dir=offload_dir)
-    # Don't touch binary payloads — they aren't a text flood and must reach the
-    # model intact. Import lazily so this module stays cheap to import.
-    from pydantic_ai.messages import BinaryContent
-
-    if isinstance(result, BinaryContent):
-        return result
-    if isinstance(result, (dict, list)):
-        try:
-            serialized = json.dumps(result, default=str)
-        except (TypeError, ValueError):
-            return result  # can't measure safely — leave the structure intact
-        if len(serialized) > _INLINE_CHAR_LIMIT:
-            return offload_if_large(
-                serialized,
-                kind="mcp",
-                key=key,
-                offload_dir=offload_dir,
-            )
-    return result
 
 
 def mcp_stderr_log_path() -> Path:
@@ -341,7 +281,7 @@ class _SchemaCoercer:
         # coerce_by_schema is typed to return `object` (it recurses into scalars
         # too), but fed a dict it always returns a dict — narrow explicitly so the
         # reassignment below doesn't widen `args`'s type for the callers downstream
-        # (_bound_tool_result / _McpApprovalCall both expect dict | None).
+        # (_McpApprovalCall expects dict | None).
         coerced = coerce_by_schema(args, schema)
         return coerced if isinstance(coerced, dict) else args
 
@@ -374,20 +314,8 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
     async def hook(ctx, call_tool, name, args):
         deps = ctx.deps
         display = f"{label}_{name}"
-        # Resolve the offload directory: prefer the session scratchpad (session-
-        # scoped, auto-cleaned) over the workspace root's legacy .marim/output/.
         ws = getattr(deps, "workspace", None)
-        root = getattr(ws, "root", None) if ws is not None else None
         mode = getattr(ws, "mode", None) if ws is not None else None
-        getter = getattr(getattr(deps, "services", None), "get_scratchpad", None)
-        scratchpad = getter() if getter is not None else None
-        from ..tools.impl.offload import LEGACY_OFFLOAD_DIR
-
-        offld = (
-            scratchpad
-            if scratchpad is not None
-            else (root / LEGACY_OFFLOAD_DIR if root is not None else None)
-        )
         if mode is Mode.plan:
             return f"Denied: {display} is blocked in read-only plan mode."
         # Decode any stringified structured arg before the server (and the approval
@@ -395,8 +323,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
         # doesn't burn a turn on the server's rejection.
         args = await coercer.coerce_args(name, args)
         if mode is Mode.auto or trusted:
-            result = await call_tool(name, args)
-            return _bound_tool_result(result, label=label, name=name, args=args, offload_dir=offld)
+            return await call_tool(name, args)
         # ask mode against an untrusted server: prompt the user.
         ui = getattr(deps, "ui", None)
         approve = getattr(ui, "request_approval", None) if ui is not None else None
@@ -404,8 +331,7 @@ def make_approval_hook(label: str, trusted: bool, *, schema_holder: dict | None 
             return f"Denied: {display} needs approval but none is available here."
         decision = await approve(_McpApprovalCall(display, args or {}))
         if decision is True:
-            result = await call_tool(name, args)
-            return _bound_tool_result(result, label=label, name=name, args=args, offload_dir=offld)
+            return await call_tool(name, args)
         return f"Denied: the user rejected {display}."
 
     # Function attribute, not a wrapper class: the hook must stay a plain

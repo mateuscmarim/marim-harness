@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, StructuredDict
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
@@ -38,6 +38,7 @@ from ..config.model import SubagentTiers
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error
+from ..runtime.output_limits import OutputStorage
 from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..thinking import resolve_thinking, settings_for
@@ -130,6 +131,7 @@ class _SpawnPrep:
     # ⇒ plan took the whole grant) — the pair disambiguates the spawner note
     # without re-reading the live mode, which may have flipped since spawn.
     mcp_ask_withheld: tuple[str, ...] = ()
+    output_storage: OutputStorage | None = None
 
 
 class SubagentRunner:
@@ -379,6 +381,7 @@ class SubagentRunner:
         depth: int = 0,
         mask_trigger: int | None = None,
         checkpoint: Callable[[list], None] | None = None,
+        output_storage: OutputStorage | None = None,
         output_schema: dict | None = None,
         tier: str | None = None,
         thinking: str | None = None,
@@ -463,7 +466,7 @@ class SubagentRunner:
         # harness would cycle.
         from ..runtime.harness import _drop_contentless_responses, _drop_nameless_tool_calls
 
-        capabilities: list[ProcessHistory[Deps]] = []
+        capabilities: list[AbstractCapability[Deps]] = []
         if checkpoint is not None:
             # Sidecar checkpoint: ProcessHistory runs before EVERY model request,
             # which is exactly the per-model-response boundary the resume design
@@ -493,8 +496,9 @@ class SubagentRunner:
         if masker is not None:
             capabilities.append(ProcessHistory(masker.mask))
 
-        get_scratchpad = self.deps.services.get_scratchpad
-        scratch = get_scratchpad() if get_scratchpad is not None else None
+        output_storage = output_storage or OutputStorage.capture(self.deps)
+        capabilities.append(output_storage.capability())
+        scratch = output_storage.scratchpad
         # Computed once and reused for both the tool registration and the
         # prompt line below: register_subagent strips write_file/edit_file
         # from read-only agent types and from every spawn outside auto mode
@@ -550,7 +554,13 @@ class SubagentRunner:
             sub.tool(spawn_agent)
         return sub, None
 
-    def _cap_output(self, output: str, max_output_chars: int | None, ref: str) -> str:
+    def _cap_output(
+        self,
+        output: str,
+        max_output_chars: int | None,
+        ref: str,
+        output_storage: OutputStorage | None = None,
+    ) -> str:
         """Apply a spawner-set output cap to a sub-agent's report. Over budget,
         the full report is spilled to a workspace file and the main agent gets a
         within-budget head + pointer; otherwise the report passes through. The
@@ -558,10 +568,7 @@ class SubagentRunner:
         # Prefer the session scratchpad (session-scoped, auto-cleaned) over
         # the workspace-rooted `.marim/subagent-output/` fallback. The note's
         # path is absolute either way (see spill_target).
-        scratchpad = None
-        getter = self.deps.services.get_scratchpad
-        if getter is not None:
-            scratchpad = getter()
+        scratchpad = (output_storage or OutputStorage.capture(self.deps)).scratchpad
         spill_path, rel = spill_target(
             scratchpad, self.deps.workspace.root, "subagent-output", f"{ref}.md"
         )
@@ -581,6 +588,7 @@ class SubagentRunner:
         iso: SpawnWorktree | None,
         max_output_chars: int | None,
         persist_bg: bool,
+        output_storage: OutputStorage | None = None,
         timing: tuple[float, float, list[float]] | None = None,
     ) -> str:
         """The one success tail every spawn shares, regardless of backend or mode.
@@ -638,7 +646,7 @@ class SubagentRunner:
             spill_ref = f"bg-{self._bg_seq}"
         else:
             spill_ref = stream_id
-        capped = self._cap_output(run.output, max_output_chars, spill_ref)
+        capped = self._cap_output(run.output, max_output_chars, spill_ref, output_storage)
         iso_note = iso.close() if iso else ""
         return note + capped + iso_note
 
@@ -669,6 +677,7 @@ class SubagentRunner:
         max_output_chars: int | None,
         stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
+        output_storage: OutputStorage | None = None,
     ) -> str:
         """The one run+failure+finalize lifecycle every spawn shares — native or
         CLI, foreground or background, fresh or resumed. ``run_fn`` is the
@@ -692,6 +701,7 @@ class SubagentRunner:
         ``background`` selects both the failure disposition (re-raise vs contain)
         and, via ``persist_bg``, the finalize behaviors a detached spawn needs.
         ``timing`` is the native phase stats (``None`` for CLI, which keeps none)."""
+        output_storage = output_storage or OutputStorage.capture(self.deps)
         try:
             # Bound concurrent model runs (the part that hits the provider) so a
             # wide fan-out queues instead of slamming a rate-limited route at once.
@@ -729,6 +739,7 @@ class SubagentRunner:
             iso=iso,
             max_output_chars=max_output_chars,
             persist_bg=background,
+            output_storage=output_storage,
             timing=timing,
         )
 
@@ -910,6 +921,7 @@ class SubagentRunner:
         # resolved once here and reused for the model report and thinking report
         # below (and, on the CLI/non-defn paths, falls back to a discovery walk).
         spawn_defn = defn if defn is not None else self._resolve_agent(type)
+        output_storage = OutputStorage.capture(self.deps)
         resolved_model = (
             _resolve_spawn_model_id(
                 override_tier=tier,
@@ -974,6 +986,7 @@ class SubagentRunner:
             depth=depth,
             mask_trigger=mask_trigger,
             checkpoint=checkpoint,
+            output_storage=output_storage,
             output_schema=output_schema,
             tier=tier,
             thinking=thinking,
@@ -1043,6 +1056,7 @@ class SubagentRunner:
             meta=meta,
             mcp_withheld=mcp_withheld,
             mcp_ask_withheld=ask_withheld,
+            output_storage=output_storage,
         )
 
     async def _spawn_mcp_grant(
@@ -1228,6 +1242,7 @@ class SubagentRunner:
             max_output_chars=max_output_chars,
             stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
+            output_storage=prep.output_storage,
         )
 
     def _log_spawn_timing(

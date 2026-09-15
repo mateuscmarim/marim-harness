@@ -6,7 +6,7 @@ import signal
 from collections import deque
 from pathlib import Path
 
-from .offload import LEGACY_OFFLOAD_DIR, MAX_OUTPUT_CHARS, offload_if_large
+from .offload import MAX_OUTPUT_CHARS
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
@@ -201,7 +201,6 @@ async def run_bash(
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
     stdin_data: bytes | None = None,
-    offload_dir: Path | None = None,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
@@ -287,25 +286,7 @@ async def run_bash(
         if body and not body.endswith("\n"):
             body += "\n"
         body += f"(timed out after {timeout}s)"
-    # timeout shapes `body` too (the trailing "(timed out after {timeout}s)"
-    # marker), and stdin_data shapes it just as much — a command like `cat` echoes
-    # its stdin straight into the body. Fold every output-affecting parameter into
-    # the key so two otherwise-identical commands that differ only in timeout or
-    # stdin_data don't collapse onto the same sha-derived offload file (see fs.py's
-    # grep key for the same reasoning). ``!r`` (not the raw bytes) distinguishes
-    # None from b"" — both would otherwise render as the same empty segment.
-    key = f"{command}\0{timeout}\0{stdin_data!r}"
-    # Note: `root` is not folded in — it's not a shaping parameter, it's the
-    # offload *namespace*: offload_if_large writes under `workspace_root/.marim/
-    # output/`, so two different roots already land in physically different
-    # directories and can't collide regardless of what's in `key`.
-    return offload_if_large(
-        body,
-        kind="bash",
-        key=key,
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
-        capped=dropped > 0,
-    )
+    return body
 
 
 class BashProcess:
@@ -318,15 +299,9 @@ class BashProcess:
         self,
         proc: asyncio.subprocess.Process,
         max_output: int,
-        root: Path,
-        command: str,
-        offload_dir: Path | None = None,
     ) -> None:
         self._proc = proc
         self._max_output = max_output
-        self._root = root
-        self._command = command
-        self._offload_dir = offload_dir
         # Bound memory while the background command runs (see _BoundedOutput): a
         # detached flood must not grow the buffer without limit before wait() caps it.
         self._buffer = _BoundedOutput(MAX_OUTPUT_CHARS)
@@ -393,25 +368,15 @@ class BashProcess:
             # Present the cap as a truncated middle (head + marker + tail) rather than
             # a head-only clip, so the command's verdict at the very end survives.
             text = f"{head}{_TRUNC_MARKER.format(dropped=dropped)}{tail}"
-            capped = True
         else:
             text = head + tail
-            capped = False
-        body = f"exit {self._proc.returncode}\n{text}"
-        return offload_if_large(
-            body,
-            kind="bash",
-            key=self._command,
-            offload_dir=self._offload_dir or self._root / LEGACY_OFFLOAD_DIR,
-            capped=capped,
-        )
+        return f"exit {self._proc.returncode}\n{text}"
 
 
 async def start_bash(
     root: Path,
     command: str,
     max_output: int = _DEFAULT_MAX_OUTPUT,
-    offload_dir: Path | None = None,
 ) -> BashProcess:
     """Launch a shell command detached (no timeout) and return a BashProcess to
     stream, wait on, or kill. Runs in its own session so the whole tree can be
@@ -423,4 +388,4 @@ async def start_bash(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    return BashProcess(proc, max_output, root, command, offload_dir=offload_dir)
+    return BashProcess(proc, max_output)

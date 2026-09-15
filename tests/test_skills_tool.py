@@ -149,10 +149,8 @@ def test_read_file_reaches_global_skill_bundled_file(tmp_path: Path, monkeypatch
     assert "implementer instructions here" in captured["ret"]
 
 
-def test_activate_skill_offloads_large_body(tmp_path: Path):
-    """A giant SKILL.md body must be offloaded to a file (handle + preview), not
-    inlined whole — same context-flood guard read_file/grep/bash use. The skill
-    directory pointer stays visible so the agent can still navigate."""
+def test_activate_skill_returns_full_body_for_upstream_reduction(tmp_path: Path):
+    """Registration alone returns the complete body plus its navigation header."""
     body = "filler line of skill text\n" * 3000 + "UNIQUE_TAIL_MARKER_ACTIVATE"
     _make_skill(tmp_path / ".marim" / "skills", "huge", body=body)
     agent = _agent()
@@ -160,14 +158,13 @@ def test_activate_skill_offloads_large_body(tmp_path: Path):
     with agent.override(model=model):
         agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     ret = captured["ret"]
-    assert "saved to" in ret and "read_file" in ret
-    assert "UNIQUE_TAIL_MARKER_ACTIVATE" not in ret  # tail lives in the file, not context
+    assert body in ret
+    assert "saved to" not in ret
     assert "Skill directory:" in ret  # navigation pointer preserved
 
 
-def test_read_skill_file_offloads_large_bundled_file(tmp_path: Path):
-    """A large bundled skill file must be offloaded like read_file's output, not
-    dumped whole into the turn."""
+def test_read_skill_file_returns_full_body_for_upstream_reduction(tmp_path: Path):
+    """The producer leaves reduction to the agent capability."""
     big = "reference detail line\n" * 3000 + "UNIQUE_TAIL_MARKER_BUNDLED"
     _make_skill(
         tmp_path / ".marim" / "skills",
@@ -179,8 +176,7 @@ def test_read_skill_file_offloads_large_bundled_file(tmp_path: Path):
     with agent.override(model=model):
         agent.run_sync("go", deps=_make_deps(tmp_path, mode=Mode.ask))
     ret = captured["ret"]
-    assert "saved to" in ret and "read_file" in ret
-    assert "UNIQUE_TAIL_MARKER_BUNDLED" not in ret
+    assert ret == big
 
 
 def test_skill_tools_are_not_approval_gated(tmp_path: Path):

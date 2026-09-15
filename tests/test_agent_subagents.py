@@ -165,12 +165,12 @@ async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
     # With nested sub-agents, spawn_agent is also registered at depth 0.
     out = await h.subagents.run("general", "do it", "sid")
     assert out == "report"
-    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS | {"spawn_agent"})
+    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS | {"spawn_agent", "read_tool_result"})
 
     # auto mode: the full set, including write/edit/bash and spawn_agent.
     deps.workspace.mode = Mode.auto
     await h.subagents.run("general", "do it", "sid")
-    assert captured["tools"] == set(SUBAGENT_TOOLS | {"spawn_agent"})
+    assert captured["tools"] == set(SUBAGENT_TOOLS | {"spawn_agent", "read_tool_result"})
 
 
 @pytest.mark.anyio
@@ -394,10 +394,10 @@ async def test_run_background_subagent_respects_mode(tmp_path: Path):
     h = _make_harness(FunctionModel(fn), deps)
     await h.subagents.run_background("general", "x")
     # With nested sub-agents, spawn_agent is registered at depth 0.
-    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS | {"spawn_agent"})
+    assert captured["tools"] == set(READ_TOOLS | NET_TOOLS | {"spawn_agent", "read_tool_result"})
     deps.workspace.mode = Mode.auto
     await h.subagents.run_background("general", "x")
-    assert captured["tools"] == set(SUBAGENT_TOOLS | {"spawn_agent"})
+    assert captured["tools"] == set(SUBAGENT_TOOLS | {"spawn_agent", "read_tool_result"})
 
 
 @pytest.mark.anyio

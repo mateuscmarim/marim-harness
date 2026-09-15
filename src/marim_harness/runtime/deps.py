@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.tools import DeferredToolApprovalResult
@@ -357,6 +358,8 @@ class Deps:
     # model-writable — it is pure turn-loop state, shared with the runner because
     # both hold the same Deps object.
     approval_round_active: bool = False
+    # Shared by native children when no persisted session exists. Never serialized.
+    output_session_key: str = field(default_factory=lambda: uuid4().hex)
 
     def replace(self, **kw) -> "Deps":
         """Return a shallow copy with specified fields replaced."""

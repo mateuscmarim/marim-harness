@@ -213,11 +213,11 @@ async def test_start_bash_output_keeps_head_and_tail(tmp_path: Path):
         "echo HEAD-MARKER; for i in $(seq 1 5000); do echo filler$i; done; echo TAIL-VERDICT",
         max_output=200,
     )
-    final = await bp.wait()
-    _ = final  # populate the buffer; assertions are on the live output() path
-    assert "HEAD-MARKER" in bp.output()
-    assert "TAIL-VERDICT" in bp.output()
-    assert "truncated" in bp.output()
+    await bp.wait()
+    live = bp.output()
+    assert "HEAD-MARKER" in live
+    assert "TAIL-VERDICT" in live
+    assert "chars truncated" in live
 
 
 @pytest.mark.anyio
@@ -262,7 +262,7 @@ async def test_bash_process_wait_without_pipe_returns_exit_line(tmp_path: Path):
         async def wait(self):
             return 0
 
-    bp = shell.BashProcess(_FakeProc(), 200, tmp_path, "noop")
+    bp = shell.BashProcess(_FakeProc(), 200)
     final = await bp.wait()
     assert "exit 0" in final
 
@@ -277,33 +277,10 @@ async def test_start_bash_kill_stops_process(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_run_bash_offloads_large_output(tmp_path, monkeypatch):
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
-    out = await shell.run_bash(tmp_path, "for i in $(seq 1 500); do echo line $i; done")
-    assert "full output saved to" in out and "bash result" in out
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 1
-    body = saved[0].read_text()
-    assert body.startswith("exit 0\n")
-    assert body.count("line ") == 500
-
-
-@pytest.mark.anyio
-async def test_run_bash_offload_key_includes_timeout(tmp_path, monkeypatch):
-    """timeout shapes the body (the "(timed out after {timeout}s)" suffix), so two
-    otherwise-identical commands differing only in timeout must not collapse onto
-    the same sha-derived offload file (see fs.py's grep key for the same
-    reasoning)."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
-    command = "for i in $(seq 1 500); do echo line $i; done"
-    await shell.run_bash(tmp_path, command, timeout=30)
-    await shell.run_bash(tmp_path, command, timeout=45)
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 2
+async def test_run_bash_returns_complete_large_output(tmp_path):
+    out = await shell.run_bash(tmp_path, "for i in $(seq 1 5000); do echo line $i; done")
+    assert out == "exit 0\n" + "".join(f"line {i}\n" for i in range(1, 5001))
+    assert not (tmp_path / ".marim").exists()
 
 
 @pytest.mark.anyio
@@ -315,20 +292,13 @@ async def test_run_bash_small_output_inline(tmp_path):
 @pytest.mark.anyio
 async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
     """A flood must be middle-truncated to the running budget (not buffered whole):
-    both ends survive, the marker is present, and the saved body stays ~budget-sized."""
+    both ends survive, the marker is present, and the result stays ~budget-sized."""
     monkeypatch.setattr(shell, "MAX_OUTPUT_CHARS", 2_000)
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
     out = await shell.run_bash(
         tmp_path,
         "echo HEAD-MARKER; for i in $(seq 1 20000); do echo filler$i; done; echo TAIL-VERDICT",
     )
-    # Offloaded (large), and flagged as having hit the ceiling.
-    assert "full output saved to" in out
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 1
-    body = saved[0].read_text()
+    body = out
     # The body is bounded to ~budget + the exit line + the truncation marker, NOT the
     # full ~150 KB the command emitted.
     assert len(body) < 2_000 + 200
@@ -338,17 +308,13 @@ async def test_run_bash_foreground_caps_running_memory(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_background_wait_offloads_but_live_output_truncates(tmp_path, monkeypatch):
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
+async def test_background_wait_returns_full_output_but_live_output_truncates(tmp_path):
     bp = await shell.start_bash(
         tmp_path, "for i in $(seq 1 500); do echo line $i; done", max_output=80
     )
     final = await bp.wait()
-    assert "full output saved to" in final and "bash result" in final
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 1 and saved[0].read_text().count("line ") == 500
+    assert final == "exit 0\n" + "".join(f"line {i}\n" for i in range(1, 501))
+    assert not (tmp_path / ".marim").exists()
     # the live preview path stays bounded by max_output (head+tail truncation)
     assert len(bp.output()) <= 80 + 64  # cap + the "… (N chars truncated) …" marker
 
@@ -363,12 +329,7 @@ async def test_run_bash_survives_single_line_over_64kib(tmp_path: Path):
     the multi-MB MAX_OUTPUT_CHARS budget."""
     n = 100_000  # well past the 64 KiB (65536) StreamReader limit
     out = await shell.run_bash(tmp_path, f"python3 -c \"print('A'*{n})\"")
-    # It completed instead of crashing; the large output was offloaded to a file
-    # whose body carries the whole long line — nothing lost.
-    assert "full output saved to" in out
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 1
-    body = saved[0].read_text()
+    body = out
     assert body.startswith("exit 0\n")
     assert body.count("A") == n
 
@@ -380,10 +341,8 @@ async def test_background_wait_survives_single_line_over_64kib(tmp_path: Path):
     n = 100_000
     bp = await shell.start_bash(tmp_path, f"python3 -c \"print('A'*{n})\"")
     final = await bp.wait()
-    _ = final
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 1
-    assert saved[0].read_text().count("A") == n
+    assert final.startswith("exit 0\n")
+    assert final.count("A") == n
 
 
 @pytest.mark.anyio
@@ -405,18 +364,9 @@ async def test_run_bash_without_stdin_data_is_unchanged(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_run_bash_offload_key_includes_stdin_data(tmp_path, monkeypatch):
-    """stdin_data shapes the body just as much as timeout does (``cat`` echoes it
-    straight back), so two runs of the same command+timeout differing only in
-    stdin_data must not collapse onto the same sha-derived offload file — including
-    the None-vs-b"" edge case, which must not stringify identically."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 100)
-    padding = "x" * 200  # pad past the lowered inline limit so both runs offload
-    await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=f"AAAA{padding}".encode())
-    await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=f"BBBB{padding}".encode())
-    await shell.run_bash(tmp_path, f"echo {padding}", timeout=30, stdin_data=None)
-    await shell.run_bash(tmp_path, f"echo {padding}", timeout=30, stdin_data=b"")
-    saved = list((tmp_path / ".marim" / "output").glob("bash-*.txt"))
-    assert len(saved) == 4
+async def test_run_bash_large_stdin_data_reaches_each_process(tmp_path):
+    padding = "x" * 30_000
+    for marker in ("AAAA", "BBBB"):
+        payload = f"{marker}{padding}"
+        result = await shell.run_bash(tmp_path, "cat", timeout=30, stdin_data=payload.encode())
+        assert result == f"exit 0\n{payload}"

@@ -1,14 +1,15 @@
 # Sessions & state
 
 The SDK's contract: **a bare build touches nothing outside your process**
-except the workspace files its tools legitimately edit. Every kind of
-persistent state is opt-in, and each opt-in can be scoped to a directory you
-own. This page enumerates all of it.
+except the workspace files its tools legitimately edit. Session persistence
+is opt-in; runtime diagnostics and oversized tool results can write under
+the workspace's `.marim/` directory during a run. This page enumerates the
+state and its storage boundaries.
 
 ## Sessions
 
 The bare build's session is **in-memory only** — `harness.session.store is
-None`, nothing is written anywhere, and history survives only as long as the
+None`, no transcript is written, and history survives only as long as the
 `Harness` object. Turns still accumulate history within the process
 (`run_turn` #2 sees turn #1).
 
@@ -70,18 +71,24 @@ contributor's branch) those files are attacker-controlled text that would
 otherwise land straight in the model's instructions. Opt in when the
 workspace is yours; leave it off when it isn't.
 
-## The `.marim/` spill
+## Workspace-local runtime files
 
-**One workspace-local exception** to "nothing is written uninvited":
-provider-error payloads spill best-effort to
+Provider-error payloads spill best-effort to
 `<workspace>/.marim/last-provider-error.json` on hard failures (e.g. a 4xx
 from your model provider), regardless of session config. That's
 workspace-local, not XDG, and it exists so a headless failure leaves
 something diagnosable behind.
 
+Ordinary tool results at or above 10,000 characters also spill during a run.
+They use `<scratchpad>/tool-results/` when a scratchpad is available, otherwise
+`<workspace>/.marim/output/upstream/<session-key>/`. A sessionless harness uses
+an ephemeral key stable for that harness instance. This writes lazily when a
+large tool result is produced; bare `build()` remains write-free. See
+[large tool output](../guides/tool-output.md) for retrieval, fallback behavior,
+media handling, and file lifetime.
+
 **If your workspace is a git repo, add `.marim/` to its `.gitignore`** —
-otherwise the first provider failure leaves an untracked directory of raw
-provider payloads one `git add -A` away from being committed.
+otherwise diagnostics and large tool results can become untracked files.
 
 ## Stats ledger
 

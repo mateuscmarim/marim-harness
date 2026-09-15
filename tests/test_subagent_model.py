@@ -99,6 +99,7 @@ async def test_run_forwards_model_to_build(tmp_path: Path):
         depth=0,
         mask_trigger=None,
         checkpoint=None,
+        output_storage=None,
         output_schema=None,
         tier=None,
         thinking=None,

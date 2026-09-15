@@ -32,19 +32,15 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     h_on = _harness(tmp_path, global_instructions=True)
     h_off = _harness(tmp_path, global_instructions=False)
 
-    # pydantic-ai keeps registered @agent.instructions closures in the plain
-    # list Agent._instructions, unwrapped (there is no public accessor);
-    # verified against the installed version with `uv run python -c
-    # "from pydantic_ai import Agent, RunContext
-    # a=Agent('test')
-    # @a.instructions
-    # def foo(ctx: RunContext): return 'x'
-    # print(a._instructions[0] is foo)"` -> True.
+    # Test-only introspection: core 2.43 stores SourcedInstruction recipes in
+    # Agent._instructions (no public registration accessor). Unwrap the recipe
+    # before checking closure registration; production uses public decorators.
     def _closure(agent, name):
         return next(
             (
                 fn
-                for fn in agent._instructions
+                for item in agent._instructions
+                for fn in [item.instruction]
                 if callable(fn) and getattr(fn, "__name__", None) == name
             ),
             None,
@@ -88,7 +84,8 @@ def test_scratchpad_instructions_gate_on_files_write_group(tmp_path):
         return next(
             (
                 fn
-                for fn in agent._instructions  # noqa: SLF001
+                for item in agent._instructions  # noqa: SLF001
+                for fn in [item.instruction]
                 if callable(fn) and getattr(fn, "__name__", None) == name
             ),
             None,
