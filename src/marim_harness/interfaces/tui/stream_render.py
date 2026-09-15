@@ -636,7 +636,7 @@ class StreamRenderer:
         result event arrives, to route a sub-agent's stream/notice events, and to
         skip the re-emitted call of a gated tool across approval rounds. All three
         concern *in-flight* calls. Completed subagents can be resumed later;
-        _known_tool_widget restores them from the session's retained list.
+        Tool calls and nested stream routing restore retained cards as needed.
         We prune at the turn boundary (not per ``on_events`` / approval round) so
         the cross-round duplicate guard for gated tools still sees its entry while
         the turn is live.
@@ -1063,6 +1063,10 @@ class StreamRenderer:
         RunUsage or None) onto the owning card and dispatch ``wire`` (or None,
         for an event outside the surfaced vocabulary) into that agent's pane."""
         parent = self.tool_widgets.get(stream_id)
+        if parent is None:
+            # A completed container can still carry a resumed child's events.
+            # Restore routing without claiming the container itself is running.
+            parent = self._restore_subagent(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
         if usage is not None and usage.total_tokens:
@@ -1180,12 +1184,15 @@ class StreamRenderer:
         known = self.tool_widgets.get(tool_call_id)
         if known is not None or tool_name != "spawn_agent" or not call_args.get("resumed"):
             return known
+        return self._restore_subagent(tool_call_id)
+
+    def _restore_subagent(self, stream_id: str) -> SubAgentWidget | None:
         # Turn boundaries prune completed entries, but Ctrl+X retains the cards
         # and their panes. Restore that same object before routing a resumed run;
         # mounting another card would also collide with its existing pane ID.
         for card in self.subagents:
-            if card.stream_id == tool_call_id:
-                self.tool_widgets[tool_call_id] = card
+            if card.stream_id == stream_id:
+                self.tool_widgets[stream_id] = card
                 return card
         return None
 

@@ -929,7 +929,8 @@ async def test_replayed_resumed_spawn_call_reopens_the_card_not_a_second_one(tmp
 
 
 @pytest.mark.anyio
-async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, monkeypatch):
+@pytest.mark.parametrize("nested", [False, True])
+async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, monkeypatch, nested):
     from marim_harness.interfaces.tui.widgets import NoticeMessage
     from marim_harness.server.wire_events import ToolCall, ToolResult
 
@@ -937,10 +938,23 @@ async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, m
     async with app.run_test() as pilot:
         await pilot.pause()
         args = {"type": "codex-agent", "task": "", "description": "teste"}
-        await app.stream.on_wire(
-            ToolCall(type="tool.call", id="agent", name="spawn_agent", args=args)
-        )
-        await app.stream.on_wire(ToolResult(type="tool.result", id="agent", content="first report"))
+
+        async def emit(wire):
+            if nested:
+                await app.stream.on_subagent_wire("parent", wire)
+            else:
+                await app.stream.on_wire(wire)
+
+        if nested:
+            await app.stream.on_wire(
+                ToolCall(type="tool.call", id="parent", name="spawn_agent", args=args)
+            )
+        await emit(ToolCall(type="tool.call", id="agent", name="spawn_agent", args=args))
+        await emit(ToolResult(type="tool.result", id="agent", content="first report"))
+        if nested:
+            await app.stream.on_wire(
+                ToolResult(type="tool.result", id="parent", content="parent report")
+            )
         card = app.stream.tool_widgets["agent"]
         assert card.status == "done"
         pane = card.pane
@@ -952,15 +966,19 @@ async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, m
         resumed = ToolCall(
             type="tool.call", id="agent", name="spawn_agent", args={**args, "resumed": True}
         )
-        await app.stream.on_wire(resumed)
-        await app.stream.on_wire(resumed)
+        await emit(resumed)
+        await emit(resumed)
         assert app.stream.tool_widgets["agent"] is card
-        assert app.stream.subagents == [card] and card.pane is pane
+        assert app.stream.subagents.count(card) == 1 and card.pane is pane
+        assert len(app.stream.subagents) == (2 if nested else 1)
         assert card.status == "pending" and card.report == ""
-        dirty.assert_called_once()
+        assert dirty.call_count == (3 if nested else 1)
         notices = [str(w.render()) for w in app.query(NoticeMessage)]
         assert sum("Resumed subagent: teste" in n for n in notices) == 1
-        await app.stream.on_wire(
-            ToolResult(type="tool.result", id="agent", content="second report")
-        )
+        # A nested child can outlive the next top-level turn too. Its settled
+        # container is pruned again, but its final report must still reach it.
+        app.stream.prune_completed()
+        await emit(ToolResult(type="tool.result", id="agent", content="second report"))
         assert card.status == "done" and card.report == "second report"
+        if nested:
+            assert app.stream.tool_widgets["parent"].status == "done"
