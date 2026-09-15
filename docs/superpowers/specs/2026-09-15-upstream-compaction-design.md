@@ -1,7 +1,7 @@
 # Upstream compaction and observation masking
 
 **Date:** 2026-09-15
-**Status:** Proposed migration design; implementation has not started.
+**Status:** Implementation in progress on `refactor/upstream-compaction`.
 **Plan:** [Implementation plan](../plans/2026-09-15-upstream-compaction.md)
 
 ## Objective
@@ -155,9 +155,13 @@ They are migration decisions, not changes already made to Marim.
 
 - Preserve valid tool-call/result pairing and typed framework results through JSON
   round trips. Include histories with repeated tool-call IDs and parallel tool rounds.
-  If the selected upstream version cannot meet this, report the reproducer upstream
-  and use a fixed release before switching the affected path; do not silently lose
-  recent outputs or copy the upstream algorithm into Marim.
+  Harness 0.31.0 clearing globally matches IDs and can clear a recent result when
+  an older call reuses that ID. A small public clearing wrapper conservatively
+  excludes tool names involved in duplicate call IDs for that pass. It delegates
+  all clearing to upstream, logs the skipped reduction, and never rewrites IDs.
+  This can reclaim less context; summaries or existing irreducible-overflow errors
+  remain the fallback. Retire this guard once an upstream release passes the
+  reproducer. Do not silently lose recent outputs or copy the clearing algorithm.
 - No tool execution or permission expansion from the adapter; no whole `Coder` stack.
 - Under-budget automatic compaction does not invoke the summary model.
 - Manual `/compact <focus>` works below the normal threshold. A blocked manual

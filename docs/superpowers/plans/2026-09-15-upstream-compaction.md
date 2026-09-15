@@ -10,7 +10,7 @@
 
 **Spec:** [Upstream compaction design](../specs/2026-09-15-upstream-compaction-design.md). Read the proposed behavior changes before implementing.
 
-**Status:** Planned; no migration code or dependency changes have been made. The isolated release probes recorded in the spec have passed; project compatibility remains to be tested.
+**Status:** Implementation in progress on `refactor/upstream-compaction`. Baseline lint, type checks, and 4,985 tests passed before dependency changes. The execution ledger records per-task results.
 
 ## Global constraints
 
@@ -106,8 +106,9 @@ async def test_clear_preserves_recent_results_and_serializable_history():
   in `tests/test_compaction.py`. Check retained recent contents as well as successful
   serialization. Do not treat JSON validity alone as proof of correct retention.
 - [ ] Run `uv run pytest --no-cov -n 0 tests/test_upstream_compaction.py`.
-  If a release violates a required invariant, keep the affected migration unswitched,
-  save the minimal reproducer, and select a fixed upstream release before continuing.
+  Save a minimal reproducer for any upstream invariant failure. For the confirmed
+  repeated-ID clearing defect in 0.31.0, use the conservative public wrapper in the
+  updated spec; regression-test both the defect and the guarded behavior.
 - [ ] Re-run ruff → pyright → pytest after the dependency change. In particular,
   inspect custom provider clients, nested capture, streaming, and lazy CLI imports;
   core's new transitive SDK/client versions may affect them. Fix only upgrade-related
@@ -310,8 +311,8 @@ model for `compact_now`; its caller awaits it.
   transient-retry and CLI backend implementations.
 - [ ] Compare outgoing histories across a sequence of requests: cleared prefixes stay
   unchanged between threshold crossings. Assert JSON round trips and recent-result
-  preservation, including reused IDs; if upstream fails, follow Task 1's fixed-release
-  rule rather than retaining a permanent parallel masker.
+  preservation, including reused IDs; use Task 1's conservative guard for upstream's
+  reused-ID defect rather than retaining a parallel masker.
 - [ ] Run `uv run pytest --no-cov -n 0 tests/test_subagent_masking.py
   tests/test_subagent_retry.py tests/test_provider_errors.py tests/test_context_limits.py`
   as one shell command. Delete `subagents/masking.py` once no production import remains,
