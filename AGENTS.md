@@ -214,6 +214,31 @@ to avoid import cycles.
 
 ## Conventions
 
+### Prefer upstream capabilities
+
+Marim owns the terminal experience and workflow integration. Prefer upstream
+implementations for general agent infrastructure to reduce maintenance.
+
+- Before implementing agent-runtime behavior, check the current Pydantic AI and
+  Pydantic AI Harness documentation and the APIs available in the selected releases.
+- Prefer upstream implementations when they meet the essential user requirements.
+  Accept upstream defaults and reasonable behavior differences; historical
+  implementation details are not automatically requirements.
+- Keep Marim-specific integration small and focused on configuration, UI,
+  permissions, and persistence. Preserve explicit user constraints and the
+  documented safety and resumability invariants.
+- Add custom machinery only for a concrete requirement upstream cannot satisfy.
+  Document the gap and why the extra maintenance is justified. Prefer public APIs;
+  document and regression-test any unavoidable dependency on private APIs.
+- When changing an existing subsystem, evaluate whether upstream can replace part
+  of it. Keep replacements scoped to the current task and remove superseded code
+  instead of maintaining two implementations indefinitely.
+- Verify dependency compatibility and behavior before removing existing code.
+  Judge a migration by the responsibility it removes from Marim, not just by
+  whether an upstream dependency was added.
+
+### Coding conventions
+
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.
 - Ruff line length is 100; lint set is `E,F,I,UP,B,SIM,C901` (import sorting
