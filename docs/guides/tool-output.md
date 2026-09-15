@@ -72,6 +72,12 @@ still produce these absolute pointers.
 
 ## Bounds that still apply
 
+TUI `!` shell commands collect at most **4,000 bytes** of output, keeping the
+head and tail with an omission notice. Exit status and timeout markers are
+added separately. Both the transcript and the next prompt receive this bounded
+result. These user-run commands bypass the agent's output capability, so their
+omitted output is not stored; redirect the command to a file to keep it in full.
+
 Producer limits apply before output reduction: shell collection buffers,
 network download limits, file-read pagination, image size limits, and bounded
 search collection remain in place. A spill contains only what the producer

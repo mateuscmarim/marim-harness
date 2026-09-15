@@ -201,6 +201,8 @@ async def run_bash(
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
     stdin_data: bytes | None = None,
+    *,
+    max_output_bytes: int | None = None,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
@@ -210,7 +212,12 @@ async def run_bash(
     ``stdin_data`` (when given) is piped to the command's stdin in one write and
     the pipe is closed immediately, so a reader sees the bytes then EOF. With the
     default ``None`` no stdin pipe is wired at all — identical to the historical
-    behavior."""
+    behavior. ``max_output_bytes`` can lower the collection ceiling for direct
+    callers, such as TUI `!` commands, which bypass agent output reduction.
+    The exit status, truncation notice and timeout marker are outside this budget."""
+    if max_output_bytes is not None and max_output_bytes <= 0:
+        raise ValueError("max_output_bytes must be positive")
+    collection_limit = min(max_output_bytes or MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS)
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(root),
@@ -226,7 +233,7 @@ async def run_bash(
     # Bound memory while reading: a flood (``yes``, ``cat hugefile``) must not buffer
     # hundreds of MB before the final cap applies. The accumulator keeps a bounded
     # head + sliding tail; we keep draining the pipe to EOF either way (see below).
-    chunks = _BoundedOutput(MAX_OUTPUT_CHARS)
+    chunks = _BoundedOutput(collection_limit)
     if proc.stdout is not None:
         # ``timeout`` is a TOTAL wall-clock ceiling, not a per-read idle gap. A
         # chatty command (e.g. ``pytest -v``) emits output continuously, so a

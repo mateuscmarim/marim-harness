@@ -81,6 +81,14 @@ async def test_bash_captures_stdout(tmp_path: Path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_bash_rejects_nonpositive_collection_limit(tmp_path: Path, limit: int):
+    with pytest.raises(ValueError, match="max_output_bytes must be positive"):
+        await shell.run_bash(tmp_path, "touch should-not-run", max_output_bytes=limit)
+    assert not (tmp_path / "should-not-run").exists()
+
+
+@pytest.mark.anyio
 async def test_bash_runs_in_workspace_cwd(tmp_path: Path):
     (tmp_path / "marker.txt").write_text("")
     out = await shell.run_bash(tmp_path, "ls")
