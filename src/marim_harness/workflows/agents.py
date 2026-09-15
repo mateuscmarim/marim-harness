@@ -82,7 +82,9 @@ class RunnerWorkflowAgent(WrapperAgent[Any, Any]):
             raise asyncio.CancelledError("workflow aborted")
         invocation.seq += 1
         stream = f"{invocation.tool_call_id}::wf{invocation.seq}"
-        report = "Workflow child cancelled"
+        # Use the runner's failure envelope: the existing terminal/wire card
+        # renderer recognizes it when settling a child without a tool return.
+        report = f"Sub-agent {self.binding.agent_type!r} failed: workflow cancelled"
         logger.debug("Workflow child started: %s (%s)", stream, self.binding.agent_type)
         try:
             await _announce(invocation, self.binding, user_prompt, stream)
@@ -110,7 +112,7 @@ class RunnerWorkflowAgent(WrapperAgent[Any, Any]):
                     raise WorkflowResultError(f"Workflow agent {self.binding.name}: {reason}")
             return AgentRunResult(output=output)
         except Exception as exc:
-            report = f"Workflow child failed: {type(exc).__name__}"
+            report = f"Sub-agent {self.binding.agent_type!r} failed: {type(exc).__name__}"
             logger.warning("Workflow child failed: %s (%s)", stream, type(exc).__name__)
             raise
         finally:

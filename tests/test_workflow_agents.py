@@ -205,6 +205,8 @@ async def test_forwarded_run_configuration_is_rejected(tmp_path, option):
 async def test_child_card_completes_on_every_exit_and_renderer_errors_are_harmless(
     tmp_path, failure
 ):
+    from marim_harness.interfaces.tui.stream_render import subagent_failed
+
     completions = []
     dispatched = []
     deps = _make_deps(tmp_path)
@@ -245,6 +247,7 @@ async def test_child_card_completes_on_every_exit_and_renderer_errors_are_harmle
         current_workflow.reset(token)
     assert len(completions) == 1
     assert completions[0][0] == "parent::wf1"
+    assert subagent_failed(completions[0][1]) is (failure != "success")
     assert len(dispatched) == (0 if failure == "announcement" else 1)
 
 
@@ -291,7 +294,7 @@ async def test_task_cancellation_during_announcement_completes_card_without_disp
             await task
     finally:
         current_workflow.reset(token)
-    assert completed == [("parent::wf1", "Workflow child cancelled")]
+    assert completed == [("parent::wf1", "Sub-agent 'explore' failed: workflow cancelled")]
 
 
 @pytest.mark.anyio
