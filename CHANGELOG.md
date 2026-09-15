@@ -8,6 +8,37 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-14
+
+### Added
+
+- **CLI backend lifecycle events are visible everywhere.** Claude Code and
+  Codex compaction, rerouting, retry, warning and background-task events now
+  appear in the live TUI, attached clients and headless stderr in backend
+  order. Display-only notices survive transcript replay without entering the
+  model-facing conversation; backend inventory, verified Claude commands,
+  thinking/state observations and normalized result telemetry use the same
+  session surfaces.
+- **CLI-native agents appear in Background Tasks.** Claude and Codex agents
+  are mirrored as backend-owned jobs even when they finish between parent
+  turns. Terminal outcomes persist through ordered, session-bound snapshots;
+  the backend continues to own execution, cancellation and result delivery.
+- **Authenticated workspace file downloads.** `marim serve` exposes a
+  session-scoped file endpoint for transcript links, allowing attached clients
+  to preview, save and share regular workspace files. Descriptor-anchored
+  traversal rejects escapes and symlinks, streams at most 50 MiB, and closes
+  resources on disconnect or cancellation.
+
+### Changed
+
+- **CLI context limits follow the backend's actual window.** A successful
+  Claude or Codex turn teaches compaction, masking and overflow handling the
+  backend-reported context window, and resumed sessions restore it before the
+  first turn. Claude also polls the public `get_context_usage` summary beside
+  its quota request to refine the total shown by the context gauge without an
+  extra token-count API call. Status polling remains concurrent and
+  best-effort, and a saved window is ignored after a persisted model switch.
+
 ## [0.8.0] - 2026-09-14
 
 ### Added

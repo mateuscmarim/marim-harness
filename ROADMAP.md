@@ -39,9 +39,10 @@ Feedback on any of this is welcome — open an issue.
   limits, its compaction and fallback events, and control requests for mode,
   model and thinking. The phased plan is in
   [`docs/plans/cli-backend-parity-roadmap.md`](docs/plans/cli-backend-parity-roadmap.md);
-  context and quota reporting (phase 1) and Claude control parity (phase 2:
-  `/mode`, `/model`, `/think` sent to the live process) have shipped; the
-  backend's lifecycle events in the transcript come next.
+  context and quota reporting (phase 1), Claude control parity (phase 2),
+  Codex sub-agent cards (phase 2b), and backend lifecycle events in the
+  transcript (phase 3) have shipped. Codex push updates, native plans and
+  diffs are next.
 - **`gh` forge backend** — the forge tools (list/view/check out PRs, CI
   status) currently ship a `tea`/Gitea backend behind a forge-agnostic
   protocol; a GitHub backend via the `gh` CLI is the obvious drop-in.

@@ -114,19 +114,29 @@ def context_report_from_usage(raw: Any, *, window: int | None = None) -> Context
 
 
 def last_context_report(
-    history: list[ModelMessage], provider: str | None = None
+    history: list[ModelMessage],
+    provider: str | None = None,
+    model_name: str | None = None,
 ) -> ContextReport | None:
     """The report persisted on the NEWEST ``ModelResponse``, or None.
 
     Only the newest response is consulted: an older one's report describes
-    a context that has moved on. With ``provider`` given, the response must
-    also come from that provider — after a backend switch (claude-cli →
-    codex-cli) the newest response's report describes the OTHER backend's
-    context, and showing it for the new one would be a lie until its first
-    turn replaces it."""
+    a context that has moved on. Optional provider and model filters reject a
+    known mismatch after a backend or model switch. A missing persisted model
+    name remains valid for histories written before that field was stored."""
     for msg in reversed(history):
         if isinstance(msg, ModelResponse):
             if provider is not None and msg.provider_name != provider:
+                return None
+            # Current CLI responses persist the configured model name. Reject
+            # a known mismatch after a model switch: its window can differ by
+            # hundreds of thousands of tokens. Older histories omitted the
+            # name, so keep accepting those as a backward-compatible estimate.
+            if (
+                model_name is not None
+                and msg.model_name is not None
+                and msg.model_name != model_name
+            ):
                 return None
             return ContextReport.from_payload((msg.provider_details or {}).get(CONTEXT_REPORT_KEY))
     return None
@@ -138,8 +148,9 @@ _NOT_A_BACKEND = object()
 def current_context_report(model: object, history: list[ModelMessage]) -> ContextReport | None:
     """The report to show for ``model``: its live reading when it has one,
     else (a resumed session before its first turn) the one persisted on the
-    newest response BY THE SAME PROVIDER; None for a model that never
-    reports (marim's own providers), so the estimate stays in charge there."""
+    newest response by the same provider and configured model; None for a
+    model that never reports (marim's own providers), so the estimate stays
+    in charge there."""
     if getattr(model, "context_invalidated", False):
         return None
     live = getattr(model, "context_report", _NOT_A_BACKEND)
@@ -147,4 +158,8 @@ def current_context_report(model: object, history: list[ModelMessage]) -> Contex
         return None
     if isinstance(live, ContextReport):
         return live
-    return last_context_report(history, getattr(model, "provider_name", None))
+    return last_context_report(
+        history,
+        getattr(model, "provider_name", None),
+        getattr(model, "model_name", None),
+    )
