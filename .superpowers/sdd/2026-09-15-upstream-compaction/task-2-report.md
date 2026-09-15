@@ -41,3 +41,24 @@ confirming the intended red state before implementation.
 
 Repeated call IDs conservatively reduce reclaim for every involved tool name in that pass.
 This preserves recent results under the upstream 0.31/core 2.43 ID-based clearing behavior.
+
+## Review fix round 1
+
+Added executable coverage for the three foundation-review gaps:
+
+- mutating-tool exclusions now use distinct call IDs, independently of the duplicate-ID guard;
+- both `UnexpectedModelBehavior` and `ModelAPIError` prove deterministic trim fallback,
+  content-level retained-tail behavior, stage reporting, and restructuring;
+- the request-budget boundary proves a successful summary consumes one of two available
+  requests and leaves the caller's parent request slot available.
+
+```text
+uv run ruff check --fix tests/test_compaction_adapter.py
+All checks passed!
+
+uv run ruff format tests/test_compaction_adapter.py
+1 file left unchanged
+
+uv run pytest --no-cov -n 0 tests/test_compaction_adapter.py
+14 passed in 0.09s
+```

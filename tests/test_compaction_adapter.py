@@ -2,10 +2,11 @@ import asyncio
 from copy import deepcopy
 
 import pytest
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -48,6 +49,26 @@ def _return_contents(messages):
     ]
 
 
+def _distinct_ids(history):
+    for index, message in enumerate(history[1:]):
+        for part in message.parts:
+            if isinstance(part, (ToolCallPart, ToolReturnPart)):
+                part.tool_call_id = str(index // 2)
+    return history
+
+
+def _text_history():
+    history = [ModelRequest(parts=[UserPromptPart("first instruction")])]
+    for index in range(4):
+        history.extend(
+            [
+                ModelResponse(parts=[TextPart(f"answer-{index}")]),
+                ModelRequest(parts=[UserPromptPart(f"question-{index}")]),
+            ]
+        )
+    return history
+
+
 @pytest.mark.anyio
 async def test_safe_clearer_skips_tool_name_with_reused_call_id(caplog):
     history = _repeated_id_history()
@@ -63,7 +84,7 @@ async def test_safe_clearer_skips_tool_name_with_reused_call_id(caplog):
 @pytest.mark.anyio
 @pytest.mark.parametrize("tool_name", ["bash", "write_file", "edit_file", "run_workflow"])
 async def test_safe_clearer_never_clears_mutating_tool_results(tool_name):
-    history = _repeated_id_history(tool_name)
+    history = _distinct_ids(_repeated_id_history(tool_name))
 
     clearer = safe_tool_result_clearer(keep_pairs=0, max_tokens=1)
     result = await compact_now(clearer, history, model=TestModel())
@@ -73,11 +94,7 @@ async def test_safe_clearer_never_clears_mutating_tool_results(tool_name):
 
 @pytest.mark.anyio
 async def test_safe_clearer_delegates_normal_clearing_without_mutating_input():
-    history = _repeated_id_history()
-    for index, message in enumerate(history[1:]):
-        for part in message.parts:
-            if isinstance(part, (ToolCallPart, ToolReturnPart)):
-                part.tool_call_id = str(index // 2)
+    history = _distinct_ids(_repeated_id_history())
     original = deepcopy(history)
 
     result = await compact_now(
@@ -119,11 +136,7 @@ async def test_automatic_reduction_does_nothing_below_budget():
 
 @pytest.mark.anyio
 async def test_clearing_that_reaches_target_skips_summary():
-    history = _repeated_id_history()
-    for index, message in enumerate(history[1:]):
-        for part in message.parts:
-            if isinstance(part, (ToolCallPart, ToolReturnPart)):
-                part.tool_call_id = str(index // 2)
+    history = _distinct_ids(_repeated_id_history())
     usage = RunUsage()
 
     result = await reduce_history(
@@ -188,6 +201,68 @@ async def test_spent_request_budget_escapes_without_trimming_history():
         )
 
     assert history == original
+
+
+@pytest.mark.anyio
+async def test_summary_leaves_parent_request_slot_available():
+    usage = RunUsage()
+    limits = UsageLimits(request_limit=2)
+
+    result = await reduce_history(
+        _text_history(),
+        model=TestModel(custom_output_text="Retained task summary"),
+        summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+        target_tokens=1,
+        keep_messages=3,
+        keep_pairs=1,
+        clear=False,
+        force=True,
+        focus=None,
+        usage=usage,
+        usage_limits=limits,
+    )
+
+    assert result.stages == ("summary",)
+    assert usage.requests == 1
+    limits.check_before_request(usage)
+
+
+class _FailingSummary:
+    def __init__(self, error):
+        self.error = error
+
+    async def compact(self, messages, ctx):
+        raise self.error
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnexpectedModelBehavior("malformed summary"),
+        ModelAPIError("test", "summary request failed"),
+    ],
+    ids=["malformed-output", "model-api"],
+)
+async def test_recoverable_summary_error_falls_back_to_exact_window_tail(error):
+    history = _text_history()
+
+    result = await reduce_history(
+        history,
+        model=TestModel(),
+        summary=_FailingSummary(error),
+        target_tokens=1,
+        keep_messages=3,
+        keep_pairs=1,
+        clear=False,
+        force=True,
+        focus=None,
+        usage=RunUsage(),
+    )
+
+    assert result.messages == [history[0], *history[-3:]]
+    assert result.stages == ("trim",)
+    assert result.restructured
 
 
 class _CancelledSummary:
