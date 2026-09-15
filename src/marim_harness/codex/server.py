@@ -482,9 +482,12 @@ class CodexServer:
     async def resume_thread(
         self, thread_id: str, *, options: ThreadOptions, request_handler: ServerRequestHandler
     ) -> ThreadHandle | None:
+        # Registration only needs metadata; Codex retains the conversation context.
+        # Avoid deprecated full-history hydration for paginated threads.
         params = _drop_none(
             {
                 "threadId": thread_id,
+                "excludeTurns": True,
                 "cwd": options.cwd,
                 "developerInstructions": options.developer_instructions,
                 "model": options.model,
