@@ -27,65 +27,45 @@ guessed), phrase each with the domain's real vocabulary, and check the set for g
 overlap so no two researchers cover the same ground.
 
 ## 2. Run the pipeline (one run_workflow call)
-Author ONE `run_workflow` script implementing fan-out → coverage check → adversarial
-verify, adapting the reference below. Pass the sub-questions as a list of strings via
-`args`, and set the tool's `timeout_secs` to what the fan-out needs — researchers take
-minutes each; 1800 covers 4–6 of them. The script returns DATA (its last expression);
-you write the report from it afterward.
+Start with ONE `run_workflow(code=...)` call implementing fan-out → coverage
+check → adversarial verify, adapting the reference below. Replace `sub_questions`
+with the literal list from your plan. The named `research_findings(task=...)` and
+`verify_claim(task=...)` functions have fixed, validated report schemas: findings
+contain claim/source/evidence_type/quality/load_bearing; verdicts contain
+holds/downgrade/refuted and a reason. These functions must appear in the tool's
+available catalog; otherwise use the fallback below.
+
+The configured wall deadline (`MARIM_WORKFLOW_TIMEOUT`, default 1800 seconds)
+includes child waits. There is no per-call timeout argument. The script returns
+DATA (its last expression); you write the report from it afterward. `print` output
+is captured in the final tool response; child cards provide live progress.
 
 ```python
 # Deep research pipeline: fan out -> coverage -> adversarial verify
 import asyncio
 
-FINDINGS = {
-    "type": "object",
-    "properties": {
-        "findings": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "claim": {"type": "string"},
-                    "source": {"type": "string"},
-                    "evidence_type": {"type": "string"},
-                    "quality": {"type": "string"},
-                    "load_bearing": {"type": "boolean"},
-                },
-                "required": ["claim", "source", "quality", "load_bearing"],
-            },
-        },
-        "open_questions": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["findings", "open_questions"],
-}
-VERDICT = {
-    "type": "object",
-    "properties": {
-        "verdict": {"type": "string", "enum": ["holds", "downgrade", "refuted"]},
-        "reason": {"type": "string"},
-    },
-    "required": ["verdict", "reason"],
-}
+sub_questions = [
+    "Evidence for cognition in healthy adults",
+    "Evidence for cognition in special populations",
+    "Dosing, safety, and study quality",
+]
 
 async def research(sub_q, sharpen):
     task = ("Research this sub-question and report findings, marking which are "
             "load-bearing: " + sub_q + sharpen)
-    try:
-        return await agent(task, type="researcher", schema=FINDINGS)
-    except Exception:
-        return {"findings": [], "open_questions": ["researcher failed: " + sub_q]}
+    return await research_findings(task=task)
 
 # Wave 1: one researcher per sub-question.
-waves = await asyncio.gather(*[research(q, "") for q in args])
-log("wave 1 done: " + str(sum(len(w["findings"]) for w in waves)) + " findings")
+waves = await asyncio.gather(*[research(q, "") for q in sub_questions])
+print("wave 1 done: " + str(sum(len(w["findings"]) for w in waves)) + " findings")
 
 # Coverage: exactly ONE follow-up round for sub-questions that came back thin.
 thin = [i for i in range(len(waves))
         if not any(f["load_bearing"] for f in waves[i]["findings"])]
 if thin:
-    log("coverage round for " + str(len(thin)) + " thin sub-questions")
+    print("coverage round for " + str(len(thin)) + " thin sub-questions")
     retries = await asyncio.gather(*[
-        research(args[i], "\n\nA first pass found little; dig for primary sources.")
+        research(sub_questions[i], "\n\nA first pass found little; dig for primary sources.")
         for i in thin])
     for j in range(len(thin)):
         waves[thin[j]]["findings"] = waves[thin[j]]["findings"] + retries[j]["findings"]
@@ -99,12 +79,9 @@ load_bearing = [f for f in flat if f["load_bearing"]]
 async def refute(f):
     task = ("Try to REFUTE this claim, and confirm the cited source actually "
             "supports it. Claim: " + f["claim"] + " -- Source: " + f["source"])
-    try:
-        return await agent(task, type="explore", schema=VERDICT)
-    except Exception:
-        return {"verdict": "downgrade", "reason": "verifier failed; treat as unverified"}
+    return await verify_claim(task=task)
 
-log("verifying " + str(len(load_bearing)) + " load-bearing claims")
+print("verifying " + str(len(load_bearing)) + " load-bearing claims")
 verdicts = await asyncio.gather(*[refute(f) for f in load_bearing])
 
 dropped = []
@@ -125,6 +102,15 @@ kept = [f for f in flat
 
 The script returns data; the model writes prose. Do not synthesize inside the script.
 
+**If a parallel child fails:** Monty 0.0.23 propagates worker failures out of
+`asyncio.gather`, even if an async helper has a `try`/`except` around its call.
+`gather(return_exceptions=True)` is not supported. The tool returns a correctable
+error with bounded previews of completed results. Reuse complete, untruncated
+results; finish only missing research/coverage/verification with a revised named
+workflow call or the `spawn_agent` fallback. Do not blindly replay the full batch.
+Treat truncated previews as incomplete evidence. Never label a claim verified
+when its verification did not finish; mark it unverified or omit it.
+
 ## 3. Synthesize
 From the returned bundle, write ONE report:
 - Every nontrivial claim keeps its citation (the `source` field).
@@ -137,8 +123,8 @@ From the returned bundle, write ONE report:
   the main limiting factor.
 
 ## If run_workflow is unavailable
-Some installs lack the workflows extra. Run the same pipeline with `spawn_agent`
-directly: in a SINGLE turn, spawn one `researcher` per sub-question (`task` = the
+Some installs lack the workflows extra or the two typed catalog bindings. Run the
+same pipeline with `spawn_agent` directly: in a SINGLE turn, spawn one `researcher` per sub-question (`task` = the
 sub-question; `returns` = "a list of findings; each = CLAIM + source + evidence type +
 quality (high/medium/low) + whether it is load-bearing"). Collect the reports, then spawn
 one `explore` refuter per load-bearing claim, tasked to refute it and confirm the cited

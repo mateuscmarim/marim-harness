@@ -285,17 +285,13 @@ async def test_workflows_toggle_saves_env_and_applies_live(isolated_env, monkeyp
 
 
 @pytest.mark.anyio
-async def test_workflows_toggle_reports_next_launch_without_engine(
-    isolated_env, monkeypatch, tmp_path
-):
-    """Enabling when the harness was built without an engine (workflows off at
-    launch, or pydantic-monty missing) cannot take effect live — the status
-    line must say so instead of pretending."""
+async def test_workflows_toggle_reports_missing_dependencies(isolated_env, monkeypatch, tmp_path):
+    """Saving the switch cannot supply missing optional dependencies."""
     from marim_harness.config import ModelConfig
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     harness = _fake_harness()
-    harness.set_workflows_enabled = lambda enabled: False  # no engine to restore
+    harness.set_workflows_enabled = lambda enabled: False  # optional extra missing
     env_cfg = ModelConfig(provider="openrouter", model="x", workflows_enabled=False)
     app = _Host(harness, env_cfg)
     async with app.run_test(size=(120, 45)) as pilot:
@@ -309,7 +305,8 @@ async def test_workflows_toggle_reports_next_launch_without_engine(
         await pilot.pause()
         status = str(app.screen.query_one("#settings-status").render())
     assert "MARIM_WORKFLOWS=1" in (tmp_path / "marim" / ".env").read_text()
-    assert "next launch" in status
+    assert "unavailable" in status
+    assert "workflows extra" in status
 
 
 @pytest.mark.anyio

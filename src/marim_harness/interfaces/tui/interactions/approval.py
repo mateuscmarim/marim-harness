@@ -27,10 +27,9 @@ def _append_diff(detail: Text, old_string: str, new_string: str) -> None:
 
 
 def _append_workflow_script(detail: Text, args: dict) -> None:
-    """Render the run_workflow script as readable Python (real newlines, not
-    an escaped repr) followed by a compact JSON rendering of ``args`` when
-    present, so the user can actually review the script they're approving."""
-    for line in safe_text(args["script"]).splitlines():
+    """Show readable Python, including legacy script/args in saved calls."""
+    code = args["code"] if "code" in args else args["script"]
+    for line in safe_text(code).splitlines():
         detail.append(f"{line}\n", style=ADDED_STYLE)
     workflow_args = args.get("args")
     if workflow_args is not None:
@@ -63,7 +62,7 @@ def format_detail(tool_name: str, args: dict) -> Text:
         for line in safe_text(args["content"]).splitlines():
             detail.append(f"{line}\n", style=ADDED_STYLE)
         return detail
-    if tool_name == "run_workflow" and "script" in args:
+    if tool_name == "run_workflow" and ("code" in args or "script" in args):
         _append_workflow_script(detail, args)
         return detail
     for k, v in args.items():

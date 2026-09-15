@@ -25,6 +25,8 @@ if TYPE_CHECKING:
     from ..session.claim import SessionClaim
     from ..stats.ledger import StatsLedger
     from ..trust_surface import ProjectSurface
+    from ..workflows.catalog import WorkflowBinding
+    from ..workflows.integration import WorkflowIntegration
     from .outcome import TurnOutcome
 
 from ..compaction import (
@@ -77,7 +79,6 @@ from .deps import (
     SubAgentNoticeCb,
     SubAgentThinkingCb,
     SubAgentUsageCb,
-    WorkflowRunner,
 )
 from .instructions import InstructionSources, register_instructions
 from .output_limits import session_output_limits
@@ -228,13 +229,10 @@ class HarnessConfig:
     # None, which degrades everything downstream at once: no prompt block, no
     # extra write root in the file tools, no ask-mode approval bypass.
     scratchpad_enabled: bool = True
-    # Dynamic workflows: the run_workflow tool's engine. Enabled by default,
-    # but the engine only builds when pydantic-monty is importable (the
-    # [workflows] extra); otherwise services.run_workflow stays None and the
-    # tool answers with an install hint. MARIM_WORKFLOWS=0 turns it off.
+    # Optional upstream integration; its live flag supports enable after launch.
     workflows_enabled: bool = True
-    # Ceiling on the wall-clock budget any single run_workflow call may request;
-    # per-call requests are clamped to it (see workflows/engine.py).
+    workflow_bindings: tuple[WorkflowBinding, ...] = ()
+    # Wall-clock deadline including child waits, separate from the CPU cap.
     workflow_timeout_secs: float = 1800.0
     # The user-curated model per sub-agent tier (cheap/med/high), threaded
     # straight into SubagentRunner(tiers=...). None ⇒ SubagentRunner falls
@@ -256,24 +254,25 @@ class HarnessConfig:
     thinking_level: str | None = None
 
 
-def _build_workflow_engine(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
-    """The workflow engine, or None when disabled or pydantic-monty is not
-    installed. The import is guarded HERE (not in the tool) so availability
-    is decided once at build time and the tool only checks the seam."""
-    if not cfg.workflows_enabled:
+def _build_workflows(cfg: HarnessConfig, deps: Deps, subagents: SubagentRunner):
+    """Build optional integration even when initially disabled, for live enable."""
+    if cfg.groups is not None and not cfg.groups.workflow:
         return None
     try:
-        from ..workflows.engine import WorkflowEngine
+        import pydantic_monty  # noqa: F401 — probe even if integration is cached
+
+        from ..workflows.integration import WorkflowIntegration
     except ImportError as exc:
-        if exc.name == "pydantic_monty":
-            logger.info(
-                "workflows unavailable: pydantic-monty not installed "
-                "(uv add 'marim-harness[workflows]')"
-            )
-        else:
-            logger.info("workflows unavailable: %s", exc)
+        logger.info("workflows unavailable: install marim-harness[workflows] (%s)", exc.name)
         return None
-    return WorkflowEngine(deps, subagents.run, timeout_secs=cfg.workflow_timeout_secs)
+    return WorkflowIntegration(
+        deps,
+        subagents.run,
+        subagents.available_agents,
+        cfg.workflow_bindings,
+        timeout_secs=cfg.workflow_timeout_secs,
+        enabled=cfg.workflows_enabled,
+    )
 
 
 def build_services(
@@ -284,7 +283,7 @@ def build_services(
     subagents: SubagentRunner,
     get_session_id: Callable[[], str | None] | None = None,
     get_scratchpad: Callable[[], Path | None] | None = None,
-    run_workflow: WorkflowRunner | None = None,
+    workflows: WorkflowIntegration | None = None,
     supports_images: Callable[[str], Awaitable[bool | None]] | None = None,
 ) -> HarnessServices:
     """Assemble the Harness-wired collaborator container and install it on
@@ -300,7 +299,7 @@ def build_services(
         resume_subagent=subagents.resume_spawn,
         get_session_id=get_session_id,
         get_scratchpad=get_scratchpad,
-        run_workflow=run_workflow,
+        workflows=workflows,
         supports_images=supports_images,
     )
     deps.services = services
@@ -527,9 +526,7 @@ def build_collaborators(
             return ensure_scratchpad(deps.workspace.root, sid)
 
         get_scratchpad = _get_scratchpad
-    # The run_workflow tool's engine. Guarded build: disabled by config, or
-    # pydantic-monty simply not installed (the [workflows] extra).
-    workflow_engine = _build_workflow_engine(cfg, deps, subagents)
+    workflows = _build_workflows(cfg, deps, subagents)
     # Vision gate for read_file image returns: catalog-backed when a model
     # source is composed (CLI path), None for explicit-model embedders
     # (HarnessBuilder) — where unknown capability sends images optimistically.
@@ -548,7 +545,7 @@ def build_collaborators(
         # ``session.store``) is reflected without rewiring services.
         get_session_id=lambda: session.store.session_id if session.store is not None else None,
         get_scratchpad=get_scratchpad,
-        run_workflow=workflow_engine.run if workflow_engine is not None else None,
+        workflows=workflows,
         supports_images=supports_images,
     )
     return Collaborators(
@@ -646,11 +643,6 @@ class Harness:
         self.checkpoints = collab.checkpoints
         self.hooks = collab.hooks
         self.subagents = collab.subagents
-        # The workflow runner as built (None when disabled at launch or
-        # pydantic-monty is missing). Kept so set_workflows_enabled can
-        # restore the seam after a live disable — services.run_workflow
-        # itself is the mutable on/off switch the tool checks per call.
-        self._workflow_runner = deps.services.run_workflow if deps.services else None
         # The turn-lifecycle orchestrator. Owns all mutable turn-state
         # (pending notes, steer buffer, active RunContext) and drives the
         # run_turn → approval loop → persist pipeline.
@@ -671,7 +663,7 @@ class Harness:
         # model it consults is re-resolved PER CALL through the closure over
         # advisor_model_id, so /advisor switches apply to the next
         # consultation with no rebuild. services.advise is the live on/off
-        # seam (the run_workflow pattern): the tool's prepare hook and the
+        # seam: the tool's prepare hook and the
         # steering-instructions closure both read it per request.
         self._advisor_env_default = cfg.advisor_model
         self.advisor_model_id: str | None = None
@@ -1248,16 +1240,11 @@ class Harness:
         return self.deps.workspace.mode
 
     def set_workflows_enabled(self, enabled: bool) -> bool:
-        """Turn dynamic workflows on/off for this session by flipping the
-        ``services.run_workflow`` seam the tool checks per call — no rebuild,
-        the tool stays registered and degrades to its unavailable hint.
-        Returns whether the seam now matches the request: enabling when no
-        engine was built at launch (workflows off, or pydantic-monty missing)
-        has nothing to restore, so it reports False and the caller can say
-        "applies next launch" instead of pretending."""
-        if self.deps.services is not None:
-            self.deps.services.run_workflow = self._workflow_runner if enabled else None
-        return (self._workflow_runner is not None) or not enabled
+        """Toggle workflows live; False on enable means dependencies/group unavailable."""
+        workflows = self.deps.services.workflows
+        if workflows is not None:
+            workflows.enabled = enabled
+        return workflows is not None or not enabled
 
     def set_subagent_tiering_enabled(self, enabled: bool) -> None:
         """Turn sub-agent model tiering on/off for this session by flipping the

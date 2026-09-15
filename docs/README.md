@@ -13,7 +13,7 @@
 - [`guides/subagents.md`](guides/subagents.md) — sub-agents and background
   jobs: spawning, agent specs, model tiers, the `claude-cli` backend.
 - [`guides/workflows.md`](guides/workflows.md) — dynamic workflows: the
-  sandboxed orchestration scripts, host functions, budgets, and safety.
+  upstream sandbox, named worker catalog, budgets, and script migration.
 - [`guides/hooks.md`](guides/hooks.md) — lifecycle hooks: every event, the
   config format, context injection, and Claude Code compatibility.
 - [`guides/mcp.md`](guides/mcp.md) — MCP servers: config scopes, the

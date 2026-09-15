@@ -9,9 +9,8 @@ backend (an external process marim only launches) and schemas without an
 object root (StructuredDict requires one). ``resolve_output_schema`` is that
 decision, made once by the runner — the component that knows the backend.
 
-Lives under ``subagents/`` rather than ``workflows/schema.py`` because the
-runner is core and this module must not pull in jsonschema (a [workflows]
-extra); report *validation* stays in the workflows package."""
+Lives under ``subagents/`` because the runner owns output configuration;
+full CLI report validation stays at the workflow bridge boundary."""
 
 from __future__ import annotations
 

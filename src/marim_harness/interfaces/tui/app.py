@@ -1651,7 +1651,7 @@ class HarnessApp(App):
         self, stream_id: str, type_: str, task: str, parent_id: str
     ) -> None:
         """Claim a card for a workflow-spawned sub-agent (see bind_ui). Fired on
-        the app's event loop by the workflow engine before it launches the child,
+        the app's event loop by the workflow bridge before it launches the child,
         so — like on_subagent_event — direct widget mutation via the renderer is
         safe with no call_from_thread marshalling."""
         await self.stream.claim_workflow_spawn(stream_id, type_, task, parent_id)

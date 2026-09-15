@@ -473,8 +473,7 @@ async def test_producer_bounds(tmp_path, monkeypatch):
 
 
 def test_report_budgets(tmp_path):
-    from marim_harness.workflows.engine import MAX_RESULT_CHARS
-    from marim_harness.workflows.schema import shape_result
+    from marim_harness.workflows.integration import MAX_RESULT_CHARS, WorkflowIntegration
 
     h = _harness(tmp_path)
     report = "report\n" * 10000
@@ -482,10 +481,74 @@ def test_report_budgets(tmp_path):
     assert len(capped) <= 1000
     assert (tmp_path / ".marim/subagent-output/report.md").read_text() == report
     value = {"report": report}
-    text, spill = shape_result(value, MAX_RESULT_CHARS, str(tmp_path / "workflow.json"))
+    workflows = WorkflowIntegration(h.deps, h.subagents.run, h.subagents.available_agents)
+    text = workflows.cap_result(json.dumps(value), "report")
+    spill_path = tmp_path / ".marim/workflow-output/report.json"
     assert len(text) <= MAX_RESULT_CHARS
-    assert json.loads(spill) == value
-    assert "workflow.json" in text
+    assert json.loads(spill_path.read_text()) == value
+    assert str(spill_path) in text
+
+
+@pytest.mark.anyio
+async def test_workflow_and_shared_output_limits_preserve_complete_typed_report(tmp_path):
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolReturnPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from marim_harness import HarnessBuilder
+    from marim_harness.runtime.output_limits import OutputStorage
+    from marim_harness.tools.impl.offload import find_offload_paths
+    from marim_harness.workflows.catalog import WorkflowBinding
+    from marim_harness.workflows.integration import MAX_RESULT_CHARS
+
+    payload = {"report": "x" * 30_000}
+    schema = {
+        "type": "object",
+        "properties": {"report": {"type": "string"}},
+        "required": ["report"],
+    }
+    worker_calls = []
+
+    def respond(messages, info):
+        if any(tool.name == "run_workflow" for tool in info.function_tools):
+            if any(isinstance(part, ToolReturnPart) for part in messages[-1].parts):
+                return ModelResponse(parts=[TextPart("done")])
+            code = 'r = await worker(task="produce")\nassert len(r["report"]) == 30000\nr'
+            return ModelResponse(parts=[ToolCallPart("run_workflow", {"code": code}, "wf")])
+        worker_calls.append(True)
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, payload, "typed")])
+
+    harness = (
+        HarnessBuilder(workspace=tmp_path, model=FunctionModel(respond))
+        .with_defaults()
+        .with_lsp(enabled=False)
+        .with_config_overrides(workflow_bindings=(WorkflowBinding("worker", "explore", schema),))
+        .build()
+    )
+    try:
+        await harness.run_turn("run workflow")
+        returned = next(
+            part
+            for message in harness.session.history
+            for part in message.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == "run_workflow"
+        )
+        assert worker_calls == [True]
+        assert "read_tool_result" in returned.content
+        assert len(returned.content) < MAX_RESULT_CHARS
+        cap = OutputStorage.capture(harness.deps).capability()
+        handle = returned.metadata["overflow_handle"]
+        outer_payload = (await cap.store.read(handle)).decode()
+        assert len(outer_payload) == MAX_RESULT_CHARS
+        # The shared handle contains the bounded workflow envelope. Read its
+        # tail through the public retrieval tool to recover the inner absolute
+        # pointer, then verify the original JSON contains the full worker report.
+        retrieved = await _read(cap, handle, from_end=True, limit=1)
+        (pointer,) = find_offload_paths(retrieved)
+        assert Path(pointer).is_absolute()
+        assert pointer in outer_payload
+        assert json.loads(Path(pointer).read_text()) == payload
+    finally:
+        await harness.aclose()
 
 
 def test_legacy_writers_removed():
