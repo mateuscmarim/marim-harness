@@ -167,6 +167,22 @@ class ContextLimits:
         it by the safety ratio. Sync and I/O-free like ``threshold``."""
         return self._window_for(model_id)
 
+    def note_reported_window(self, model_id: str | None, window: int | None) -> None:
+        """Cache a context window reported by the active backend.
+
+        CLI backends learn the served window from their live protocol rather
+        than a catalog. Treat that reading like discovery so every consumer of
+        this resolver — compaction, masking and overflow classification — sees
+        the same limit. The explicit user override still wins in
+        :meth:`_window_for`, and invalidation drops the reading on a model
+        switch until the new backend reports its own value."""
+        if model_id is None or isinstance(window, bool) or not isinstance(window, int):
+            return
+        if window <= 0:
+            return
+        self._windows[model_id] = window
+        self._windows[_bare_id(model_id)] = window
+
     # -- threshold -------------------------------------------------------
 
     def threshold(self, model_id: str | None) -> int:

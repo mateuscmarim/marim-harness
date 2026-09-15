@@ -284,6 +284,13 @@ class SessionController:
         model_id = self.get_model_id() if self.get_model_id else None
         return self.limits.window_for(model_id)
 
+    def note_context_window(self, window: int | None) -> None:
+        """Teach the shared resolver a window reported by the active backend."""
+        if self.limits is None:
+            return
+        model_id = self.get_model_id() if self.get_model_id else None
+        self.limits.note_reported_window(model_id, window)
+
     # Attribute setter that bumps the version on every history replacement —
     # the persist cache relies on this, so direct ``self.history = x`` (which
     # the property funnel routes through) invalidates the cache too. Sites

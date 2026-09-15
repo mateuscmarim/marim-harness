@@ -94,13 +94,16 @@ class Fake:
     def _control_body(self, msg: dict) -> dict:
         """The between-turns control answers the scenario can script:
         ``initialize`` carries the model menu (``models``), ``get_usage`` the
-        rate-limit reading (``usage_report``); anything else an empty
+        rate-limit reading (``usage_report``), and ``get_context_usage`` the
+        context breakdown (``context_usage_report``); anything else an empty
         success."""
         subtype = (msg.get("request") or {}).get("subtype")
         if subtype == "initialize" and "models" in self.scenario:
             return {"models": self.scenario["models"]}
         if subtype == "get_usage" and "usage_report" in self.scenario:
             return self.scenario["usage_report"]
+        if subtype == "get_context_usage" and "context_usage_report" in self.scenario:
+            return self.scenario["context_usage_report"]
         return {}
 
     def _assistant(self, content: list[dict]) -> dict:

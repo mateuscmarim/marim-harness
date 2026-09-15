@@ -33,6 +33,7 @@ from ..compaction import (
     make_titler,  # noqa: F401 — re-exported for tests
 )
 from ..config.context_limits import ContextLimits
+from ..config.context_report import current_context_report
 from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY, SubagentTiers
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
@@ -749,9 +750,16 @@ class Harness:
         count = self.session.resume()
         self.checkpoints.reload()
         self._apply_saved_model()
+        self._note_context_window()
         self._apply_saved_advisor()
         self._apply_saved_thinking()
         return count
+
+    def _note_context_window(self) -> None:
+        """Restore a CLI backend's last persisted window into ContextLimits."""
+        report = current_context_report(self.current_model, self.session.history)
+        if report is not None:
+            self.session.note_context_window(report.window)
 
     def _clear_job_context(self) -> None:
         """Drop finished-job history, any re-stashed jobs digest, queued `!`
@@ -1014,6 +1022,7 @@ class Harness:
         for restore in (
             self.checkpoints.reload,
             self._apply_saved_model,
+            self._note_context_window,
             self._apply_saved_advisor,
             self._apply_saved_thinking,
         ):

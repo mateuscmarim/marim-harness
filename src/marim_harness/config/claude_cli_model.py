@@ -99,7 +99,12 @@ from .cli_input import (
 )
 from .cli_input import flatten_history as flatten_history
 from .cli_input import latest_user_text as latest_user_text
-from .context_report import CONTEXT_REPORT_KEY, ContextReport, prompt_tokens
+from .context_report import (
+    CONTEXT_REPORT_KEY,
+    ContextReport,
+    context_report_from_usage,
+    prompt_tokens,
+)
 from .external_cli import (
     CLI_ACTIVITY_KEY,
     ActivityLedger,
@@ -1263,6 +1268,26 @@ class ClaudeCliModel(ExternalCliModel):
             logger.debug("claude get_usage failed: %s", exc)
             self.quota_hint = None
 
+    async def _refresh_context(self, process: ClaudeProcess) -> None:
+        """Refine the passive prompt reading with Claude's full local estimate."""
+        if self.ephemeral or not process.alive:
+            return
+        try:
+            raw = await process.read_context_usage()
+        except Exception as exc:  # noqa: BLE001 - best-effort status-line reading
+            logger.debug("claude get_context_usage failed: %s", exc)
+            return
+        window = self.context_report.window if self.context_report is not None else None
+        report = context_report_from_usage(raw, window=window)
+        if report is None:
+            logger.debug("claude get_context_usage returned no usable context reading")
+            return
+        self.context_report = report
+
+    async def _refresh_status(self, process: ClaudeProcess) -> None:
+        """Refresh independent context and quota hints without serial latency."""
+        await asyncio.gather(self._refresh_context(process), self._refresh_quota(process))
+
     # --- pydantic-ai entry points --------------------------------------------------
     async def request(
         self,
@@ -1299,13 +1324,13 @@ class ClaudeCliModel(ExternalCliModel):
                                 await self._display_tasks([event])
                     else:
                         folded.add(chunk)
-            if done is not None and done.complete:
-                await self._refresh_quota(process)
         finally:
             await objs.aclose()
             await self._after_turn(process, handle)
         if done is None or not done.complete:
             raise CliModelError(_no_result_message(done))
+        usage = self._settle_turn(done, own=handle.own)
+        await self._refresh_status(process)
         return ModelResponse(
             parts=[*parts, TextPart(content=folded.text())],
             model_name=self.model_name,
@@ -1313,7 +1338,7 @@ class ClaudeCliModel(ExternalCliModel):
             # construction-time value — so a multi-turn history doesn't carry
             # identical, stale timestamps across every ModelResponse.
             timestamp=datetime.now(tz=timezone.utc),
-            usage=self._settle_turn(done, own=handle.own),
+            usage=usage,
             provider_name="claude-cli",
             provider_details=self._response_details(),
             metadata={"backend_result": self.lifecycle.result_details},
@@ -1343,7 +1368,7 @@ class ClaudeCliModel(ExternalCliModel):
             _ephemeral=self.ephemeral,
             _finish=lambda done: self._settle_turn(done, own=handle.own),
             _details=self._response_details,
-            _after=lambda: self._refresh_quota(process),
+            _after=lambda: self._refresh_status(process),
             _on_activity=self.on_activity,
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
@@ -1619,6 +1644,12 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         # cost the turn its usage (same ordering as CodexStreamedResponse).
         if self._after is not None:
             await self._after()
+        # The status refresh can refine the context report after
+        # _finalize_done attached the passive reading. Replace just that
+        # detail while retaining the activity ledger already on the response.
+        details = self._details() if self._details is not None else None
+        if details:
+            self.provider_details = {**(self.provider_details or {}), **details}
 
     async def _emit_lifecycle(self, chunk, ledger, folder, thinking) -> None:
         events = (

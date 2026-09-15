@@ -86,6 +86,18 @@ def test_threshold_known_window_applies_safety_ratio():
     assert capped.threshold("m") == 60_000  # budget wins when lower
 
 
+def test_backend_reported_window_updates_threshold_and_respects_override():
+    limits = ContextLimits(budget=None)
+    limits.note_reported_window("claude-cli:default", 200_000)
+    assert limits.window_for("claude-cli:default") == 200_000
+    assert limits.threshold("claude-cli:default") == 160_000
+
+    overridden = ContextLimits(budget=None, window_override=100_000)
+    overridden.note_reported_window("claude-cli:default", 200_000)
+    assert overridden.window_for("claude-cli:default") == 100_000
+    assert overridden.threshold("claude-cli:default") == 80_000
+
+
 @pytest.mark.anyio
 async def test_resolve_discovers_windows_from_catalog_once():
     calls = {"n": 0}

@@ -1,9 +1,13 @@
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.usage import RunUsage
 
+from marim_harness.config.context_limits import ContextLimits
+from marim_harness.config.context_report import CONTEXT_REPORT_KEY, ContextReport
 from marim_harness.runtime.controller import TurnController
 from marim_harness.runtime.harness import Harness, HarnessConfig, build_collaborators
+from marim_harness.session import SessionStore
 from marim_harness.tools.provider import BuiltinToolProvider
 from tests.conftest import _make_deps
 
@@ -79,6 +83,22 @@ async def test_failed_turn_preserves_user_prompt(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_successful_cli_turn_teaches_context_limits_the_reported_window(tmp_path):
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    model = FunctionModel(fn)
+    model.context_report = ContextReport(used=1_000, window=50_000)
+    tc = _make_tc(model, tmp_path)
+    assert tc.session.compact_threshold == 100_000
+
+    await tc.run_turn("hello")
+
+    assert tc.session.known_window == 50_000
+    assert tc.session.compact_threshold == 40_000
+
+
+@pytest.mark.anyio
 async def test_actionable_failure_is_surfaced_to_model_next_turn(tmp_path):
     """After an actionable failure, the next turn's prompt carries a short note."""
     from pydantic_ai.exceptions import UnexpectedModelBehavior
@@ -129,6 +149,41 @@ def test_harness_has_no_turn_state_fields(tmp_path):
     assert not hasattr(h, "_steer_buffer")
     assert hasattr(h, "turn_controller")
     assert h.turn_controller._pending_error_note is None
+
+
+def test_resume_restores_cli_window_into_context_limits(tmp_path):
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    model = FunctionModel(fn)
+    model.context_report = None
+    store = SessionStore(
+        path=tmp_path / "session.json",
+        workspace_root=tmp_path,
+        session_id="session",
+        name="session",
+    )
+    report = ContextReport(used=10_000, window=200_000)
+    store.save(
+        [
+            ModelResponse(
+                parts=[TextPart(content="saved")],
+                provider_details={CONTEXT_REPORT_KEY: report.to_payload()},
+            )
+        ],
+        RunUsage(),
+    )
+    harness = Harness(
+        model,
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
+        config=HarnessConfig(store=store, context_limits=ContextLimits(budget=None)),
+    )
+
+    assert harness.resume() == 1
+    assert harness.session.known_window == 200_000
+    assert harness.session.compact_threshold == 160_000
 
 
 @pytest.mark.anyio

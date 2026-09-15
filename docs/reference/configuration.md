@@ -145,9 +145,12 @@ effort. An unset level sends nothing and leaves the CLI's own defaults.
 The status bar's `ctx` field shows Claude's own context under this provider:
 each `assistant` event carries the prompt size of that request (uncached
 input plus both cache buckets), and the turn's `result` names the model's
-context window. After each turn marim also asks the CLI for its `get_usage`
-rate limits once and shows them as `quota 11% (5h) · 59% (1w)` (the
-five-hour and seven-day windows); a failed read is ignored. Cost in the
+context window. After each turn marim refines that reading through
+`get_context_usage {detail: summary}`, which includes Claude's local estimates
+for the system prompt and tool schemas without making extra token-count API
+calls. It also asks the CLI for its `get_usage` rate limits and shows them as
+`quota 11% (5h) · 59% (1w)` (the five-hour and seven-day windows); failed
+reads are ignored. Cost in the
 usage ledger is per turn: the CLI's `result` reports a *running* total for
 the process (documented as resetting on a fresh or resumed session and on a
 mid-session `/clear`), so marim bills each turn the increase since the
