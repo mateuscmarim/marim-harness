@@ -334,6 +334,25 @@ per-session switches remain `/advisor` and `/think`).
 The Advanced section is read-only: command deny/allowlist, project-hooks
 trust, and the config file path.
 
+## Desktop notifications
+
+Marim can notify you when a turn finishes, fails, or needs your attention.
+Notifications are enabled by default. Set `MARIM_NOTIFICATIONS=0` to mute
+them, or select events with `MARIM_NOTIFICATION_EVENTS` (comma-separated):
+
+| Event | When it fires |
+| --- | --- |
+| `turn_complete` | A turn finished successfully |
+| `error` | A turn failed with an exception |
+| `approval_needed` | The agent is waiting for tool approval |
+| `ask_user` | The agent asked a structured question |
+| `job_done` | A background job finished and triggered a wake |
+
+The default events are `turn_complete,error,approval_needed,ask_user`.
+Linux needs `notify-send`, macOS uses `osascript`, and Windows uses a
+PowerShell balloon tip. Notifications are best-effort: a missing helper or
+notification service never interrupts the agent.
+
 ## Shell passthrough (`!command`)
 
 Prefix a message with `!` to run a shell command yourself, in the workspace
@@ -369,6 +388,11 @@ Either way an `[Image #N]` marker appears in the text; markers are atomic
 renumber). Attachments ride along when a message is queued, steered, or
 edited back into the box. If the active model is known not to support
 images, the submission is blocked with a hint instead of failing.
+
+Clipboard image reading needs `wl-clipboard` (Wayland), `xclip` (X11), or
+`pngpaste` (macOS); Windows uses built-in PowerShell. Without a clipboard
+helper, the file-path method still works. Cached images live under
+`~/.marim/image-cache/`; override this with `MARIM_IMAGE_CACHE_DIR`.
 
 Image attachments also work with `claude-cli` and `codex-cli`, including
 mid-turn steering in a local session. Marim sends the image bytes directly
