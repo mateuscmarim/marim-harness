@@ -4563,9 +4563,19 @@ async def test_rewind_command_truncates_and_rerenders(tmp_path: Path):
         # Seed two checkpoints by hand against the live manager.
         mgr = app.harness.checkpoints
         mgr.snapshot("turn one")  # index 0, history_len 0
-        app.harness.session.set_history(["u1", "a1"])
+        first_turn = [
+            ModelRequest(parts=[UserPromptPart(content="u1")]),
+            ModelResponse(parts=[TextPart(content="a1")]),
+        ]
+        app.harness.session.set_history(first_turn)
         mgr.snapshot("turn two")  # index 1, history_len 2
-        app.harness.session.set_history(["u1", "a1", "u2", "a2"])
+        app.harness.session.set_history(
+            first_turn
+            + [
+                ModelRequest(parts=[UserPromptPart(content="u2")]),
+                ModelResponse(parts=[TextPart(content="a2")]),
+            ]
+        )
 
         await app.rewind_to_checkpoint(0)
         assert app.harness.session.history == []
@@ -4602,7 +4612,12 @@ async def test_rewind_note_reports_restore_failure(tmp_path: Path):
         mgr = app.harness.checkpoints
         mgr.snapshotter = _RewindSnap(restore_ok=False)
         mgr.snapshot("t1")  # checkpoint gets a commit, so restore is attempted
-        app.harness.session.set_history(["u1", "a1"])
+        app.harness.session.set_history(
+            [
+                ModelRequest(parts=[UserPromptPart(content="u1")]),
+                ModelResponse(parts=[TextPart(content="a1")]),
+            ]
+        )
         await app.rewind_to_checkpoint(0)
         notes = " ".join(w.text for w in app.query(AssistantMessage)).lower()
         assert "fail" in notes
@@ -4618,7 +4633,12 @@ async def test_undo_rewind_restores_pre_rewind_files(tmp_path: Path):
         snap = _RewindSnap(restore_ok=True)
         mgr.snapshotter = snap
         mgr.snapshot("t1")
-        app.harness.session.set_history(["u1", "a1"])
+        app.harness.session.set_history(
+            [
+                ModelRequest(parts=[UserPromptPart(content="u1")]),
+                ModelResponse(parts=[TextPart(content="a1")]),
+            ]
+        )
         await app.rewind_to_checkpoint(0)
         snap.restored.clear()
         await app.undo_rewind()

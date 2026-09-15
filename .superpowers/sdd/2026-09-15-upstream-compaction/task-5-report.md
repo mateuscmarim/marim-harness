@@ -40,6 +40,10 @@ model history. The upstream estimator correctly requires `ModelMessage` objects,
 the fixture now uses a `ModelRequest`/`ModelResponse` pair and retains the same
 busy-state assertion. No permissive production fallback was added.
 
+The remaining rewind tests that seeded the same invalid string histories were
+updated in the same way to prevent status-timer races from hiding or exposing the
+fixture error depending on timing.
+
 - `uv run pytest --no-cov -n 0 tests/test_app.py::test_rewind_command_refuses_while_busy`
   — 1 passed.
 - `uv run pytest --no-cov -n 0 tests/test_app.py -k rewind`
