@@ -88,62 +88,6 @@ def test_route_logging_to_file_returns_none_on_oserror(monkeypatch):
 # --- Tier 1: compaction summarizer failure ------------------------------------
 
 
-@pytest.mark.anyio
-async def test_compaction_logs_on_summarizer_failure(caplog):
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        TextPart,
-        ToolCallPart,
-        ToolReturnPart,
-        UserPromptPart,
-    )
-
-    from marim_harness.compaction import compact_history_with_summary
-
-    def _round(n: int) -> list:
-        tid = f"t{n}"
-        return [
-            ModelRequest(parts=[UserPromptPart(content=f"prompt {n}")]),
-            ModelResponse(
-                parts=[
-                    TextPart(content=f"thinking {n}"),
-                    ToolCallPart(
-                        tool_name="read_file",
-                        args={"path": f"file{n}.py"},
-                        tool_call_id=tid,
-                    ),
-                ]
-            ),
-            ModelRequest(
-                parts=[
-                    ToolReturnPart(
-                        tool_name="read_file",
-                        content=f"contents {n}",
-                        tool_call_id=tid,
-                    )
-                ]
-            ),
-            ModelResponse(parts=[TextPart(content=f"answer {n}")]),
-        ]
-
-    history = []
-    for n in range(20):
-        history.extend(_round(n))
-
-    async def boom(messages, instructions=None):
-        raise RuntimeError("summary model down")
-
-    with caplog.at_level(logging.WARNING, logger="marim_harness.compaction"):
-        result, did = await compact_history_with_summary(
-            history, max_tokens=1, summarizer=boom, keep_last_messages=8
-        )
-
-    assert did is True
-    assert any("summarizer failed" in r.message for r in caplog.records)
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
-
-
 # --- Tier 1: session autoname/rename titler failure --------------------------
 
 

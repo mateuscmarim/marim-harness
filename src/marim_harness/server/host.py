@@ -149,9 +149,7 @@ class SessionHost:
             on_jobs_changed=self._on_jobs_changed,
             on_rename=lambda old, new: self._publish("session.renamed", {"from": old, "to": new}),
             on_compact_start=lambda: self._publish("compaction.started", {}),
-            on_compact=lambda before, after: self._publish(
-                "compaction.finished", {"before": before, "after": after}
-            ),
+            on_compact=self._on_compact,
             on_notice=lambda message: self._publish("session.notice", {"message": message}),
             # Not through the wake driver: this turn spends no model call of
             # marim's (the CLI already ran it — the autonomous turn only reads
@@ -160,6 +158,17 @@ class SessionHost:
             on_backend_turn=self._enqueue_autonomous_turn,
         )
         self._worker = loop.create_task(self._worker_loop())
+
+    def _on_compact(self, before: int, after: int) -> None:
+        details = getattr(self.harness.session, "last_compaction_details", None)
+        payload = {"before": before, "after": after}
+        if isinstance(details, dict):
+            payload.update(
+                (key, details[key])
+                for key in ("changed", "summary", "post_tokens", "stage")
+                if key in details
+            )
+        self._publish("compaction.finished", payload)
 
     # ------------------------------------------------------------- state --
     @property

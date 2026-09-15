@@ -22,7 +22,6 @@ def _stub_model_plumbing(monkeypatch):
     from marim_harness.config.model import ModelSource
 
     monkeypatch.setattr(ModelSource, "build", lambda self, mid: TestModel())
-    monkeypatch.setattr(bootstrap, "make_summarizer", lambda model: None)
     monkeypatch.setattr(bootstrap, "make_titler", lambda model: None)
 
 
@@ -240,7 +239,6 @@ def test_build_harness_uses_multi_model_source(monkeypatch, tmp_path):
     monkeypatch.setenv("MARIM_BASE_URL", "http://localhost:1234/v1")
     # Avoid constructing real provider models or aux agents in the test:
     monkeypatch.setattr(MultiModelSource, "build", lambda self, mid: TestModel())
-    monkeypatch.setattr(b, "make_summarizer", lambda model: None)
     monkeypatch.setattr(b, "make_titler", lambda model: None)
     h = b.build_harness(tmp_path, mode=Mode.ask)
     assert isinstance(h.model_source, MultiModelSource)
@@ -458,3 +456,13 @@ def test_lsp_tools_stay_on_with_workspace_coverage(tmp_path: Path, monkeypatch):
     harness = bootstrap.build_harness(ws, mode=Mode.ask)
     ts = harness.provider.lsp_toolset()
     assert ts is not None
+
+
+def test_cli_bootstrap_suppresses_upstream_banner(tmp_path, monkeypatch):
+    import pydantic_ai
+
+    monkeypatch.setattr(pydantic_ai, "BANNER_ENABLED", True)
+    _stub_model_plumbing(monkeypatch)
+    _isolate_sessions(monkeypatch, tmp_path)
+    bootstrap.build_harness(tmp_path, mode=Mode.ask)
+    assert pydantic_ai.BANNER_ENABLED is False

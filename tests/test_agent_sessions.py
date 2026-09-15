@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai_harness.compaction import SummarizingCompaction
 
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.permissions import Mode
@@ -390,7 +391,11 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
         instructions="x",
         max_context_tokens=1,
         keep_last_messages=4,
-        summarizer=summarizer,
+        compaction_strategy=SummarizingCompaction(
+            max_tokens=1,
+            keep_messages=4,
+            model=TestModel(custom_output_text="CONDENSED RECAP"),
+        ),
     )
     for i in range(30):
         harness.session.history.append(
@@ -407,18 +412,6 @@ async def test_run_turn_summarizes_when_over_budget(tmp_path: Path):
         if isinstance(getattr(p, "content", ""), str)
     ]
     assert any("CONDENSED RECAP" in t for t in texts)
-
-
-@pytest.mark.anyio
-async def test_make_summarizer_produces_text():
-    from pydantic_ai.messages import ModelRequest, UserPromptPart
-    from pydantic_ai.models.test import TestModel
-
-    from marim_harness.runtime.harness import make_summarizer
-
-    summarize = make_summarizer(TestModel(custom_output_text="A SUMMARY"))
-    out = await summarize([ModelRequest(parts=[UserPromptPart(content="hello")])], None)
-    assert "A SUMMARY" in out
 
 
 @pytest.mark.anyio

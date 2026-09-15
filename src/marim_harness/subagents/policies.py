@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .masking import ObservationMasker
+from ..session.compaction import SafeClearToolResults, safe_tool_result_clearer
 
 if TYPE_CHECKING:
     from ..config.context_limits import ContextLimits
@@ -22,16 +22,11 @@ _FALLBACK_MASK_TRIGGER = 75_000
 
 @dataclass(frozen=True)
 class MaskingPolicy:
-    """How a spawn masks its stale tool observations. A sub-agent does the
-    read-heavy fan-out work, so its history is dominated by tool output; past a
-    per-spawn token trigger those observations are masked per request by an
-    ``ObservationMasker``. Bundles the resolver + knobs with the trigger
-    resolution and masker construction that read them."""
+    """How a spawn clears stale tool results through the upstream capability."""
 
     limits: ContextLimits | None = None
     enabled: bool = True
     keep_recent: int = 4
-    min_chars: int = 200
     fallback_trigger: int = _FALLBACK_MASK_TRIGGER
 
     async def trigger_for(self, model_id: str | None) -> int:
@@ -43,17 +38,13 @@ class MaskingPolicy:
             return self.fallback_trigger
         return await self.limits.resolve(model_id)
 
-    def masker(self, trigger: int | None) -> ObservationMasker | None:
-        """A fresh ``ObservationMasker`` for ONE spawn — it holds the run's
-        committed mask set, so sharing an instance across spawns would leak one
-        run's masked tool_call_ids into another's requests. ``None`` when masking
-        is disabled."""
+    def clearer(self, trigger: int | None) -> SafeClearToolResults[object] | None:
+        """Build a fresh upstream clearing capability for one spawn."""
         if not self.enabled:
             return None
-        return ObservationMasker(
-            trigger if trigger is not None else self.fallback_trigger,
-            keep_recent=self.keep_recent,
-            min_chars=self.min_chars,
+        return safe_tool_result_clearer(
+            max_tokens=trigger if trigger is not None else self.fallback_trigger,
+            keep_pairs=self.keep_recent,
         )
 
 

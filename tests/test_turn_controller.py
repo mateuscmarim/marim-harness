@@ -515,7 +515,7 @@ def _fake_compact(tc, *, new_len: int | None):
     seam rather than the removed post-return invalidate."""
     seen: dict = {}
 
-    async def fake(*, force=False, trigger="auto", instructions=None):
+    async def fake(*, force=False, trigger="auto", instructions=None, **kwargs):
         seen.update(force=force, trigger=trigger, instructions=instructions)
         before = len(tc.session.history)
         if new_len is not None:
@@ -599,7 +599,7 @@ async def test_no_compaction_never_invalidates(tmp_path):
     tc.session.history = [object(), object()]
     invalidated = _spy_invalidate(tc)
 
-    async def fake(*, force=False, trigger="auto", instructions=None):
+    async def fake(*, force=False, trigger="auto", instructions=None, **kwargs):
         return False
 
     tc.session.maybe_compact = fake  # type: ignore[method-assign]

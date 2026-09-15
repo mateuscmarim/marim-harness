@@ -239,8 +239,9 @@ async def test_resume_after_compaction(tmp_path):
         UserPromptPart,
     )
     from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai_harness.compaction import SummarizingCompaction
 
-    from marim_harness.compaction import compact_history
+    from marim_harness.session.compaction import ReductionOptions, reduce_history
 
     h = _harness(tmp_path)
     h.deps.services.get_session_id = lambda: "persisted-session"
@@ -260,8 +261,23 @@ async def test_resume_after_compaction(tmp_path):
             ]
         )
     history.extend(original.all_messages())
-    compacted, changed = compact_history(history, 5000, keep_last_messages=4, force=True)
-    assert changed and len(compacted) < len(history)
+    reduction = await reduce_history(
+        history,
+        ReductionOptions(
+            summary=SummarizingCompaction(max_tokens=1, keep_messages=4),
+            target_tokens=5000,
+            keep_messages=4,
+            keep_pairs=2,
+            clear=True,
+            force=True,
+            focus=None,
+        ),
+        model=TestModel(custom_output_text="Retained task summary"),
+        usage=RunUsage(),
+    )
+    compacted = reduction.messages
+    assert reduction.restructured and "summary" in reduction.stages
+    assert len(compacted) < len(history)
     saved = tmp_path / "history.json"
     saved.write_bytes(ModelMessagesTypeAdapter.dump_json(compacted))
     restored = ModelMessagesTypeAdapter.validate_json(saved.read_bytes())

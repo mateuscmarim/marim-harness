@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..command_policy import CommandPolicy
-from ..compaction import make_summarizer, make_titler
+from ..compaction import make_titler
 from ..config import (
     ModelSource,
     MultiModelSource,
@@ -58,6 +58,14 @@ def build_lsp_registry(workspace: Path, *, trust_project: bool) -> LspRegistry:
     return LspRegistry(providers)
 
 
+def _suppress_upstream_banner() -> None:
+    import pydantic_ai
+
+    # Marim owns CLI/TUI output; upstream prints its banner at the first agent run.
+    # Keep this process-wide public switch at the CLI preset, never the SDK builder.
+    pydantic_ai.BANNER_ENABLED = False
+
+
 def build_harness(
     workspace: Path,
     *,
@@ -82,6 +90,7 @@ def build_harness(
 
     ``project_memory_root`` replaces only the project's memory directory.
     Global memory remains in the user's configured global memory directory."""
+    _suppress_upstream_banner()
     cfg = load_config()
     # Resolve project trust once, store-aware: an explicit env decision wins,
     # otherwise the per-project trust store is consulted (honored only while
@@ -221,14 +230,12 @@ def build_harness(
             ),
             mask_observations=cfg.mask_observations,
             mask_keep_recent=cfg.mask_keep_recent,
-            mask_min_chars=cfg.mask_min_chars,
             # The aux agents (summarizer/titler) must NOT share a claude-cli main
             # model: that instance carries the live session_id, so they would
             # resume — and reply into — the user's real Claude session (and drop
             # their own instructions). aux_model above is the stateless, ephemeral
-            # clone for that case; this override replaces the builder's own
-            # summarizer/titler (built from the plain `model`) with aux_model's.
-            summarizer=make_summarizer(aux_model),
+            # clone for that case; this preset supplies it through builder config.
+            auxiliary_model=aux_model,
             titler=make_titler(aux_model),
             model_source=model_source,
             model_id=model_id,

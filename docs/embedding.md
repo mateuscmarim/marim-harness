@@ -71,6 +71,11 @@ reserve capabilities for what marim doesn't provide.
 marim also ships its own capabilities to attach here — see
 [Exported capabilities](sdk/capabilities.md).
 
+Persistent sessions compact through Pydantic AI Harness strategies. Advanced
+embedders can pass `compaction_strategy=` through `with_config_overrides`; use a
+`SummarizingCompaction` in place of the removed low-level `summarizer=` callback.
+Setting the strategy to `None` keeps deterministic sliding-window trimming.
+
 ### `with_advisor(model, *, max_tokens=2048, max_uses=None)`
 
 Gives the main agent an `advisor` tool: calling it forwards the full

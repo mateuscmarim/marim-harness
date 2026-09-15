@@ -311,6 +311,11 @@ class HarnessBuilder:
         HarnessConfig. Unknown names raise immediately."""
         from .harness import HarnessConfig
 
+        if "summarizer" in fields:
+            raise TypeError(
+                "summarizer= was removed; use compaction_strategy=SummarizingCompaction(...) "
+                "or None for deterministic trimming"
+            )
         known = {f.name for f in dataclasses.fields(HarnessConfig)}
         unknown = set(fields) - known
         if unknown:
@@ -482,7 +487,10 @@ class HarnessBuilder:
     def build(self) -> Harness:
         # Imports deferred so `import marim_harness` (lazy __getattr__) stays
         # cheap until a builder is actually built.
-        from ..compaction import make_summarizer, make_titler
+        from pydantic_ai_harness.compaction import SummarizingCompaction
+
+        from ..compaction import make_titler
+        from ..session.ctrl import aux_model_for
         from ..tools.names import LSP_TOOLS
         from ..tools.provider import ToolGroups
         from .deps import Deps, WorkspaceConfig
@@ -615,8 +623,15 @@ class HarnessBuilder:
             store=store,
             manager=manager,
             stats_ledger=stats_ledger,
-            summarizer=make_summarizer(model),
-            titler=make_titler(model),
+            compaction_strategy=SummarizingCompaction(
+                max_tokens=1,
+                keep_messages=self._config_overrides.get("keep_last_messages", 20),
+                instructions=(
+                    "Preserve the user’s explicit constraints, decisions, and unfinished work."
+                ),
+            ),
+            auxiliary_model=aux_model_for(model, cwd=str(self._workspace)),
+            titler=make_titler(aux_model_for(model, cwd=str(self._workspace))),
             output_type=self._output_type,
         )
         config_fields.update(self._config_overrides)

@@ -114,10 +114,9 @@ The 0.8 safety ratio applies only when the window is actually *known*
 (discovered from the provider catalog / local probe, or stated via
 `MARIM_CONTEXT_WINDOW`); otherwise the budget alone gates (default 100,000
 tokens — `MARIM_CONTEXT_BUDGET`, with per-model overrides via
-`MARIM_CONTEXT_BUDGETS`). The context size compared against it is the larger
-of a chars/4 estimate and the provider's real input-token count from the last
-request — dense code tokenizes worse than the estimate assumes, so the
-measured number is trusted when available.
+`MARIM_CONTEXT_BUDGETS`). The context size uses the public Pydantic AI Harness
+estimator, with the provider's real input-token count from the last request as
+a floor when available.
 
 The check runs at the start of every turn and again right after a turn
 completes; a genuine provider overflow mid-turn forces a compaction and
@@ -125,27 +124,24 @@ retries the request once.
 
 ### What compaction does
 
-Compaction is a two-stage pipeline:
+Compaction delegates reduction and safe history cutoffs to Pydantic AI Harness:
 
-1. **Observation masking (micro-compact).** Older tool outputs are elided
-   first: the most recent 4 tool returns are kept intact, and older returns of
-   at least 200 rendered characters have their payload replaced with a short
-   placeholder. When the session scratchpad is enabled, the full payload is
-   saved there first and the placeholder points at the file, so the model can
-   `read_file` the exact bytes back instead of re-running the tool. When old
-   tool output *is* the bloat, this gets under threshold without any model
-   call. Knobs: `MARIM_MASK_OBSERVATIONS`, `MARIM_MASK_KEEP_RECENT`,
-   `MARIM_MASK_MIN_CHARS` — see
+1. **Tool-result clearing.** Older non-mutating tool outputs are cleared first,
+   with roughly the newest four tool-call/result pairs retained. Clearing makes
+   no new scratchpad copies. Existing tool-level offload handles and pointers
+   written by older releases remain readable and are revalidated when sessions
+   load. Knobs: `MARIM_MASK_OBSERVATIONS` and `MARIM_MASK_KEEP_RECENT` — see
    [`reference/configuration.md`](../reference/configuration.md).
 
-2. **Summarization.** If still over threshold, the history is split into the
-   first message (the original task anchor), a middle, and a recent tail of
-   roughly the last 20 messages — always cut at a user-turn boundary so tool
-   calls stay paired with their returns. The middle is condensed into one
-   structured summary message (requests and intent, files touched, errors and
-   fixes, pending work, next step) by a dedicated tool-free summarizer agent
-   on the session's model. If the summarizer fails, the middle is dropped
-   outright rather than breaking the turn.
+2. **Summarization.** If still over threshold, Harness condenses older history
+   into an upstream system-summary message and retains approximately the latest
+   20 messages at safe boundaries. The exact boundary can differ from older
+   marim releases. If summarization cannot reduce safely, a sliding-window
+   strategy provides deterministic fallback.
+
+Summary-model requests are added to session usage. Direct upstream summary
+strategies are attributed to their explicit model, or to marim's auxiliary model
+when they inherit it; opaque custom composites are attributed to `unknown`.
 
 A rapid-refill breaker guards against thrashing: if the context refills right
 after each of three consecutive compactions (typically one oversized tool

@@ -61,7 +61,6 @@ def test_build_harness_sets_project_memory_root(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setattr(bootstrap.ModelSource, "build", lambda self, model_id: TestModel())
-    monkeypatch.setattr(bootstrap, "make_summarizer", lambda model: None)
     monkeypatch.setattr(bootstrap, "make_titler", lambda model: None)
 
     shared = tmp_path / "chat-memory"

@@ -1,27 +1,17 @@
-"""Context compaction: keep a conversation under a token budget.
+"""Compatibility helpers for compacted histories, transcripts, and titles.
 
-When a history grows past the budget we keep the head (the original task anchor)
-and a recent tail, and condense the middle. The tail must always begin at a clean
-user-turn boundary so we never orphan a tool return from its tool call, which the
-chat APIs reject.
-
-Two strategies share the same head/tail split:
-
-- ``compact_history`` (Phase 1): drop the middle entirely.
-- ``compact_history_with_summary`` (Phase 2): summarize the middle into one
-  synthetic message, falling back to truncation if the summary call fails.
+Pydantic AI Harness owns active compaction and token estimation. This module keeps
+the small readers needed for sessions written by older marim releases, plus helpers
+used by transcript rendering, session titles, and the rapid-refill breaker.
 """
 
 import dataclasses
-import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
 
 from pydantic_ai import Agent
 from pydantic_ai.messages import (
-    BinaryContent,
     ModelMessage,
     ModelRequest,
     TextPart,
@@ -30,64 +20,32 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai_harness.compaction import estimate_token_count
 
 from .binary_safe import has_binary_content, render_binary_safe
 from .tools.impl.offload import OFFLOAD_GONE_NOTE, find_offload_paths
 
-logger = logging.getLogger(__name__)
-
-_CHARS_PER_TOKEN = 4
-# Rough flat cost for a binary attachment (image). A vision model tokenizes an
-# image by its pixels/tiles, NOT by its base64 size, so counting the raw bytes
-# as text would wildly overcount (a ~500KB screenshot is ~1-2k image tokens, not
-# ~500k). This nominal value keeps the context gauge and compaction planning sane.
-_IMAGE_TOKEN_ESTIMATE = 1500
-
-# (messages, custom_instructions) -> summary text. Instructions come from a
-# manual `/compact <instructions>` and are None for automatic compaction.
-Summarizer = Callable[[list[ModelMessage], str | None], Awaitable[str]]
-
-# Sentinel so the compaction entry points can accept an already-computed tail
-# start (None is a valid value — "nothing to drop") and reuse it instead of
-# recomputing _plan_tail_start (which re-runs the whole-history estimate_tokens).
-# Typed ``Any`` so the public params can stay ``int | None`` (the real domain)
-# while still defaulting to this sentinel without widening ``start`` to ``object``.
-_UNSET: Any = object()
-
 
 def estimate_tokens(history: list[ModelMessage]) -> int:
-    """Rough token estimate (~4 chars/token) over the serialized part content.
+    """Approximate message tokens through Harness's public estimator.
 
-    Binary attachments (images) are counted as a flat nominal cost rather than by
-    their base64 length, which would massively overcount — image bytes are not
-    tokenized as text by vision models."""
-    chars = 0
-    images = 0
-    for message in history:
-        for part in getattr(message, "parts", []):
-            content = getattr(part, "content", None)
-            if isinstance(content, (list, tuple)):
-                for item in content:
-                    if isinstance(item, BinaryContent):
-                        images += 1
-                    elif item is not None:
-                        chars += len(str(item))
-            elif isinstance(content, BinaryContent):
-                images += 1
-            elif content is not None:
-                chars += len(str(content))
-            args = getattr(part, "args", None)
-            if args is not None:
-                chars += len(str(args))
-    return chars // _CHARS_PER_TOKEN + images * _IMAGE_TOKEN_ESTIMATE
+    The wrapper preserves marim's long-standing import for UI and server readers
+    while keeping estimator behavior aligned with the active upstream strategies.
+    """
+    return estimate_token_count(history)
+
+
+def _measured_or_estimated(history: list[ModelMessage], measured_tokens: int | None) -> int:
+    """Use provider measurement as a floor over the public upstream estimate."""
+    estimated = estimate_tokens(history)
+    return estimated if measured_tokens is None else max(estimated, measured_tokens)
 
 
 def last_request_input_tokens(history: list[ModelMessage]) -> int | None:
     """The provider-reported input-token count of the LAST model request in a run —
     the true size of the prompt as the provider tokenized it, i.e. the real current
-    context size. The compaction gate uses this as a measured floor over its chars/4
-    estimate, which undershoots dense code/JSON ~25% (see SessionController.maybe_compact
-    and ``_measured_or_estimated``). NOT the run's cumulative ``result.usage``
+    context size. The compaction gate uses this as a measured floor over its estimate
+    (see ``SessionController.maybe_compact``). NOT the run's cumulative ``result.usage``
     input tokens — that sums every step of a multi-request turn and would overshoot the
     live context size. Returns ``None`` when no response carries usage (some
     providers/streams omit it), which leaves the gate on the estimate alone."""
@@ -145,128 +103,6 @@ class CompactionBreaker:
         self.consecutive_rapid_refills = 0
 
 
-def _is_user_turn(message) -> bool:
-    """True for a ModelRequest that opens a user turn (carries a UserPromptPart).
-
-    Such a message is a safe tail boundary: it never holds a dangling tool return.
-    """
-    return isinstance(message, ModelRequest) and any(
-        isinstance(part, UserPromptPart) for part in message.parts
-    )
-
-
-def _measured_or_estimated(history: list, measured_tokens: int | None) -> int:
-    """The context size to gate compaction on: the larger of the char/4 estimate
-    and the provider-reported ``measured_tokens`` (the ACTUAL input-token count of
-    the last request), when one is supplied.
-
-    The estimate divides raw chars by a flat 4, but dense code/JSON tokenizes at
-    ~3 chars/token, so it undershoots the real window by ~25% and lets a session
-    sail past the true limit before compaction fires. When the caller has the
-    provider's real last-request count on hand it is authoritative, so prefer it —
-    but take ``max`` rather than replacing outright, because ``history`` may have
-    grown (the newest assistant reply) since that request was measured, and the
-    estimate captures that tail the measurement predates. With no measurement
-    (fresh session, provider that omits usage) we fall back to the estimate alone —
-    exactly the legacy behavior."""
-    estimated = estimate_tokens(history)
-    if measured_tokens is None:
-        return estimated
-    return max(estimated, measured_tokens)
-
-
-def _plan_tail_start(
-    history: list,
-    max_tokens: int,
-    keep_last_messages: int,
-    *,
-    force: bool = False,
-    measured_tokens: int | None = None,
-) -> int | None:
-    """Index where the kept tail should begin, or None if no compaction is needed.
-
-    The tail always starts at a user-turn boundary so tool returns stay paired.
-    ``force`` skips the token-size gate (used after a provider context-overflow
-    error, where the estimate is known to have undershot the real window) and
-    compacts down to the tail regardless — but still returns None when there is
-    nothing meaningful to drop. ``measured_tokens`` is the provider's real
-    last-request input-token count when available; see ``_measured_or_estimated``."""
-    if not force and _measured_or_estimated(history, measured_tokens) <= max_tokens:
-        return None
-
-    user_turns = [i for i, m in enumerate(history) if _is_user_turn(m) and i > 0]
-    if not user_turns:
-        return None
-
-    ideal_start = len(history) - keep_last_messages
-    candidates = [i for i in user_turns if i <= ideal_start]
-    start = candidates[-1] if candidates else user_turns[0]
-    if start <= 1:
-        # The tail would begin at index 1, i.e. nothing meaningful to drop.
-        return None
-    return start
-
-
-def will_compact(
-    history: list,
-    max_tokens: int,
-    keep_last_messages: int = 20,
-    *,
-    measured_tokens: int | None = None,
-) -> bool:
-    """Whether compacting ``history`` would actually drop anything — the same
-    decision ``compact_history``/``compact_history_with_summary`` make, exposed
-    so a caller can act *before* the (possibly expensive) compaction runs, e.g.
-    firing a pre-compaction hook while the transcript is still full.
-
-    Pass ``measured_tokens`` (the provider's real last-request input-token
-    count) when it is known — ``maybe_compact`` gates on it, so a caller that
-    omits it can reach the opposite verdict on a history the estimate
-    undershoots."""
-    return (
-        _plan_tail_start(history, max_tokens, keep_last_messages, measured_tokens=measured_tokens)
-        is not None
-    )
-
-
-def compact_history(
-    history: list,
-    max_tokens: int,
-    keep_last_messages: int = 20,
-    *,
-    force: bool = False,
-    tail_start: int | None = _UNSET,
-) -> tuple[list, bool]:
-    """Return (history, did_compact) by dropping the middle when over budget.
-
-    ``tail_start`` lets a caller that already ran ``_plan_tail_start`` (e.g.
-    ``SessionController.maybe_compact``, which also needs the decision to gate
-    its PreCompact hook) pass it in so the whole-history token estimate isn't
-    recomputed here. Left unset, it's computed as before."""
-    start = (
-        _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
-        if tail_start is _UNSET
-        else tail_start
-    )
-    if start is None:
-        return history, False
-    compacted = history[:1] + history[start:]
-    # Post-compaction sanity check: the tail planner can only cut on user-turn
-    # boundaries, so when the overflow lives inside a single enormous turn the
-    # "compacted" head+tail can still exceed the budget. This helper can't fix that
-    # (it has no summarizer or masking lever), but the caller can (SessionController
-    # masks stale observations on the forced-overflow path). Surface it so a still-
-    # over-budget result isn't mistaken for a clean shrink.
-    if estimate_tokens(compacted) > max_tokens:
-        logger.debug(
-            "compaction left history at ~%d tokens, still over the %d budget "
-            "(likely one oversized turn the tail planner can't split)",
-            estimate_tokens(compacted),
-            max_tokens,
-        )
-    return compacted, True
-
-
 # Replaces a stale tool observation's body. Kept short and explicit so the model
 # knows the output was *elided*, not lost, and can re-run the tool if it still
 # needs it — the same contract read_file/run_bash already use when they clip.
@@ -289,33 +125,6 @@ def _is_masked(content) -> bool:
     return content == MASKED_OBSERVATION or (
         isinstance(content, str) and content.startswith(ELIDED_POINTER_PREFIX)
     )
-
-
-def has_narrowed_content(part) -> bool:
-    """True when *part* is a ``ToolReturnPart`` subclass that narrows ``content``.
-
-    pydantic-ai (>= 2.28) discriminates typed tool-return subclasses on
-    ``tool_kind``: ``ToolSearchReturnPart`` pins it to ``'tool-search'`` and
-    re-declares ``content`` as a ``ToolSearchReturnContent`` TypedDict, while
-    ``tool_kind`` stays ``None`` for every plain/user-defined tool return. So the
-    attribute is an exact, version-portable stand-in for "this part's ``content``
-    has a declared shape" — on 2.8, which predates the field entirely, ``getattr``
-    yields ``None`` and every return is treated as plain, exactly as before.
-
-    Such a payload must never be swapped for a placeholder string. Three things
-    break at once if it is: pydantic emits ``PydanticSerializationUnexpectedValue``
-    warnings on every history dump, pydantic-ai's ``parse_discovered_tools`` reads
-    ``part.content['discovered_tools']`` on each request and dies with ``TypeError:
-    string indices must be integers``, and the persisted session stops validating
-    (the discriminated union demands an object), which turns a resume into a hard
-    ``SessionLoadError``.
-
-    Skipping them costs us nothing: a tool-search return is a short list of
-    revealed tool names, not the bulk masking exists to shed, and it is *derived
-    state* — pydantic-ai replays it to decide which tools are currently visible.
-    Eliding it would silently un-reveal tools even if the schema allowed it.
-    """
-    return getattr(part, "tool_kind", None) is not None
 
 
 # The suffix _elided_pointer appends after the path; also the parse anchor for
@@ -460,8 +269,8 @@ def revalidate_elided_pointers(
     replaced. ``base`` resolves non-absolute handle paths (legacy histories)
     against the workspace root; absolute paths ignore it.
 
-    Same contract as :func:`mask_stale_observations`: never mutates the input
-    (changed messages are rebuilt via ``replace``), idempotent (the plain
+    This compatibility reader never mutates the input (changed messages are rebuilt
+    via ``replace``), is idempotent (the plain
     placeholder parses as no pointer), and returns ``(new_history, rewritten)``.
     One deliberate difference: when nothing dangles the SAME ``history`` object
     comes back, so callers can ``is``-check for change and skip a history
@@ -480,139 +289,6 @@ def revalidate_elided_pointers(
         new_history[idx] = dataclasses.replace(message, parts=new_parts)
         total += rewritten
     return (history, 0) if new_history is None else (new_history, total)
-
-
-def _count_recent_parts(history: list, keep_recent: int) -> set[tuple[int, int]]:
-    """Identify which ToolReturnParts should be kept (first pass: newest-first counting)."""
-    seen = 0
-    parts_to_keep: set[tuple[int, int]] = set()
-    for idx in range(len(history) - 1, -1, -1):
-        message = history[idx]
-        parts = getattr(message, "parts", None)
-        if not parts:
-            continue
-        for pidx in range(len(parts) - 1, -1, -1):
-            part = parts[pidx]
-            if not isinstance(part, ToolReturnPart):
-                continue
-            seen += 1
-            if seen <= keep_recent:
-                parts_to_keep.add((idx, pidx))
-    return parts_to_keep
-
-
-def _mask_part(
-    part: ToolReturnPart,
-    min_chars: int,
-    persist: Callable[[str, str], str | None] | None,
-) -> str | None:
-    """Determine the replacement content for a part, or None if it should not be masked."""
-    if has_narrowed_content(part) or _is_masked(part.content):
-        return None
-    content = part.content
-    if isinstance(content, BinaryContent) or (
-        isinstance(content, list) and any(isinstance(c, BinaryContent) for c in content)
-    ):
-        # An image observation is always large in effective tokens and has no
-        # faithful text rendering to persist — mask it outright with the plain
-        # placeholder. The original file is still on disk; a fresh read_file
-        # brings it back if the model needs it again.
-        return MASKED_OBSERVATION
-    # Measure and persist the *model-facing* rendering, not the Python repr: for a
-    # structured return str() yields `{'a': 1}` while the model actually read compact
-    # JSON (`{"a":1}`). model_response_str() is pydantic-ai's exact wire rendering, so
-    # the size gate charges what the context actually pays and the scratchpad copy is
-    # byte-for-byte what the model saw — the pointer placeholder's read_file round-trip
-    # stays faithful.
-    try:
-        rendered: str | None = part.model_response_str()
-    except (TypeError, ValueError):
-        # Exotic content (e.g. multimodal/binary objects) pydantic can't serialize.
-        # TypeError — pydantic serializer rejects the type (e.g. a non-JSON object).
-        # ValueError — pydantic/JSON serializer raises for an invalid value.  Both
-        # are subclasses of Exception; narrowing avoids swallowing unrelated bugs.
-        # Same best-effort contract as persist: never block masking. There are no
-        # faithful bytes to save, so fall back to the repr for the size gate and to
-        # the plain placeholder (no pointer) below.
-        rendered = None
-    size = len(rendered) if rendered is not None else len(str(part.content))
-    if size < min_chars:
-        return None
-    replacement = MASKED_OBSERVATION
-    if persist is not None and rendered is not None:
-        try:
-            path = persist(rendered, part.tool_name)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("failed to persist masked observation: %s", exc, exc_info=True)
-            path = None
-        if path:
-            replacement = _elided_pointer(path)
-    return replacement
-
-
-def mask_stale_observations(
-    history: list,
-    keep_recent: int = 4,
-    *,
-    min_chars: int = 200,
-    persist: Callable[[str, str], str | None] | None = None,
-) -> tuple[list, int]:
-    """Replace the body of older tool-observation returns with a short placeholder.
-
-    Walks ``history`` newest-first, leaves the most recent ``keep_recent``
-    ``ToolReturnPart`` payloads intact (the agent is most likely still acting on
-    them), and swaps the ``content`` of older returns whose rendered length is at
-    least ``min_chars`` for :data:`MASKED_OBSERVATION`. A return's ``tool_name``
-    and ``tool_call_id`` are preserved, so the tool-call/return pairing every chat
-    API enforces is never broken — only the bulky payload is dropped.
-
-    This is the cache-safe lever: it is meant to run *at compaction time*, when the
-    cached message tail is already invalidated by the rewrite, so masking adds no
-    extra cache miss (a per-request sliding mask would bust the tail cache every
-    turn and cost more than it saves). Already-masked returns and small ones are
-    skipped, so re-running it is idempotent. Returns ``(new_history, masked_count)``
-    and never mutates the input — masked messages are rebuilt via ``replace``.
-
-    When ``persist`` is given, it is called with ``(content, tool_name)`` and should
-    write the payload somewhere recoverable, returning the path (used in a pointer
-    placeholder) or ``None`` (falls back to plain placeholder). The payload handed to
-    ``persist`` is the part's ``model_response_str()`` — byte-for-byte what the model
-    originally read (compact JSON for structured returns, the string itself for str
-    content) — and ``min_chars`` is measured on that same rendering. Persist is
-    best-effort: a ``None``/failure never blocks masking, and content that cannot be
-    rendered at all is masked with the plain placeholder instead of a pointer.
-    """
-    # First pass: identify which parts should be kept (newest-first counting).
-    parts_to_keep = _count_recent_parts(history, keep_recent)
-
-    # Second pass: apply masking in forward order so persist calls happen in document
-    # order (oldest to newest).
-    masked = 0
-    new_history = list(history)
-    for idx in range(len(history)):
-        message = new_history[idx]
-        parts = getattr(message, "parts", None)
-        if not parts:
-            continue
-        new_parts = list(parts)
-        changed = False
-        for pidx in range(len(parts)):
-            part = parts[pidx]
-            if not isinstance(part, ToolReturnPart):
-                continue
-            # Skip if this part should be kept.
-            if (idx, pidx) in parts_to_keep:
-                continue
-            # Determine replacement content (or None to skip).
-            replacement = _mask_part(part, min_chars, persist)
-            if replacement is None:
-                continue
-            new_parts[pidx] = dataclasses.replace(part, content=replacement)
-            changed = True
-            masked += 1
-        if changed:
-            new_history[idx] = dataclasses.replace(message, parts=new_parts)
-    return new_history, masked
 
 
 def render_transcript(messages: list, max_part_chars: int = 2000) -> str:
@@ -663,91 +339,30 @@ def _render_tool_return(part: ToolReturnPart, max_part_chars: int) -> str:
 # Marks the synthetic message that replaces a compacted middle. The TUI keys off
 # this prefix to render the summary as a distinct block instead of a user message.
 SUMMARY_PREFIX = "[Summary of earlier conversation, condensed to save context]"
+UPSTREAM_SUMMARY_PREFIX = "Summary of previous conversation:\n\n"
 
 
 def summary_text(content) -> str | None:
     """Return the summary body if ``content`` is a compaction summary message
     (a ``str`` starting with :data:`SUMMARY_PREFIX` followed by a non-empty body),
     else ``None``. The single source of truth for detecting/parsing a summary."""
-    if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
+    if not isinstance(content, str):
         return None
-    body = content[len(SUMMARY_PREFIX) :].strip()
+    prefix = next(
+        (
+            prefix
+            for prefix in (SUMMARY_PREFIX, UPSTREAM_SUMMARY_PREFIX)
+            if content.startswith(prefix)
+        ),
+        None,
+    )
+    if prefix is None:
+        return None
+    body = content[len(prefix) :].strip()
     return body or None
 
 
-def _summary_message(summary: str) -> ModelRequest:
-    return ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\n{summary}")])
-
-
-async def compact_history_with_summary(
-    history: list,
-    max_tokens: int,
-    summarizer: Summarizer,
-    keep_last_messages: int = 20,
-    *,
-    force: bool = False,
-    tail_start: int | None = _UNSET,
-    instructions: str | None = None,
-) -> tuple[list, bool]:
-    """Like ``compact_history`` but replace the dropped middle with a summary.
-
-    Calls ``summarizer`` with the middle messages. If it raises or returns an
-    empty string, falls back to plain truncation so a flaky summary model can
-    never break a turn.
-
-    ``tail_start`` behaves as in ``compact_history``: pass a precomputed
-    ``_plan_tail_start`` result to avoid recomputing the whole-history estimate.
-    ``instructions`` is the manual `/compact <instructions>` focus, threaded
-    through to the summarizer verbatim; ``None`` for automatic compaction.
-    """
-    start = (
-        _plan_tail_start(history, max_tokens, keep_last_messages, force=force)
-        if tail_start is _UNSET
-        else tail_start
-    )
-    if start is None:
-        return history, False
-
-    middle = history[1:start]
-    summary: str | None
-    try:
-        summary = await summarizer(middle, instructions)
-    except Exception as exc:
-        logger.warning(
-            "compaction summarizer failed, falling back to truncation: %s", exc, exc_info=True
-        )
-        summary = None
-
-    if summary:
-        return history[:1] + [_summary_message(summary)] + history[start:], True
-    return history[:1] + history[start:], True
-
-
 Titler = Callable[[list[ModelMessage]], Awaitable[str]]
-
-_SUMMARY_INSTRUCTIONS = (
-    "You compress a coding-session transcript into a dense summary so the agent "
-    "can keep working with less context. Write terse notes, not prose, under "
-    "these headings:\n"
-    "1. Primary request and intent — every explicit ask from the user.\n"
-    "2. Key technical concepts — technologies, patterns, decisions.\n"
-    "3. Files and code sections — files read or edited, what changed and why, "
-    "with short snippets only where essential to continue.\n"
-    "4. Errors and fixes — each error hit, how it was fixed, and any user "
-    "feedback about doing it differently.\n"
-    "5. All user messages — every non-tool-result user message, condensed but "
-    "none omitted.\n"
-    "6. Pending tasks — work explicitly requested but not finished.\n"
-    "7. Current work — precisely what was in progress at the cut, file names "
-    "and snippets included.\n"
-    "8. Next step — only if directly in line with the most recent explicit "
-    "request; include a verbatim quote from the recent conversation showing "
-    "where work left off, so the task cannot drift.\n"
-    "Security-relevant user instructions (files or data to avoid, operations "
-    "that must not be performed, credential handling rules) MUST be preserved "
-    "verbatim so they continue to apply after compaction. Drop pleasantries "
-    "and redundant detail."
-)
 
 _TITLE_INSTRUCTIONS = (
     "You write a short, specific title for a coding session from its transcript. "
@@ -757,44 +372,6 @@ _TITLE_INSTRUCTIONS = (
 )
 
 _MAX_TITLE_CHARS = 50
-
-
-def _summarize_prompt(transcript: str, instructions: str | None = None) -> str:
-    """Wrap the transcript in an explicit, in-message summarize instruction. A bare
-    transcript with the rules only in the system prompt lets weaker models reply
-    conversationally instead of summarizing; restating the task in the user turn
-    and delimiting the transcript keeps them on task. ``instructions`` is the
-    user's manual `/compact` focus, honored as an extra block the summarizer is
-    told to follow."""
-    extra = (
-        f"\n\n## Compact instructions\nAlso follow these user-supplied "
-        f"instructions when summarizing:\n{instructions}\n"
-        if instructions
-        else ""
-    )
-    return (
-        "Summarize the coding-session transcript below into dense notes under "
-        "the headings from your instructions. Output only the summary — do not "
-        "reply conversationally or address the user."
-        f"{extra}\n\n"
-        "=== TRANSCRIPT START ===\n"
-        f"{transcript}\n"
-        "=== TRANSCRIPT END ===\n\n"
-        "Summary:"
-    )
-
-
-def make_summarizer(model) -> Summarizer:
-    """Build a summarizer backed by a dedicated, tool-free agent on ``model``."""
-    summary_agent = Agent(model, instructions=_SUMMARY_INSTRUCTIONS)
-
-    async def summarize(messages: list, instructions: str | None = None) -> str:
-        result = await summary_agent.run(
-            _summarize_prompt(render_transcript(messages), instructions)
-        )
-        return result.output
-
-    return summarize
 
 
 def clean_title(raw: str) -> str:

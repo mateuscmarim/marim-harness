@@ -604,6 +604,33 @@ async def test_ttft_mode_and_notice_published(tmp_path):
     await host.aclose()
 
 
+async def test_compaction_finished_publishes_optional_controller_details(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.auto)
+    harness = _make_harness(_text_only_model(), deps)
+    host = SessionHost(harness, EventBus())
+    events = _spy(host.bus)
+    harness.session.last_compaction_details = {
+        "changed": True,
+        "summary": "New summary",
+        "post_tokens": 321,
+        "stage": "summary",
+    }
+
+    assert harness.session.on_compact is not None
+    harness.session.on_compact(8, 8)
+
+    event = next(e for e in events if e.type == "compaction.finished")
+    assert event.data == {
+        "before": 8,
+        "after": 8,
+        "changed": True,
+        "summary": "New summary",
+        "post_tokens": 321,
+        "stage": "summary",
+    }
+    await host.aclose()
+
+
 async def test_present_plan_parks_and_resolves(tmp_path):
     deps = _make_deps(tmp_path, mode=Mode.auto)
     harness = _make_harness(_text_only_model(), deps)

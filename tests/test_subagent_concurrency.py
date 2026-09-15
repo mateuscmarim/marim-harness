@@ -8,6 +8,7 @@ spawns run their model loop at the same time; the rest queue. ``concurrency=None
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
@@ -18,15 +19,22 @@ from marim_harness.subagents import SubagentRunner
 from tests.conftest import _make_deps, _make_harness
 
 
-def _tracking_model(active: dict) -> FunctionModel:
+def _tracking_model(
+    active: dict, started: asyncio.Queue | None = None, release: asyncio.Event | None = None
+) -> FunctionModel:
     """A model that records how many runs are inside it at once."""
 
     async def fn(messages, info):
         active["now"] += 1
         active["max"] = max(active["max"], active["now"])
-        await asyncio.sleep(0.05)
-        active["now"] -= 1
-        return ModelResponse(parts=[TextPart(content="ok")])
+        if started is not None:
+            started.put_nowait(None)
+        try:
+            if release is not None:
+                await release.wait()
+            return ModelResponse(parts=[TextPart(content="ok")])
+        finally:
+            active["now"] -= 1
 
     return FunctionModel(fn)
 
@@ -44,20 +52,68 @@ def _runner_with_concurrency(tmp_path: Path, model, concurrency: int | None):
     )
 
 
-@pytest.mark.anyio
-async def test_concurrency_cap_bounds_simultaneous_spawns(tmp_path: Path):
+async def _assert_concurrency(tmp_path: Path, monkeypatch, concurrency: int | None, expected: int):
     active = {"now": 0, "max": 0}
-    runner = _runner_with_concurrency(tmp_path, _tracking_model(active), concurrency=2)
-    await asyncio.gather(*[runner.run("explore", f"t{i}", stream_id=f"s{i}") for i in range(5)])
-    assert active["max"] == 2
+    started = asyncio.Queue()
+    release = asyncio.Event()
+    attempted = asyncio.Event()
+    slots = {"attempted": 0, "now": 0, "max": 0}
+    runner = _runner_with_concurrency(
+        tmp_path, _tracking_model(active, started, release), concurrency=concurrency
+    )
+    original_slot = runner._slot
+
+    @asynccontextmanager
+    async def observed_slot():
+        slots["attempted"] += 1
+        if slots["attempted"] == 5:
+            attempted.set()
+        async with original_slot():
+            slots["now"] += 1
+            slots["max"] = max(slots["max"], slots["now"])
+            try:
+                yield
+            finally:
+                slots["now"] -= 1
+
+    # Observe the real admission boundary without replacing its semaphore. All
+    # five spawns must attempt admission before releasing any model request;
+    # otherwise slow startup could hide a missing cap as well as fake a low max.
+    monkeypatch.setattr(runner, "_slot", observed_slot)
+    tasks = [
+        asyncio.create_task(runner.run("explore", f"t{i}", stream_id=f"s{i}")) for i in range(5)
+    ]
+
+    async def ready():
+        await attempted.wait()
+        for _ in range(expected):
+            await started.get()
+
+    try:
+        # The timeout detects deadlock (e.g. an erroneously lower cap); elapsed
+        # time never determines whether requests overlap.
+        await asyncio.wait_for(ready(), timeout=10)
+        assert active["now"] == expected
+        assert slots["max"] == expected
+        release.set()
+        await asyncio.gather(*tasks)
+        assert active["max"] == expected
+        assert active["now"] == 0
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.anyio
-async def test_unbounded_when_uncapped(tmp_path: Path):
-    active = {"now": 0, "max": 0}
-    runner = _runner_with_concurrency(tmp_path, _tracking_model(active), concurrency=None)
-    await asyncio.gather(*[runner.run("explore", f"t{i}", stream_id=f"s{i}") for i in range(5)])
-    assert active["max"] == 5
+async def test_concurrency_cap_bounds_simultaneous_spawns(tmp_path: Path, monkeypatch):
+    await _assert_concurrency(tmp_path, monkeypatch, concurrency=2, expected=2)
+
+
+@pytest.mark.anyio
+async def test_unbounded_when_uncapped(tmp_path: Path, monkeypatch):
+    await _assert_concurrency(tmp_path, monkeypatch, concurrency=None, expected=5)
 
 
 def test_harness_config_threads_concurrency_to_the_runner(tmp_path: Path):

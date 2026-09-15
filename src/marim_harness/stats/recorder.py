@@ -19,11 +19,11 @@ __all__ = ["LedgerStatsRecorder", "NullStatsRecorder", "StatsRecorder"]
 
 
 class StatsRecorder(Protocol):
-    def record(self, delta: RunUsage) -> None: ...
+    def record(self, delta: RunUsage, *, model_id: str | None = None) -> None: ...
 
 
 class NullStatsRecorder:
-    def record(self, delta: RunUsage) -> None:
+    def record(self, delta: RunUsage, *, model_id: str | None = None) -> None:
         return
 
 
@@ -53,12 +53,13 @@ class LedgerStatsRecorder:
         to the now-active session, not the one this recorder was built for)."""
         self._session_id = session_id
 
-    def record(self, delta: RunUsage) -> None:
+    def record(self, delta: RunUsage, *, model_id: str | None = None) -> None:
         try:
             inp = int(delta.input_tokens or 0)
             out = int(delta.output_tokens or 0)
-            model = self._get_model_id()
-            backend_result = self._backend_result(model)
+            model = model_id if model_id is not None else self._get_model_id()
+            # An auxiliary request must never inherit metadata from the main CLI run.
+            backend_result = self._backend_result(model) if model_id is None else None
             if inp + out == 0 and backend_result is None:
                 return
             cost, exact = resolve_cost(delta, model)

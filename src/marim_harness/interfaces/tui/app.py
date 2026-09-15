@@ -251,8 +251,14 @@ async def _handle_compaction_started(app: "HarnessApp", _wire: CompactionStarted
 
 
 async def _handle_compaction_finished(app: "HarnessApp", wire: CompactionFinished) -> None:
-    if wire.before is not None and wire.after is not None:
-        app.session.on_compact(wire.before, wire.after)
+    app.session.on_compact(
+        wire.before,
+        wire.after,
+        changed=wire.changed,
+        summary=wire.summary,
+        post_tokens=wire.post_tokens,
+        stage=wire.stage,
+    )
 
 
 async def _handle_turn_started(app: "HarnessApp", wire: TurnStarted) -> None:

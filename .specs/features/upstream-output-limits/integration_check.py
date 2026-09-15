@@ -20,7 +20,7 @@ from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
 
 from marim_harness.runtime.output_limits import OutputStorage
-from marim_harness.session.compaction import reduce_history
+from marim_harness.session.compaction import ReductionOptions, reduce_history
 from tests.test_output_limits import _harness, _read, _returns
 
 
@@ -61,14 +61,16 @@ async def test_spill_clear_summarize_save_resume_retrieve(tmp_path):
     )
     reduction = await reduce_history(
         history,
+        ReductionOptions(
+            summary=summary,
+            target_tokens=1,
+            keep_messages=4,
+            keep_pairs=1,
+            clear=True,
+            force=True,
+            focus=None,
+        ),
         model=TestModel(),
-        summary=summary,
-        target_tokens=1,
-        keep_messages=4,
-        keep_pairs=1,
-        clear=True,
-        force=True,
-        focus=None,
         usage=RunUsage(),
     )
     assert "clear" in reduction.stages

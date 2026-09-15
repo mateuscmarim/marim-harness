@@ -279,7 +279,7 @@ class _FakeSource:
         return []
 
 
-def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
+def _switch_harness(tmp_path, *, source=None, compaction_strategy=None, titler=None):
     from marim_harness.runtime.harness import HarnessConfig
     from marim_harness.session import SessionManager
 
@@ -295,7 +295,7 @@ def _switch_harness(tmp_path, *, source=None, summarizer=None, titler=None):
             manager=manager,
             model_source=source,
             model_id="startup",
-            summarizer=summarizer,
+            compaction_strategy=compaction_strategy,
             titler=titler,
         ),
     )
@@ -319,13 +319,16 @@ async def test_set_model_switches_model_and_label(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
-    async def summarizer(messages, instructions=None):
-        return "s"
+    from pydantic_ai_harness.compaction import SummarizingCompaction
 
-    h = _switch_harness(tmp_path, source=_FakeSource(), summarizer=summarizer, titler=_fake_titler)
-    old_summarizer, old_titler = h.session.summarizer, h.session.titler
+    compaction_strategy = SummarizingCompaction(max_tokens=1)
+
+    h = _switch_harness(
+        tmp_path, source=_FakeSource(), compaction_strategy=compaction_strategy, titler=_fake_titler
+    )
+    old_summarizer, old_titler = h.session.compaction_strategy, h.session.titler
     h.set_model("openai/gpt-5.2")
-    assert h.session.summarizer is not old_summarizer  # repointed at the new model
+    assert h.session.compaction_strategy is old_summarizer  # repointed at the new model
     assert h.session.titler is not old_titler
 
 
@@ -333,7 +336,7 @@ async def test_set_model_rebuilds_configured_aux_agents(tmp_path: Path):
 async def test_set_model_leaves_unconfigured_aux_alone(tmp_path: Path):
     h = _switch_harness(tmp_path, source=_FakeSource())  # no summarizer/titler
     h.set_model("openai/gpt-5.2")
-    assert h.session.summarizer is None  # not fabricated
+    assert h.session.compaction_strategy is None  # not fabricated
     assert h.session.titler is None
 
 

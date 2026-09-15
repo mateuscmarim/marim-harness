@@ -20,9 +20,9 @@ def _instruction_closure_names(harness) -> set[str]:
     # See test_config_seams.test_global_instructions_gate for how this
     # reaches into pydantic-ai's Agent._instructions (no public accessor).
     return {
-        item.instruction.__name__
-        for item in harness.agent._instructions  # noqa: SLF001
-        if callable(item.instruction)
+        fn.__name__
+        for registered in harness.agent._instructions  # noqa: SLF001
+        if callable(fn := getattr(registered, "instruction", registered))
     }
 
 
@@ -416,3 +416,44 @@ def test_builder_resolves_workspace_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     via_relative = HarnessBuilder(workspace=Path("real-ws"), model=TestModel()).build()
     assert via_relative.deps.workspace.root == real.resolve()
+
+
+def test_builder_default_compaction_inherits_isolated_model_and_retention(tmp_path, monkeypatch):
+    import pydantic_ai
+    from pydantic_ai_harness.compaction import SummarizingCompaction
+
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+
+    monkeypatch.setattr(pydantic_ai, "BANNER_ENABLED", True)
+    raw = ClaudeCliModel("opus")
+    raw.session_ref_getter = lambda: "claude-cli:LIVE"
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=raw)
+        .with_config_overrides(keep_last_messages=7)
+        .build()
+    )
+    assert isinstance(h.session.compaction_strategy, SummarizingCompaction)
+    assert h.session.compaction_strategy.keep_messages == 7
+    assert h.session.compaction_strategy.model is None
+    assert h.session.auxiliary_model is not raw
+    assert h.session.auxiliary_model.ephemeral
+    assert h.session.auxiliary_model.session_id is None
+    assert pydantic_ai.BANNER_ENABLED is True  # SDK construction leaves host output policy alone
+
+
+def test_builder_none_strategy_selects_deterministic_reduction(tmp_path):
+    h = (
+        HarnessBuilder(workspace=tmp_path, model=TestModel())
+        .with_config_overrides(compaction_strategy=None)
+        .build()
+    )
+    assert h.session.compaction_strategy is None
+
+
+def test_old_summarizer_override_has_strategy_migration_guidance(tmp_path):
+    with pytest.raises(TypeError, match="compaction_strategy=SummarizingCompaction"):
+        (
+            HarnessBuilder(workspace=tmp_path, model=TestModel())
+            .with_config_overrides(summarizer=lambda messages: "old")
+            .build()
+        )

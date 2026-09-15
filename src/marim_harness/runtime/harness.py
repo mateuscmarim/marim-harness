@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from pydantic_ai.agent import EventStreamHandler
     from pydantic_ai.models import Model
     from pydantic_ai.usage import UsageLimits
+    from pydantic_ai_harness.compaction import CompactionStrategy
 
     from ..config.model import ModelSource, MultiModelSource
     from ..session.claim import SessionClaim
@@ -27,9 +28,7 @@ if TYPE_CHECKING:
     from .outcome import TurnOutcome
 
 from ..compaction import (
-    Summarizer,
     Titler,
-    make_summarizer,  # noqa: F401 — re-exported for tests
     make_titler,  # noqa: F401 — re-exported for tests
 )
 from ..config.context_limits import ContextLimits
@@ -42,6 +41,7 @@ from ..mcp import McpManager
 from ..notifications import NotificationConfig
 from ..session import SessionController, SessionManager, SessionStore
 from ..session.checkpoints import CheckpointManager
+from ..session.ctrl import aux_model_for
 from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
@@ -99,7 +99,7 @@ class HarnessConfig:
 
     Every field has a sensible default so callers only set what they need.
     ``model_label``, ``model_source``, ``model_id``, ``store``, ``manager``,
-    ``max_context_tokens``, ``keep_last_messages``, ``summarizer``, ``titler``,
+    ``max_context_tokens``, ``keep_last_messages``, ``compaction_strategy``, ``titler``,
     ``proactive_memory``, ``mcp_servers``, and ``mcp_disabled`` were formerly
     individual keyword arguments on ``Harness.__init__``.
     """
@@ -114,17 +114,18 @@ class HarnessConfig:
     stats_ledger: StatsLedger | None = None
     max_context_tokens: int = 100_000
     keep_last_messages: int = 20
-    summarizer: Summarizer | None = None
+    # Public CompactionStrategy; object keeps config imports lightweight.
+    # None selects deterministic trimming; HarnessBuilder supplies the summary default.
+    compaction_strategy: object | None = None
+    auxiliary_model: Model | None = None
     titler: Titler | None = None
     # When set, compaction also elides older tool-observation payloads in the
-    # retained tail to shed tokens (see compaction.mask_stale_observations). Safe
+    # retained tail through upstream ClearToolResults. Safe
     # for prompt caching because it runs only when compaction already rewrites the
     # cached tail. User-toggleable via the TUI settings / MARIM_MASK_OBSERVATIONS.
     mask_observations: bool = True
-    # Masking thresholds: how many recent tool returns to keep intact, and the
-    # minimum rendered length below which a return isn't worth masking.
+    # Number of recent tool-return pairs retained intact by upstream clearing.
     mask_keep_recent: int = 4
-    mask_min_chars: int = 200
     # The window/budget resolver. None ⇒ build_collaborators constructs a
     # discovery-less one from max_context_tokens, preserving the legacy
     # fixed-budget behavior for embedders that never touch the new knobs.
@@ -457,14 +458,14 @@ def build_collaborators(
         deps,
         cfg.max_context_tokens,
         cfg.keep_last_messages,
-        cfg.summarizer,
+        cast("CompactionStrategy[None] | None", cfg.compaction_strategy),
         cfg.titler,
         mask_observations=cfg.mask_observations,
         mask_keep_recent=cfg.mask_keep_recent,
-        mask_min_chars=cfg.mask_min_chars,
         limits=limits,
         get_model_id=get_model_id,
         stats_recorder=stats_recorder,
+        auxiliary_model=cfg.auxiliary_model or aux_model_for(model, cwd=str(deps.workspace.root)),
     )
     session_holder.append(session)
     # Per-session checkpoints. Wire the real GitSnapshotter so rewind
@@ -502,7 +503,6 @@ def build_collaborators(
             limits=limits,
             enabled=cfg.mask_observations,
             keep_recent=cfg.mask_keep_recent,
-            min_chars=cfg.mask_min_chars,
         ),
         build_model=(
             # Bind the narrowed (non-None) source as a default so the
@@ -591,6 +591,11 @@ class Harness:
             raise TypeError(
                 "Harness() takes either config= or legacy keyword arguments, "
                 f"not both (got config= plus {sorted(kwargs)})"
+            )
+        if "summarizer" in kwargs:
+            raise TypeError(
+                "summarizer= was removed; use compaction_strategy=SummarizingCompaction(...) "
+                "or None for deterministic trimming"
             )
         cfg = config or HarnessConfig(**kwargs)
         self.deps = deps

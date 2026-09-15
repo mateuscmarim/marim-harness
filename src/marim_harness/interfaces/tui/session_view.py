@@ -371,6 +371,7 @@ class SessionView:
         from pydantic_ai.messages import (
             ModelRequest,
             ModelResponse,
+            SystemPromptPart,
             ToolCallPart,
             UserPromptPart,
         )
@@ -396,6 +397,12 @@ class SessionView:
                     group = None
                     solo = None
                     await self._replay_user_prompt(part, log)
+                elif isinstance(part, SystemPromptPart):
+                    body = summary_text(part.content)
+                    if body is not None:
+                        group = None
+                        solo = None
+                        await log.mount(SummaryWidget(body))
                 elif isinstance(part, ToolCallPart) and part.tool_name == "ask_user":
                     group = None
                     solo = None
@@ -684,25 +691,40 @@ class SessionView:
         run_turn; mount without awaiting."""
         self.app.query_one(CompactNotice).compacting = True
 
-    def on_compact(self, before: int, after: int) -> None:
+    def on_compact(
+        self,
+        before: int | None,
+        after: int | None,
+        *,
+        changed: bool | None = None,
+        summary: str | None = None,
+        post_tokens: int | None = None,
+        stage: str | None = None,
+    ) -> None:
         """Note in the log when history was trimmed to stay under the token budget.
         Called synchronously from run_turn; mount without awaiting."""
         log = self.app.query_one("#log", VerticalScroll)
         notice = self.app.query_one(CompactNotice)
         notice.compacting = False
         notice.done = True
-        # before == after means a (forced) compaction ran without shrinking — the
-        # call exists only to clear the indicator above, so don't post a confusing
-        # "compacted: N → N" line or re-surface a stale summary.
-        if before == after:
+        del stage  # Reserved for richer presentation without changing this callback again.
+        did_change = changed if changed is not None else before != after
+        if not did_change:
             self.app.status.refresh_status()
             return
-        log.mount(NoticeMessage(f"compacted history: {before} → {after} messages"))
+        if before is not None and after is not None and before != after:
+            log.mount(NoticeMessage(f"compacted history: {before} → {after} messages"))
         # Surface the just-created summary as its own collapsed block so the
         # condensed context is legible immediately, not just on the next resume.
-        body = self._latest_summary()
+        # An explicit null summary means this compaction committed no summary
+        # (for example, a micro-only pass). Search persisted history only for
+        # legacy two-count callbacks, where summary metadata was absent entirely.
+        body = self._latest_summary() if changed is None else summary
         if body is not None:
             log.mount(SummaryWidget(body))
+        # RemoteLinkInfo has already folded post_tokens from the wire event;
+        # LocalLinkInfo computes it directly from the controller history.
+        del post_tokens
         self.app.status.refresh_status()  # context gauge shrinks immediately
 
     def on_notice(self, message: str) -> None:

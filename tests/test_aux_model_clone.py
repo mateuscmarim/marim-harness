@@ -9,6 +9,8 @@ reason, but a runtime ``/model`` switch rebuilds them via
 the other.
 """
 
+from pydantic_ai_harness.compaction import SummarizingCompaction
+
 from marim_harness.config.claude_cli_model import ClaudeCliModel
 from marim_harness.session import ctrl as ctrl_mod
 from marim_harness.session.ctrl import SessionController, aux_model_for
@@ -50,7 +52,7 @@ def _controller(tmp_path, **kw):
         deps,
         100_000,
         20,
-        summarizer=lambda h: "sum",
+        compaction_strategy=SummarizingCompaction(max_tokens=1),
         titler=lambda h: "tit",
         **kw,
     )
@@ -63,11 +65,6 @@ def test_update_model_builds_aux_agents_on_a_clone_for_claude_cli(tmp_path, monk
     seen: dict = {}
     monkeypatch.setattr(
         ctrl_mod,
-        "make_summarizer",
-        lambda m: seen.__setitem__("summarizer", m) or "sum",
-    )
-    monkeypatch.setattr(
-        ctrl_mod,
         "make_titler",
         lambda m: seen.__setitem__("titler", m) or "tit",
     )
@@ -76,6 +73,7 @@ def test_update_model_builds_aux_agents_on_a_clone_for_claude_cli(tmp_path, monk
     raw.session_ref_getter = lambda: "claude-cli:LIVE-SESSION-123"
     ctrl.update_model(raw)
 
+    seen["summarizer"] = ctrl.auxiliary_model
     for role in ("summarizer", "titler"):
         aux = seen[role]
         assert aux is not raw, f"{role} built on the raw live model"
@@ -89,11 +87,6 @@ def test_update_model_reuses_the_model_for_non_claude_cli(tmp_path, monkeypatch)
     seen: dict = {}
     monkeypatch.setattr(
         ctrl_mod,
-        "make_summarizer",
-        lambda m: seen.__setitem__("summarizer", m) or "sum",
-    )
-    monkeypatch.setattr(
-        ctrl_mod,
         "make_titler",
         lambda m: seen.__setitem__("titler", m) or "tit",
     )
@@ -103,7 +96,7 @@ def test_update_model_reuses_the_model_for_non_claude_cli(tmp_path, monkeypatch)
 
     model = _PlainModel()
     ctrl.update_model(model)
-    assert seen["summarizer"] is model
+    assert ctrl.auxiliary_model is model
     assert seen["titler"] is model
 
 
@@ -113,5 +106,5 @@ def test_update_model_leaves_a_none_aux_agent_none(tmp_path):
     deps = _make_deps(tmp_path)
     ctrl = SessionController(None, None, deps, 100_000, 20)  # no aux agents
     ctrl.update_model(ClaudeCliModel("opus"))
-    assert ctrl.summarizer is None
+    assert ctrl.compaction_strategy is None
     assert ctrl.titler is None

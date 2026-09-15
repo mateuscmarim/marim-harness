@@ -17,6 +17,19 @@ def _harness(tmp_path: Path, **cfg_kwargs) -> Harness:
     )
 
 
+def _instruction_closure(agent, name):
+    """Return the callable behind either supported pydantic-ai registration shape."""
+    return next(
+        (
+            fn
+            for registered in agent._instructions  # noqa: SLF001
+            if callable(fn := getattr(registered, "instruction", registered))
+            and getattr(fn, "__name__", None) == name
+        ),
+        None,
+    )
+
+
 def test_global_instructions_gate(tmp_path, monkeypatch):
     """global_instructions gates whether the user-level instructions file is
     ever read: True registers and invokes the closure that reads it; False
@@ -32,27 +45,16 @@ def test_global_instructions_gate(tmp_path, monkeypatch):
     h_on = _harness(tmp_path, global_instructions=True)
     h_off = _harness(tmp_path, global_instructions=False)
 
-    # Test-only introspection: core 2.43 stores SourcedInstruction recipes in
-    # Agent._instructions (no public registration accessor). Unwrap the recipe
-    # before checking closure registration; production uses public decorators.
-    def _closure(agent, name):
-        return next(
-            (
-                fn
-                for item in agent._instructions
-                for fn in [item.instruction]
-                if callable(fn) and getattr(fn, "__name__", None) == name
-            ),
-            None,
-        )
-
-    on_closure = _closure(h_on.agent, "_global_instructions")
-    off_closure = _closure(h_off.agent, "_global_instructions")
+    # There is no public accessor for registered instruction functions. Pydantic
+    # AI 2.43 wraps them in SourcedInstruction; older supported releases stored
+    # the callables directly.
+    on_closure = _instruction_closure(h_on.agent, "_global_instructions")
+    off_closure = _instruction_closure(h_off.agent, "_global_instructions")
     assert on_closure is not None, "global_instructions=True must register the closure"
     assert off_closure is None, "global_instructions=False must not register the closure"
 
-    plugin_on = _closure(h_on.agent, "_plugin_instructions")
-    plugin_off = _closure(h_off.agent, "_plugin_instructions")
+    plugin_on = _instruction_closure(h_on.agent, "_plugin_instructions")
+    plugin_off = _instruction_closure(h_off.agent, "_plugin_instructions")
     assert plugin_on is not None, "global_instructions=True must register _plugin_instructions"
     assert plugin_off is None, "global_instructions=False must not register _plugin_instructions"
 
@@ -80,21 +82,10 @@ def test_scratchpad_instructions_gate_on_files_write_group(tmp_path):
     HarnessConfig default, "every group is on") must keep registering it,
     same as every other gated closure in register_instructions."""
 
-    def _closure(agent, name):
-        return next(
-            (
-                fn
-                for item in agent._instructions  # noqa: SLF001
-                for fn in [item.instruction]
-                if callable(fn) and getattr(fn, "__name__", None) == name
-            ),
-            None,
-        )
-
     h_off = _harness(tmp_path, groups=ToolGroups(files_write=False))
     h_on = _harness(tmp_path, groups=None)
 
-    off_closure = _closure(h_off.agent, "_scratchpad")
-    on_closure = _closure(h_on.agent, "_scratchpad")
+    off_closure = _instruction_closure(h_off.agent, "_scratchpad")
+    on_closure = _instruction_closure(h_on.agent, "_scratchpad")
     assert off_closure is None, "files_write=False must not register _scratchpad"
     assert on_closure is not None, "groups=None must still register _scratchpad"

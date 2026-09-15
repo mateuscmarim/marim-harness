@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from marim_harness.interfaces.tui.app import HarnessApp
 from marim_harness.interfaces.tui.widgets import NoticeMessage
@@ -678,6 +679,82 @@ async def test_live_compaction_mounts_summary_widget(tmp_path: Path):
         widgets = list(app.query(SummaryWidget))
         assert len(widgets) == 1
         assert "live-made summary body" in str(widgets[0]._body.render())
+
+
+@pytest.mark.anyio
+async def test_live_compaction_uses_explicit_summary_when_message_count_is_equal(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.session.on_compact_start()
+        app.session.on_compact(8, 8, changed=True, summary="upstream summary", post_tokens=123)
+        await pilot.pause()
+        widgets = list(app.query(SummaryWidget))
+        assert len(widgets) == 1
+        assert "upstream summary" in str(widgets[0]._body.render())
+
+
+@pytest.mark.anyio
+async def test_failed_compaction_clears_spinner_without_replaying_stale_summary(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nstale summary")])
+        ]
+        app.session.on_compact_start()
+        app.session.on_compact(None, None, changed=False)
+        await pilot.pause()
+        assert app.query_one(CompactNotice).compacting is False
+        assert list(app.query(SummaryWidget)) == []
+
+
+@pytest.mark.anyio
+async def test_micro_compaction_does_not_replay_stale_summary(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nstale summary")])
+        ]
+        app.session.on_compact(8, 8, changed=True, summary=None, stage="micro")
+        await pilot.pause()
+        assert list(app.query(SummaryWidget)) == []
+
+
+@pytest.mark.anyio
+async def test_replay_shows_upstream_summary_and_hides_other_system_prompts(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, SystemPromptPart
+
+    from marim_harness.compaction import UPSTREAM_SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget, UserMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[SystemPromptPart(content="internal system instruction")]),
+            ModelRequest(
+                parts=[SystemPromptPart(content=f"{UPSTREAM_SUMMARY_PREFIX}replayed summary")]
+            ),
+        ]
+        await app.session.render_session("resume")
+        await pilot.pause()
+        summaries = list(app.query(SummaryWidget))
+        assert len(summaries) == 1
+        assert "replayed summary" in str(summaries[0]._body.render())
+        rendered = (str(widget.render()) for widget in app.query())
+        assert not any("internal system instruction" in text for text in rendered)
+        assert list(app.query(UserMessage)) == []
 
 
 def test_human_tokens_formatting():
@@ -3950,13 +4027,28 @@ async def test_turn_started_on_the_wire_breaks_the_tool_group(tmp_path: Path):
         for cid, path in (("r1", "a.py"), ("r2", "b.py")):
             bus.publish("tool.call", {"id": cid, "name": "read_file", "args": {"path": path}})
             bus.publish("tool.result", {"id": cid, "content": "x"})
-        assert await _pump_until(pilot, lambda: "r2" in app.stream.tool_widgets)
+        # The renderer registers a call before awaiting its mount/reparenting.
+        # Its result is the next wire event, so completion also proves the
+        # preceding call finished updating the consecutive-tool run.
+        assert await _pump_until(
+            pilot,
+            lambda: (
+                "r2" in app.stream.tool_widgets and app.stream.tool_widgets["r2"].status == "done"
+            ),
+        )
         first_group = app.stream.tool_group
         assert isinstance(first_group, ToolGroupWidget)
 
         bus.publish("turn.started", {"turn_id": "t2", "prompt": "two"})
         bus.publish("tool.call", {"id": "r3", "name": "read_file", "args": {"path": "c.py"}})
-        assert await _pump_until(pilot, lambda: "r3" in app.stream.tool_widgets)
+        bus.publish("tool.result", {"id": "r3", "content": "x"})
+        assert await _pump_until(
+            pilot,
+            lambda: (
+                "r3" in app.stream.tool_widgets and app.stream.tool_widgets["r3"].status == "done"
+            ),
+        )
+        assert app.stream.tool_widgets["r3"].parent is app.query_one("#log")
         assert app.stream.tool_widgets["r3"] not in first_group.walk_children()
         assert app.stream.tool_group is not first_group
 
@@ -4486,9 +4578,19 @@ async def test_rewind_command_truncates_and_rerenders(tmp_path: Path):
         # Seed two checkpoints by hand against the live manager.
         mgr = app.harness.checkpoints
         mgr.snapshot("turn one")  # index 0, history_len 0
-        app.harness.session.set_history(["u1", "a1"])
+        first_turn = [
+            ModelRequest(parts=[UserPromptPart(content="u1")]),
+            ModelResponse(parts=[TextPart(content="a1")]),
+        ]
+        app.harness.session.set_history(first_turn)
         mgr.snapshot("turn two")  # index 1, history_len 2
-        app.harness.session.set_history(["u1", "a1", "u2", "a2"])
+        app.harness.session.set_history(
+            first_turn
+            + [
+                ModelRequest(parts=[UserPromptPart(content="u2")]),
+                ModelResponse(parts=[TextPart(content="a2")]),
+            ]
+        )
 
         await app.rewind_to_checkpoint(0)
         assert app.harness.session.history == []
@@ -4525,7 +4627,12 @@ async def test_rewind_note_reports_restore_failure(tmp_path: Path):
         mgr = app.harness.checkpoints
         mgr.snapshotter = _RewindSnap(restore_ok=False)
         mgr.snapshot("t1")  # checkpoint gets a commit, so restore is attempted
-        app.harness.session.set_history(["u1", "a1"])
+        app.harness.session.set_history(
+            [
+                ModelRequest(parts=[UserPromptPart(content="u1")]),
+                ModelResponse(parts=[TextPart(content="a1")]),
+            ]
+        )
         await app.rewind_to_checkpoint(0)
         notes = " ".join(w.text for w in app.query(AssistantMessage)).lower()
         assert "fail" in notes
@@ -4541,7 +4648,12 @@ async def test_undo_rewind_restores_pre_rewind_files(tmp_path: Path):
         snap = _RewindSnap(restore_ok=True)
         mgr.snapshotter = snap
         mgr.snapshot("t1")
-        app.harness.session.set_history(["u1", "a1"])
+        app.harness.session.set_history(
+            [
+                ModelRequest(parts=[UserPromptPart(content="u1")]),
+                ModelResponse(parts=[TextPart(content="a1")]),
+            ]
+        )
         await app.rewind_to_checkpoint(0)
         snap.restored.clear()
         await app.undo_rewind()
@@ -4566,11 +4678,15 @@ async def test_rewind_command_refuses_while_busy(tmp_path: Path):
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.harness.checkpoints.snapshot("t1")
-        app.harness.session.set_history(["u1", "a1"])
+        history = [
+            ModelRequest(parts=[UserPromptPart(content="u1")]),
+            ModelResponse(parts=[TextPart(content="a1")]),
+        ]
+        app.harness.session.set_history(history)
         app.status.set_busy(True)
         await app.rewind_to_checkpoint(0)
         # Busy → refused, history untouched.
-        assert app.harness.session.history == ["u1", "a1"]
+        assert app.harness.session.history == history
         app.status.set_busy(False)
 
 

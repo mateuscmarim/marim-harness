@@ -160,12 +160,12 @@ to avoid import cycles.
   git worktrees, snapshots, and the session scratchpad (a per-session /tmp dir for
   intermediate files: advertised in the prompt, reachable by the file tools as an
   extra guard root, auto-approved in ask mode, gated by `MARIM_SCRATCHPAD`). (The
-  root-level `compaction.py` builds the summarizer/titler aux agents and the
-  token-budget compaction helpers.)
+  root-level `compaction.py` retains transcript/title helpers and compatibility
+  readers; active reduction lives in `session/compaction.py` through upstream strategies.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
-  `cli_spawn.py` (`Codex -p` execute/resume orchestration), `masking.py`
-  (per-spawn context masking of stale tool observations), and `cli_backend.py`
+  `cli_spawn.py` (`Codex -p` execute/resume orchestration), upstream
+  `ClearToolResults` capabilities for native-spawn history clearing, and `cli_backend.py`
   (the optional `Codex -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
@@ -213,6 +213,31 @@ to avoid import cycles.
   `config`/`models` don't pay for `pydantic_ai`).
 
 ## Conventions
+
+### Prefer upstream capabilities
+
+Marim owns the terminal experience and workflow integration. Prefer upstream
+implementations for general agent infrastructure to reduce maintenance.
+
+- Before implementing agent-runtime behavior, check the current Pydantic AI and
+  Pydantic AI Harness documentation and the APIs available in the selected releases.
+- Prefer upstream implementations when they meet the essential user requirements.
+  Accept upstream defaults and reasonable behavior differences; historical
+  implementation details are not automatically requirements.
+- Keep Marim-specific integration small and focused on configuration, UI,
+  permissions, and persistence. Preserve explicit user constraints and the
+  documented safety and resumability invariants.
+- Add custom machinery only for a concrete requirement upstream cannot satisfy.
+  Document the gap and why the extra maintenance is justified. Prefer public APIs;
+  document and regression-test any unavoidable dependency on private APIs.
+- When changing an existing subsystem, evaluate whether upstream can replace part
+  of it. Keep replacements scoped to the current task and remove superseded code
+  instead of maintaining two implementations indefinitely.
+- Verify dependency compatibility and behavior before removing existing code.
+  Judge a migration by the responsibility it removes from Marim, not just by
+  whether an upstream dependency was added.
+
+### Coding conventions
 
 - Use `uv` for everything (`uv run …`, `uv sync`). Don't invoke `pip` or a bare
   `python`/`pytest`.

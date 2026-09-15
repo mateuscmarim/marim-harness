@@ -124,6 +124,10 @@ class CompactionFinished(BaseModel):
     type: Literal["compaction.finished"]
     before: int | None = None
     after: int | None = None
+    changed: bool | None = None
+    summary: str | None = None
+    post_tokens: int | None = None
+    stage: str | None = None
 
 
 class SubagentEvent(BaseModel):
