@@ -78,6 +78,11 @@ added separately. Both the transcript and the next prompt receive this bounded
 result. These user-run commands bypass the agent's output capability, so their
 omitted output is not stored; redirect the command to a file to keep it in full.
 
+Background-shell results shown by `/jobs output` or the HTTP job-detail endpoint
+use a **20,000-character** head-and-tail preview plus an omission notice. The
+registry retains the complete collected result for agent `job_output` and
+`wait_for_job` calls, where Pydantic AI applies the ordinary spill policy.
+
 Producer limits apply before output reduction: shell collection buffers,
 network download limits, file-read pagination, image size limits, and bounded
 search collection remain in place. A spill contains only what the producer

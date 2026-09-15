@@ -10,7 +10,7 @@ from .offload import MAX_OUTPUT_CHARS
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
-# Format the elided-middle marker the same way _truncate_middle does, so the live
+# Format the elided-middle marker the same way truncate_output does, so the live
 # preview and the final body present a truncation identically. ``unit`` is "chars"
 # for the decoded background buffer and the foreground byte count alike (the latter
 # is bytes, but for the flood case this is a cosmetic count, matching the existing
@@ -31,7 +31,7 @@ _DRAIN_BUDGET = 2.0  # seconds
 _READ_CHUNK = 65536  # bytes per stream read
 
 
-def _truncate_middle(text: str, max_output: int) -> str:
+def truncate_output(text: str, max_output: int = _DEFAULT_MAX_OUTPUT) -> str:
     """Cap ``text`` to ``max_output`` chars, dropping the MIDDLE rather than the
     tail. The head carries a command's opening (setup, first errors); the tail
     carries its verdict (a test summary, a final traceback) — and for tests and
@@ -53,7 +53,7 @@ class _BoundedOutput:
     and only get capped at the end — buffering hundreds of MB first. This keeps a
     bounded HEAD (the command's opening: setup, first errors) and a bounded sliding
     TAIL (its verdict: a test summary, a final traceback), the same head+tail split
-    :func:`_truncate_middle` presents, so middle-truncation still has both ends.
+    :func:`truncate_output` presents, so middle-truncation still has both ends.
     Memory stays at ~``budget`` regardless of how much the process emits. Callers
     must keep draining the pipe to EOF (the child deadlocks on a full pipe) — this
     never rejects a chunk, it just stops *growing* memory past the budget.
@@ -324,10 +324,10 @@ class BashProcess:
         if dropped > 0:
             # The buffer already elided the middle (a >budget flood). Gluing head
             # straight onto tail here would present two discontinuous regions as
-            # one continuous stream, and _truncate_middle can't rescue it — head+tail
+            # one continuous stream, and truncate_output can't rescue it — head+tail
             # may already be within the cap, so no marker gets spliced. Mirror wait():
             # splice the same elided-middle marker in, bounding each end to half the
-            # preview cap so the marker survives (a plain slice, not _truncate_middle,
+            # preview cap so the marker survives (a plain slice, not truncate_output,
             # avoids nesting a second marker inside an end).
             head_cap = self._max_output // 2
             return (
@@ -335,7 +335,7 @@ class BashProcess:
                 + _TRUNC_MARKER.format(dropped=dropped)
                 + (tail[-(self._max_output - head_cap) :] if head_cap < self._max_output else "")
             )
-        return _truncate_middle(head + tail, self._max_output)
+        return truncate_output(head + tail, self._max_output)
 
     def kill(self) -> None:
         """Kill the process tree (best-effort; already-dead is fine)."""

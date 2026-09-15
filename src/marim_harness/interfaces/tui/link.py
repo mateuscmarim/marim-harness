@@ -36,6 +36,7 @@ from ...config.backend_state import backend_snapshot
 from ...jobs import Job
 from ...runtime.permissions import Mode
 from ...server.client import HistorySnapshot
+from ...server.jobs_view import output_preview
 from ...server.schema import Event
 
 if TYPE_CHECKING:
@@ -299,7 +300,8 @@ class LocalSessionLink:
         return registry.history + registry.list()
 
     async def job_output(self, job_id: str) -> str:
-        return self.harness.deps.jobs.output(job_id)
+        registry = self.harness.deps.jobs
+        return output_preview(registry.get(job_id), registry.output(job_id))
 
     async def cancel_job(self, job_id: str) -> str:
         return await self.harness.deps.jobs.cancel(job_id)
