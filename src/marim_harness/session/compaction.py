@@ -1,4 +1,4 @@
-"""Inactive adapter around pydantic-ai-harness' public compaction strategies."""
+"""Marim integration around pydantic-ai-harness' public compaction strategies."""
 
 from __future__ import annotations
 
