@@ -21,8 +21,8 @@ def _instruction_closure_names(harness) -> set[str]:
     # reaches into pydantic-ai's Agent._instructions (no public accessor).
     return {
         fn.__name__
-        for fn in harness.agent._instructions  # noqa: SLF001
-        if callable(fn)
+        for registered in harness.agent._instructions  # noqa: SLF001
+        if callable(fn := getattr(registered, "instruction", registered))
     }
 
 
