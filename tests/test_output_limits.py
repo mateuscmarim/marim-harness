@@ -134,7 +134,9 @@ async def test_retrieval(tmp_path):
     from pydantic_ai_harness.tool_output_limits import LocalFileStore
 
     cap = MediaSafeOutputLimits(store=LocalFileStore(tmp_path / "store"))
-    payload = "\n".join(f"row {i}: [literal]" for i in range(1000))
+    payload = "\n".join(
+        f"row {i}: " + ("[literal]" if i % 2 == 0 else "letters") for i in range(1000)
+    )
     reduced = await _reduce(cap, payload)
     handle = reduced.metadata["overflow_handle"]
     page = await _read(cap, handle, offset=10, limit=2)
@@ -142,6 +144,13 @@ async def test_retrieval(tmp_path):
     tail = await _read(cap, handle, from_end=True, limit=1)
     assert "row 999:" in tail and "row 998:" not in tail
     assert "row 0:" in await _read(cap, handle, pattern="[literal]", limit=1)
+    # Regex `[literal]` matches "letters" too; an ignored pattern would also
+    # return row 1. These assertions distinguish both from literal filtering.
+    filtered = await _read(cap, handle, pattern="[literal]", limit=2)
+    assert "row 0:" in filtered and "row 2:" in filtered
+    assert "row 1:" not in filtered
+    filtered_offset = await _read(cap, handle, pattern="[literal]", offset=1, limit=1)
+    assert "row 2:" in filtered_offset and "row 0:" not in filtered_offset
     with pytest.raises(ModelRetry):
         await _read(cap, handle, offset=-1)
     outside = tmp_path / "secret"

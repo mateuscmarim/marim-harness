@@ -126,3 +126,8 @@ Compaction branch integration remains a pre-merge obligation if that branch has 
   as approved. Existing instruction-registration tests now unwrap core 2.43's
   SourcedInstruction recipe; their registration assertions remain intact. This
   is test-only private introspection, with no production private API dependency.
+
+Independent verification round 1 at `89067d37`: 19/20 proven, C11 had an
+insufficiently discriminating literal-filter assertion. The follow-up proof adds
+nonmatching rows that a regex would match, and checks filtering before offsets.
+No production change was needed; re-verification is required at the follow-up commit.
