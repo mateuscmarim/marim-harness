@@ -80,6 +80,7 @@ from .deps import (
     WorkflowRunner,
 )
 from .instructions import InstructionSources, register_instructions
+from .output_limits import session_output_limits
 from .permissions import Mode
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,7 @@ def build_collaborators(
             ProcessHistory(_drop_contentless_responses),
             ProcessHistory(suggest_unknown_tool_retry),
             DiscoveredInstructionsCapability(mcp),
+            session_output_limits(),
             *cast("list[AbstractCapability]", cfg.capabilities),
         ],
     )

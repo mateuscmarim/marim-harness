@@ -1,3 +1,5 @@
+import pytest
+
 from marim_harness.jobs import Job, result_tail
 from marim_harness.server.jobs_view import assemble, detail_dto, job_to_dto
 
@@ -90,3 +92,17 @@ def test_detail_dto_carries_prompt_and_result():
     assert dto["prompt"] == "do the thing"
     assert dto["result"] == "the full output"
     assert dto["id"] == "job-8"
+
+
+@pytest.mark.parametrize("kind,size", [("bash", 20_000), ("bash", 20_001), ("agent", 100_000)])
+def test_detail_preview_preserves_small_shell_output_and_explicit_agent_reports(kind, size):
+    result = "HEAD" + "\u00e9" * (size - 8) + "TAIL"
+    job = Job(id="job-1", kind=kind, label="test", status="done", result=result)
+    preview = detail_dto(job, result, None)["result"]
+    if kind == "bash" and size > 20_000:
+        assert len(preview) < 20_100
+        assert preview.startswith("HEAD") and preview.endswith("TAIL")
+        assert "truncated" in preview
+    else:
+        assert preview == result
+    assert job.result == result

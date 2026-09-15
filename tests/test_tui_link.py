@@ -75,3 +75,26 @@ async def test_local_link_jobs_surface_is_the_registry(tmp_path):
         )
     finally:
         await link.close()
+
+
+@pytest.mark.anyio
+async def test_local_link_previews_finished_bash_without_discarding_agent_result(tmp_path):
+    from marim_harness.tools.impl.shell import start_bash
+
+    payload = "HEAD\n" + "x" * 1_000_000 + "\nTAIL"
+    (tmp_path / "output.txt").write_text(payload)
+    harness = _harness(tmp_path)
+    link = LocalSessionLink(harness, SessionHost(harness, EventBus(), autonomous_wake=False))
+    try:
+        process = await start_bash(tmp_path, "cat output.txt; exit 7")
+        registry = harness.deps.jobs
+        job_id = registry.register("bash", "large output", process.wait(), output_fn=process.output)
+        assert await registry.wait(job_id) == "exit 7\n" + payload
+        preview = await link.job_output(job_id)
+        assert len(preview) < 20_100
+        assert preview.startswith("exit 7\nHEAD\n") and preview.endswith("\nTAIL")
+        assert "truncated" in preview
+        # Agent reads still hand the complete result to ToolOutputLimits.
+        assert registry.output(job_id, mark_seen=True) == "exit 7\n" + payload
+    finally:
+        await link.close()

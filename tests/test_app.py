@@ -4982,6 +4982,32 @@ async def test_bang_submission_runs_command_not_a_turn(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_bang_large_output_is_bounded_in_transcript_and_prompt(tmp_path: Path, monkeypatch):
+    from marim_harness.interfaces.tui.widgets.prompt import PromptInput
+
+    (tmp_path / "output.txt").write_text("HEAD\n" + "x" * 1_000_000 + "\nTAIL")
+    app = _app(tmp_path)
+    rendered = []
+
+    async def capture(markdown: str) -> None:
+        rendered.append(markdown)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "post_system", capture)
+        await app.on_prompt_input_submitted(PromptInput.Submitted("!cat output.txt"))
+        await app.workers.wait_for_complete()
+        pending = app.harness.turn_controller._pending_shell_results
+        assert len(pending) == 1
+        output = pending[0][1]
+        assert len(output) < 4_100
+        assert output.startswith("exit 0\nHEAD\n") and output.endswith("\nTAIL")
+        assert "truncated" in output
+        assert len(rendered) == 1 and len(rendered[0]) < 4_200
+        assert output in rendered[0]
+
+
+@pytest.mark.anyio
 async def test_bang_render_failure_surfaces_error_not_crash(tmp_path: Path):
     """An unexpected exception inside the passthrough (here: the transcript
     render) must surface as an ErrorMessage, not exit the app — and the result

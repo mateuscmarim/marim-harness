@@ -13,7 +13,7 @@ from pydantic_ai import ModelRetry
 from ...atomic_io import atomic_write_text
 from ...images import media_type_for_path
 from ...workspace.fs import ReadLedger, WorkspaceError, resolve_in_workspace
-from .offload import LEGACY_OFFLOAD_DIR, MAX_OUTPUT_CHARS, offload_if_large
+from .offload import MAX_OUTPUT_CHARS
 
 # Capture the process umask once at import time so we never need to manipulate
 # os.umask() at runtime — that API is process-global and not thread-safe.
@@ -513,10 +513,10 @@ def edit_file(
     return f"edited {path} ({n} edit{'s' if n != 1 else ''})"
 
 
-def tree(root: Path, path: str = ".", depth: int = 2, offload_dir: Path | None = None) -> str:
+def tree(root: Path, path: str = ".", depth: int = 2) -> str:
     """Render an indented directory tree rooted at ``path``, descending up to
     ``depth`` levels. Dirs sort first (with a trailing slash); known-noise dirs
-    are listed but not expanded. Large trees are offloaded to a file."""
+    are listed but not expanded. Collection stops at MAX_OUTPUT_CHARS."""
     base = _safe(root, path)
     if not base.is_dir():
         raise ModelRetry(f"not a directory: {path}")
@@ -524,13 +524,10 @@ def tree(root: Path, path: str = ".", depth: int = 2, offload_dir: Path | None =
     capped = _walk_tree(base, depth, 0, lines)
     if not lines:
         return "(empty)"
-    return offload_if_large(
-        "\n".join(lines),
-        kind="tree",
-        key=f"{path}\0{depth}",
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
-        capped=capped,
-    )
+    body = "\n".join(lines)
+    if capped:
+        body += f"\n(stopped at {MAX_OUTPUT_CHARS:,}-char collection ceiling)"
+    return body
 
 
 def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> bool:
@@ -575,9 +572,8 @@ def _walk_tree(directory: Path, depth: int, level: int, lines: list[str]) -> boo
     return _recurse(directory, level)
 
 
-def glob_files(root: Path, pattern: str, offload_dir: Path | None = None) -> str:
-    """List files under the workspace matching a glob pattern. Large match lists
-    are offloaded to a file (handle + preview) instead of flooding the response."""
+def glob_files(root: Path, pattern: str) -> str:
+    """List matching workspace files, collecting up to MAX_OUTPUT_CHARS."""
     try:
         candidates = list(root.glob(pattern))
     except (NotImplementedError, ValueError) as exc:
@@ -616,13 +612,10 @@ def glob_files(root: Path, pattern: str, offload_dir: Path | None = None) -> str
     if not matches:
         return "(no matches)"
     matches.sort()
-    return offload_if_large(
-        "\n".join(matches),
-        kind="glob",
-        key=pattern,
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
-        capped=capped,
-    )
+    body = "\n".join(matches)
+    if capped:
+        body += f"\n(stopped at {MAX_OUTPUT_CHARS:,}-char collection ceiling)"
+    return body
 
 
 def _read_text_for_grep(path: Path) -> str | None:
@@ -906,7 +899,6 @@ def grep(
     before_context: int = 0,
     after_context: int = 0,
     multiline: bool = False,
-    offload_dir: Path | None = None,
 ) -> str:
     """Search file contents for a regex. ``output_mode`` picks the shape:
     ``content`` → ``relpath:line:text`` hits (context lines, when requested, use a
@@ -914,8 +906,7 @@ def grep(
     → one ``relpath`` per matching file; ``count`` → ``relpath:count`` per file.
     Skips noise dirs (.git, node_modules, .venv, …) and binary files; ``glob`` /
     ``file_type`` scope which files are searched; ``head_limit`` caps the number of
-    output rows; large results are offloaded to a file; collection stops at
-    MAX_OUTPUT_CHARS."""
+    output rows; collection stops at MAX_OUTPUT_CHARS."""
     if output_mode not in _GREP_MODES:
         raise ModelRetry(
             f"invalid output_mode {output_mode!r}; use one of {', '.join(_GREP_MODES)}."
@@ -944,24 +935,6 @@ def grep(
     body = "\n".join(col.out)
     if col.limited:
         body += f"\n(stopped at head_limit={head_limit})"
-    # Every parameter that can change `body` for an otherwise-identical
-    # pattern/path/output_mode/glob/file_type must be folded in here too — the
-    # key derives the offload filename (see offload._write_handle), so two greps
-    # that differ only in, say, case_insensitive or head_limit must not collapse
-    # onto the same sha-derived file: one would silently overwrite the other's
-    # content, and a `read_file` of a stale handle path could return the wrong
-    # grep's result. head_limit uses repr() (not str()) so ``None`` (unlimited)
-    # can never collide with a numeric head_limit that happened to format the
-    # same; before/after use the clamped values since those, not the raw
-    # arguments, are what actually shaped `body`.
-    key = (
-        f"{pattern}\0{path or ''}\0{output_mode}\0{glob or ''}\0{file_type or ''}\0"
-        f"{head_limit!r}\0{int(case_insensitive)}\0{before}\0{after}\0{int(multiline)}"
-    )
-    return offload_if_large(
-        body,
-        kind="grep",
-        key=key,
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
-        capped=col.capped,
-    )
+    if col.capped:
+        body += f"\n(stopped at {MAX_OUTPUT_CHARS:,}-char collection ceiling)"
+    return body

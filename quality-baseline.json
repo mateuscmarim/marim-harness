@@ -29,7 +29,7 @@
       "why_complexity_is_61_2026_08_29": "The gate force-selects C901 plus PLR0911/0912/0913/0915. ruff.toml only selects C901 (max-complexity 10), so the other three rules were never enforced here: 48 PLR0913 (too many arguments) and 13 PLR0911 (too many returns), all in src. 30 further findings in tests/ are excluded by non_ratcheted_dirs and stay visible in the artifact.",
       "metrics": {
         "coverage_lines_pct": 93.93,
-        "coverage_branches_pct": 89.45,
+        "coverage_branches_pct": 89.57,
         "lint_errors": 0,
         "complexity_violations": 60,
         "bandit_high": 0,

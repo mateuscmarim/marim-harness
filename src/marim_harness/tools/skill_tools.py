@@ -2,8 +2,6 @@ from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
 from ..workspace.skills import find_skill, read_bundled_file, read_skill_body
-from .fs_tools import offload_dir
-from .impl.offload import offload_if_large
 
 
 def activate_skill(ctx: RunContext[Deps], name: str) -> str:
@@ -21,16 +19,7 @@ def activate_skill(ctx: RunContext[Deps], name: str) -> str:
     )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
-    # Offload an oversized SKILL.md through the same guard read_file/grep/bash use,
-    # so a large bundled skill can't flood the turn context — the body is spilled to
-    # a file with a preview + read_file pointer. The directory pointer and how-to-read
-    # header stay inline so the agent can still navigate even when the body offloads.
-    body = offload_if_large(
-        read_skill_body(skill),
-        kind="skill",
-        key=str(skill.root),
-        offload_dir=offload_dir(ctx),
-    )
+    body = read_skill_body(skill)
     return (
         f"Skill directory: {skill.root}\n"
         f"To read a file the skill points at (e.g. ./foo.md), call "
@@ -54,11 +43,4 @@ def read_skill_file(ctx: RunContext[Deps], name: str, path: str) -> str:
     )
     if skill is None:
         return f"No skill named {name!r}. See the skills index."
-    # Same context-flood guard as read_file: a large bundled file is spilled to a
-    # file with a preview + read_file pointer instead of being inlined whole.
-    return offload_if_large(
-        read_bundled_file(skill, path),
-        kind="skill-file",
-        key=f"{skill.root}\0{path}",
-        offload_dir=offload_dir(ctx),
-    )
+    return read_bundled_file(skill, path)

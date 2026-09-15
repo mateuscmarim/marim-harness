@@ -809,7 +809,7 @@ def test_job_detail_404_for_unknown_id(client):
     assert resp.json()["error"]["code"] == "job_not_found"
 
 
-async def _register_and_settle_two_jobs(registry):
+async def _register_and_settle_two_jobs(registry, bash_output):
     """Register one bash job and one agent job directly on a live host's
     ``JobRegistry`` and block until both are settled. Must run ON the
     registry's own event loop (see ``client_with_supervisor``) because
@@ -827,7 +827,7 @@ async def _register_and_settle_two_jobs(registry):
     bash_id = registry.register(
         "bash",
         "run the test suite",
-        _const("full bash output line one\nfull bash output line two\n"),
+        _const(bash_output),
         prompt="echo hi",
     )
     await registry.wait(bash_id)
@@ -843,7 +843,10 @@ async def _register_and_settle_two_jobs(registry):
     return bash_id, agent_id
 
 
-def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_supervisor):
+@pytest.mark.parametrize("large_bash_output", [False, True])
+def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(
+    client_with_supervisor, large_bash_output
+):
     """Consolidated live-host coverage for BOTH job routes and BOTH job kinds:
     a real host (mounted by driving a turn to a parked approval, answering
     it, and polling back to idle) with a settled bash job and a settled agent
@@ -852,7 +855,7 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     Asserts: the list route returns both jobs, settled-desc ordered, with the
     agent row carrying real usage/tool_count/duration_secs read off a v2
     transcript sidecar and the bash row leaving those null; the detail route
-    returns the exact prompt and the exact, full result for each job kind —
+    returns the exact prompt and a bounded bash preview or full agent result —
     the assertion that guards jobs_view.detail_dto's positional-arg assembly
     (job, result, meta), which a keyword-arg-only unit test can't catch."""
     test_client, tmp_path, supervisor, loop_holder = client_with_supervisor
@@ -873,8 +876,13 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     registry = host.harness.deps.jobs
 
     loop = loop_holder["loop"]
+    bash_output = (
+        "exit 7\nHEAD\n" + "x" * 1_000_000 + "\nTAIL"
+        if large_bash_output
+        else "full bash output line one\nfull bash output line two\n"
+    )
     bash_id, agent_id = asyncio.run_coroutine_threadsafe(
-        _register_and_settle_two_jobs(registry), loop
+        _register_and_settle_two_jobs(registry, bash_output), loop
     ).result(timeout=5.0)
 
     # Write a real v2 transcript sidecar for the agent job's stream_id so
@@ -924,14 +932,21 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(client_with_superviso
     assert bash_row["tool_count"] is None
     assert bash_row["duration_secs"] is None
 
-    # --- GET .../jobs/{job_id} (detail): exact prompt + exact full result,
-    # for EACH kind. This guards detail_dto(job, result, meta) positional
+    # --- GET .../jobs/{job_id} (detail): exact prompt + bounded bash output
+    # or complete agent report. Guards detail_dto(job, result, meta) positional
     # assembly in http.py. ---
     bash_detail = test_client.get(f"{base}/jobs/{bash_id}", headers=AUTH)
     assert bash_detail.status_code == 200
     bash_body = bash_detail.json()
     assert bash_body["prompt"] == "echo hi"
-    assert bash_body["result"] == "full bash output line one\nfull bash output line two\n"
+    result = bash_body["result"]
+    if large_bash_output:
+        assert len(result) < 20_100
+        assert result.startswith("exit 7\nHEAD\n") and result.endswith("\nTAIL")
+        assert "truncated" in result
+    else:
+        assert result == bash_output
+    assert registry.output(bash_id) == bash_output
     assert bash_body["kind"] == "bash"
     assert bash_body["usage"] is None
 

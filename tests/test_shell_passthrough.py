@@ -74,13 +74,30 @@ async def test_run_passthrough_runs_plain_command(tmp_path: Path):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("size", [3_999, 4_000, 4_001, 1_000_000])
+async def test_run_passthrough_bounds_output_before_returning(tmp_path: Path, size: int):
+    output = "HEAD\n" + "x" * (size - 10) + "\nTAIL"
+    (tmp_path / "output.txt").write_text(output)
+
+    result = await run_passthrough(tmp_path, "cat output.txt; exit 7")
+
+    assert result.startswith("exit 7\nHEAD\n")
+    assert result.endswith("\nTAIL")
+    if size <= 4_000:
+        assert result == "exit 7\n" + output
+    else:
+        assert len(result) < 4_100  # 4 KB payload plus exit status and omission notice
+        assert "truncated" in result
+
+
+@pytest.mark.anyio
 async def test_run_passthrough_password_feeds_stdin_never_output(tmp_path: Path, monkeypatch):
     """Real sudo can't run in tests: capture the run_bash call instead and
     assert the rewrite + stdin plumbing, and that the password can't leak into
     the returned text."""
     captured = {}
 
-    async def fake_run_bash(root, command, timeout=30, stdin_data=None):
+    async def fake_run_bash(root, command, timeout=30, stdin_data=None, **kwargs):
         captured["command"] = command
         captured["timeout"] = timeout
         captured["stdin"] = stdin_data

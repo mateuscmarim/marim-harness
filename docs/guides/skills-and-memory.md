@@ -213,7 +213,8 @@ How it behaves:
   user (classic /tmp squatting).
 - **Lifetime:** the directory is removed when the session is deleted, and
   ordinary /tmp semantics reclaim it on reboot — anything worth keeping
-  belongs in the workspace. Compaction also uses it (an `elided/`
+  belongs in the workspace. [Large tool results](tool-output.md) use its
+  `tool-results/` subdirectory and share this lifetime. Compaction also uses it (an `elided/`
   subdirectory) to preserve large tool outputs it trims from the transcript.
 
 ## Choosing between them

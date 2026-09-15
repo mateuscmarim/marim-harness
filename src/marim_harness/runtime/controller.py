@@ -616,7 +616,8 @@ class TurnController:
         entries are dropped (and counted, so the rendered block can say so) —
         a burst of `!` commands must not stack an unbounded prefix onto the
         next prompt. The newest entry is always kept even if it alone exceeds
-        the budget; run_bash already caps any single output."""
+        the budget; the TUI passthrough caps each output's collection at 4 KB
+        before queuing it here."""
         self._pending_shell_results.append((command, output))
         total = sum(len(c) + len(o) for c, o in self._pending_shell_results)
         while total > _SHELL_RESULTS_BUDGET and len(self._pending_shell_results) > 1:

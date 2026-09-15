@@ -49,6 +49,27 @@ API keys were available. No live model request was made.
 
 ## Decisions and limits
 
+### Integration after PR #143
+
+Merged `origin/master` at `01dab16d` (including output-limit PR #143) into
+the compaction branch at `6dc4355d`. Kept the qualified Harness 0.31.0 pin,
+the compaction checkpoint after sanitizing/clearing, and session-owned output
+storage. Shared instruction-registration test helpers remain in place.
+
+Updated the output-limit resume test and combined integration artifact for
+the final `ReductionOptions` API. The combined checks cover spilling,
+clearing, summarization, serialization, resumed retrieval, and missing files
+without rerunning the original producer.
+
+- `uv sync --locked`: passed, retaining core 2.43.0 and Harness 0.31.0.
+- Ruff lint/format and Pyright: passed.
+- Focused integration checks: 73 passed, 1 expected upstream-defect failure.
+- Full suite on Python 3.13.14: 5,011 passed, 9 skipped, 1 expected failure;
+  95.40% coverage.
+- `uv build`: source distribution and wheel passed.
+
+### Migration decisions
+
 - Work in an isolated branch/worktree to preserve the existing dirty checkout.
   Moving commits back to another checkout remains a source-control operation.
 - Pydantic AI Harness 0.31.0 groups tool results by call ID globally. Reusing an ID

@@ -5,7 +5,7 @@ import re
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from .fs_tools import offload_dir, scratch_roots
+from .fs_tools import scratch_roots
 from .impl import fs, shell
 from .lenient import Lenient, LenientList
 
@@ -140,7 +140,7 @@ async def bash(
             "slow — or report back and let the main agent start it."
         )
     if background:
-        bp = await shell.start_bash(ctx.deps.workspace.root, command, offload_dir=offload_dir(ctx))
+        bp = await shell.start_bash(ctx.deps.workspace.root, command)
         job_id = ctx.deps.jobs.register(
             "bash",
             command,
@@ -151,6 +151,4 @@ async def bash(
         )
         return f"Started {job_id} (bash) — {command[:60]}"
     timeout_s = _resolve_bash_timeout_seconds(timeout)
-    return await shell.run_bash(
-        ctx.deps.workspace.root, command, timeout=timeout_s, offload_dir=offload_dir(ctx)
-    )
+    return await shell.run_bash(ctx.deps.workspace.root, command, timeout=timeout_s)

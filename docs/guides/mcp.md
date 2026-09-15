@@ -161,9 +161,11 @@ knock-on effect on sub-agents, described next.
 Each server's tools appear to the model prefixed with the server's config name:
 `<server>_<tool>` (e.g. `mddocs_search`). A server that publishes usage
 `instructions` gets them injected into the conversation once, when its tools
-are first discovered, capped at 2000 characters per server. Oversized tool results (a third-party server has no inherent
-size bound) are offloaded to a workspace file and replaced with a handle plus
-preview, so one huge response can't flood the context.
+are first discovered, capped at 2000 characters per server. Ordinary MCP results
+use the same [upstream output limits](tool-output.md) as native tools: text at
+10,000 characters or more is stored with a handle and preview, and structured
+results use indented JSON. `read_tool_result` retrieves saved output. Supported
+media and mixed media results pass through intact.
 
 ### Tool-search deferral
 

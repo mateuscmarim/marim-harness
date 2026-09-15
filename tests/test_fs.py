@@ -1,6 +1,5 @@
 import locale
 import os
-import re
 from pathlib import Path
 
 import pytest
@@ -532,121 +531,38 @@ def test_glob_skips_worktrees(tmp_path: Path):
     assert ".worktrees" not in out
 
 
-def test_grep_offloads_large_result(tmp_path, monkeypatch):
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
-    (tmp_path / "big.txt").write_text("\n".join(f"match {i}" for i in range(100)))
+def test_grep_returns_complete_large_result(tmp_path):
+    (tmp_path / "big.txt").write_text("\n".join(f"match {i}" for i in range(3000)))
     out = fs.grep(tmp_path, "match")
-    assert "full output saved to" in out and "grep result" in out
-    saved = list((tmp_path / ".marim" / "output").glob("grep-*.txt"))
-    assert len(saved) == 1
-    # every hit is in the file, nothing truncated
-    assert saved[0].read_text().count("big.txt:") == 100
-    assert "(truncated)" not in out
+    assert out == "\n".join(f"big.txt:{i + 1}:match {i}" for i in range(3000))
+    assert not (tmp_path / ".marim").exists()
 
 
 def test_grep_small_result_still_inline(tmp_path):
     (tmp_path / "a.txt").write_text("alpha\nbeta")
-    out = fs.grep(tmp_path, "alpha")
-    assert out == "a.txt:1:alpha"
+    assert fs.grep(tmp_path, "alpha") == "a.txt:1:alpha"
 
 
-def _offload_handle_path(out: str) -> str:
-    """Pull the sha-derived handle path out of an offload message, e.g.
-    '... saved to `.marim/output/grep-<digest>.txt` ...'."""
-    match = re.search(r"`([^`]+)`", out)
-    assert match, f"no handle path found in: {out!r}"
-    return match.group(1)
+@pytest.mark.parametrize("tool", [fs.glob_files, fs.tree])
+def test_listing_returns_complete_large_result(tmp_path, tool):
+    names = [f"f{i:03d}_{'x' * 100}.txt" for i in range(300)]
+    for name in names:
+        (tmp_path / name).write_text("x")
+    out = tool(tmp_path, "*.txt") if tool is fs.glob_files else tool(tmp_path)
+    assert out.splitlines() == names
+    assert not (tmp_path / ".marim").exists()
 
 
-def test_grep_case_insensitive_gets_distinct_offload_key(tmp_path, monkeypatch):
-    """Same pattern, same body (the content is already all-uppercase so matching
-    case-sensitively or case-insensitively yields identical output) but different
-    ``case_insensitive`` flag must still land in different offload files: the key
-    must encode the flag, not just derive uniqueness from body content."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
-    (tmp_path / "big.txt").write_text("\n".join(f"MATCH {i}" for i in range(100)))
-    out_sensitive = fs.grep(tmp_path, "MATCH")
-    out_insensitive = fs.grep(tmp_path, "MATCH", case_insensitive=True)
-    assert _offload_handle_path(out_sensitive) != _offload_handle_path(out_insensitive)
-
-
-def test_grep_head_limit_gets_distinct_offload_key(tmp_path, monkeypatch):
-    """Differing only in head_limit must produce a different offload handle path,
-    even though pattern/path/output_mode/glob/file_type are identical."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
-    (tmp_path / "big.txt").write_text("\n".join(f"m{i}" for i in range(100)))
-    out_a = fs.grep(tmp_path, "m", head_limit=3)
-    out_b = fs.grep(tmp_path, "m", head_limit=50)
-    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
-
-
-def test_grep_context_lines_get_distinct_offload_key(tmp_path, monkeypatch):
-    """before_context/after_context must be part of the offload key too."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
-    (tmp_path / "big.txt").write_text("\n".join(f"line {i}" for i in range(100)))
-    out_a = fs.grep(tmp_path, "line", before_context=0, after_context=0)
-    out_b = fs.grep(tmp_path, "line", before_context=1, after_context=1)
-    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
-
-
-def test_grep_after_context_alone_gets_distinct_offload_key(tmp_path, monkeypatch):
-    """Varying ONLY after_context (before_context held fixed) must still produce
-    a distinct offload handle path — the context-lines test above varies both
-    together, which wouldn't catch a key that folded in before_context but
-    dropped after_context."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
-    (tmp_path / "big.txt").write_text("\n".join(f"line {i}" for i in range(100)))
-    out_a = fs.grep(tmp_path, "line", after_context=0)
-    out_b = fs.grep(tmp_path, "line", after_context=1)
-    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
-
-
-def test_grep_multiline_gets_distinct_offload_key(tmp_path, monkeypatch):
-    """multiline must be part of the offload key too."""
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 5)
-    (tmp_path / "big.txt").write_text("\n".join(f"foo bar {i}" for i in range(100)))
-    out_a = fs.grep(tmp_path, "foo.bar")
-    out_b = fs.grep(tmp_path, "foo.bar", multiline=True)
-    assert _offload_handle_path(out_a) != _offload_handle_path(out_b)
-
-
-def test_glob_offloads_large_result(tmp_path, monkeypatch):
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
+@pytest.mark.parametrize("tool", [fs.glob_files, fs.tree, fs.grep])
+def test_producer_collection_ceiling_stops_listing(tmp_path, monkeypatch, tool):
+    monkeypatch.setattr(fs, "MAX_OUTPUT_CHARS", 100)
     for i in range(100):
-        (tmp_path / f"f{i}.txt").write_text("x")
-    out = fs.glob_files(tmp_path, "*.txt")
-    assert "full output saved to" in out and "glob result" in out
-    saved = list((tmp_path / ".marim" / "output").glob("glob-*.txt"))
-    assert len(saved) == 1
-    assert saved[0].read_text().count(".txt") == 100
-
-
-def test_tree_offloads_large_listing(tmp_path, monkeypatch):
-    from marim_harness.tools.impl import offload
-
-    monkeypatch.setattr(offload, "_INLINE_CHAR_LIMIT", 50)
-    for i in range(100):
-        (tmp_path / f"f{i:03d}.txt").write_text("x")
-    out = fs.tree(tmp_path, ".", depth=1)
-    assert "full output saved to" in out and "tree result" in out
-    saved = list((tmp_path / ".marim" / "output").glob("tree-*.txt"))
-    assert len(saved) == 1
-    assert saved[0].read_text().count(".txt") == 100
-    assert "(truncated)" not in out
+        (tmp_path / f"f{i:03d}.txt").write_text("match")
+    argument = "*.txt" if tool is fs.glob_files else "match" if tool is fs.grep else "."
+    out = tool(tmp_path, argument)
+    assert "collection ceiling" in out
+    assert out.count(".txt") < 100
+    assert len(out) < 200
 
 
 def test_grep_skips_noise_dirs(tmp_path: Path):
