@@ -1,7 +1,7 @@
 # Upstream tool-output limits
 
 Date: 2026-09-15
-Status: Approved by the user on 2026-09-15; implemented, awaiting independent verification.
+Status: Approved by the user on 2026-09-15; implemented and independently verified.
 Profile: light (project default for tlc-spec-lean).
 Branch: `refactor/upstream-output-limits`
 Worktree: `/home/mateuscmarim/Projects/marim.dev/marim-harness/.worktrees/upstream-output-limits`

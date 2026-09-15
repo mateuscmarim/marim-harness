@@ -4,8 +4,7 @@ Profile: light
 Plan: `.specs/features/upstream-output-limits/plan.md`
 
 20 checks in 3 slices · 2 one-way doors · 0 open questions.
-Build status: C1–C20 closed by the implementation and proof run below; independent
-verification pending.
+Build status: C1–C20 closed; independent verification PASS at `d6be53e0`.
 Proof commands use the repository pytest runner. New selectors below are executable
 obligations to implement before claiming their checks closed.
 
@@ -131,3 +130,8 @@ Independent verification round 1 at `89067d37`: 19/20 proven, C11 had an
 insufficiently discriminating literal-filter assertion. The follow-up proof adds
 nonmatching rows that a regex would match, and checks filtering before offsets.
 No production change was needed; re-verification is required at the follow-up commit.
+
+Round 2 at `d6be53e0`: independent PASS, 20/20 checks proven and all 32 proof
+cases passed. The completion-artifact validator passed with zero errors/warnings.
+See [verification.md](verification.md) and [qualification.md](qualification.md)
+for the evidence, full supported-Python matrix, integration snapshot and limits.

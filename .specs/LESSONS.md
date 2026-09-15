@@ -4,7 +4,7 @@
 > Canonical state lives in `.specs/lessons.json`. Edit lessons only via the script.
 > promote_threshold=2 distinct features · window_days=45 · quarantine_threshold=2
 
-## Confirmed (load these at Specify/Design)
+## Confirmed (load these at Plan/Checks)
 
 Corroborated across multiple features. Safe to apply as guidance.
 
@@ -25,6 +25,12 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - features: cli-lifecycle-parity
 - evidence: LIFE-17 (cli-events)
 - last seen: 2026-09-14T20:05:50Z
+
+### L-003 - Test literal search with both a literal match and a nonmatching value that regex interpretation would match.
+- signal: `ac_gap` · recurrence: 1 feature(s) · scope: `tests` · harmful: 0
+- features: upstream-output-limits
+- evidence: verification.md: C11 round-1 literal-search gap (tests)
+- last seen: 2026-09-15T08:17:50Z
 
 ## Quarantined (failed when applied - ignore)
 

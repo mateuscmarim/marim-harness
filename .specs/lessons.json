@@ -3,7 +3,7 @@
   "promote_threshold": 2,
   "window_days": 45,
   "quarantine_threshold": 2,
-  "next_id": 3,
+  "next_id": 4,
   "lessons": [
     {
       "id": "L-001",
@@ -40,6 +40,24 @@
       ],
       "created": "2026-09-14T20:05:50Z",
       "last_seen": "2026-09-14T20:05:50Z"
+    },
+    {
+      "id": "L-003",
+      "key": "ac_gap::test literal search with both a literal match and a nonmatching value that regex interpretation would match",
+      "text": "Test literal search with both a literal match and a nonmatching value that regex interpretation would match.",
+      "signal": "ac_gap",
+      "scope": "tests",
+      "status": "candidate",
+      "features": [
+        "upstream-output-limits"
+      ],
+      "recurrence": 1,
+      "harmful": 0,
+      "evidence": [
+        "verification.md: C11 round-1 literal-search gap (tests)"
+      ],
+      "created": "2026-09-15T08:17:50Z",
+      "last_seen": "2026-09-15T08:17:50Z"
     }
   ]
 }
