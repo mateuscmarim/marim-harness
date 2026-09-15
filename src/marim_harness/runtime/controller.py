@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .deps import Deps, HarnessAgent
 
 from ..compaction import estimate_tokens, last_request_input_tokens
+from ..config.context_report import current_context_report
 from ..thinking import settings_for
 from ..tools.names import LSP_TOOLS
 from .cli_activity import expand_cli_activity
@@ -1272,6 +1273,9 @@ class TurnController:
             # execute them); persist them as real tool messages so replay,
             # GET history and compaction see them like marim's own tools.
             self.session.history = expand_cli_activity(result.all_messages())
+            report = current_context_report(self.get_model(), self.session.history)
+            if report is not None:
+                self.session.note_context_window(report.window)
             self._bank_usage(result.usage)
             # Record the last request's real input-token count so the next
             # compaction check gates on the provider's measurement rather than the

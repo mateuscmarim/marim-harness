@@ -12,6 +12,7 @@ from marim_harness.claude.quota import quota_from_usage
 from marim_harness.config.context_report import (
     CONTEXT_REPORT_KEY,
     ContextReport,
+    context_report_from_usage,
     current_context_report,
     last_context_report,
     prompt_tokens,
@@ -65,6 +66,24 @@ def test_prompt_tokens_folds_both_cache_buckets():
     assert prompt_tokens({"input_tokens": "lots", "cache_read_input_tokens": None}) == 0
     assert prompt_tokens({"input_tokens": True, "cache_read_input_tokens": 5.0}) == 5
     assert prompt_tokens("not a dict") == 0  # type: ignore[arg-type]
+
+
+def test_context_usage_report_prefers_raw_window_and_rejects_junk():
+    assert context_report_from_usage(
+        {"totalTokens": 45_000, "maxTokens": 180_000, "rawMaxTokens": 200_000}
+    ) == ContextReport(45_000, 200_000)
+    assert context_report_from_usage({"totalTokens": 45_000, "maxTokens": 180_000}) == (
+        ContextReport(45_000, 180_000)
+    )
+    assert context_report_from_usage({"totalTokens": 45_000}, window=200_000) == ContextReport(
+        45_000, 200_000
+    )
+    assert context_report_from_usage({"totalTokens": True, "rawMaxTokens": 200_000}) is None
+    assert context_report_from_usage({"totalTokens": -1, "rawMaxTokens": 200_000}) is None
+    assert context_report_from_usage({"totalTokens": 1, "rawMaxTokens": "large"}) == (
+        ContextReport(1)
+    )
+    assert context_report_from_usage(None) is None
 
 
 # --- history fallback ---------------------------------------------------------------

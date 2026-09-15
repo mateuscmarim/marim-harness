@@ -4,12 +4,13 @@ Under ``claude-cli`` and ``codex-cli`` the conversation lives inside the
 backend, and marim's history is a mirror of it — so the status bar's chars/4
 estimate over that mirror (denominated against marim's own budget) is a
 guess about a context it does not own. Both backends report the truth on
-the wire: Claude's ``assistant`` events carry the request's ``usage`` (the
-real prompt size) and its ``result`` the model's ``contextWindow``; Codex's
+the wire: Claude's ``assistant`` events carry the request's ``usage``, its
+``result`` the model's ``contextWindow``, and ``get_context_usage`` refines
+the total with the same local category estimates as ``/context``; Codex's
 ``thread/tokenUsage/updated`` carries the last response's usage and
-``modelContextWindow``. Each CLI model adapter keeps the newest reading on
-a ``context_report`` attribute (the same pattern as ``quota_hint``); the
-status bar and the ``GET session`` payload prefer it over the estimate.
+``modelContextWindow``. Each CLI model adapter keeps the newest reading on a
+``context_report`` attribute (the same pattern as ``quota_hint``); the status
+bar and the ``GET session`` payload prefer it over the estimate.
 
 The report also rides on the turn's ``ModelResponse.provider_details`` so a
 resumed session shows the backend's last known number before its first new
@@ -81,6 +82,35 @@ def prompt_tokens(usage: dict | None) -> int:
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             total += int(v)
     return total
+
+
+def context_report_from_usage(raw: Any, *, window: int | None = None) -> ContextReport | None:
+    """Parse Claude's ``get_context_usage`` summary into the shared gauge.
+
+    ``rawMaxTokens`` is the model's physical window; ``maxTokens`` is the
+    auto-compaction allowance shown by Claude's UI, so the raw value wins when
+    both are present. Older responses may omit either one, in which case the
+    last window learned from ``modelUsage`` is retained. A malformed response
+    is ignored so this informational control request can never fail a turn."""
+    if not isinstance(raw, dict):
+        return None
+    used = raw.get("totalTokens")
+    if isinstance(used, bool) or not isinstance(used, int) or used < 0:
+        return None
+    reported_window = raw.get("rawMaxTokens")
+    if (
+        isinstance(reported_window, bool)
+        or not isinstance(reported_window, int)
+        or reported_window <= 0
+    ):
+        reported_window = raw.get("maxTokens")
+    if (
+        isinstance(reported_window, bool)
+        or not isinstance(reported_window, int)
+        or reported_window <= 0
+    ):
+        reported_window = window
+    return ContextReport(used, reported_window)
 
 
 def last_context_report(

@@ -54,8 +54,8 @@ logger = logging.getLogger(__name__)
 
 _INIT_TIMEOUT = 30.0
 _INTERRUPT_GRACE = 2.0
-# Cap on the once-per-turn `get_usage` poll: a status-line nicety must never
-# hold the turn's settle for the default 30 s control timeout.
+# Cap on the once-per-turn `get_usage` and `get_context_usage` polls: status-line
+# niceties must never hold the turn's settle for the default 30 s control timeout.
 _USAGE_TIMEOUT = 5.0
 # Cap on each mode/model/thinking control sent before a turn: the CLI answers
 # these from memory (no model round-trip), so a slow answer means a wedged
@@ -700,6 +700,12 @@ class ClaudeProcess:
         if self._client is None or self.closed.is_set():
             raise ProcessClosed("claude process is closed")
         return await self._client.control("get_usage", timeout=timeout, skip_behaviors=True)
+
+    async def read_context_usage(self, timeout: float = _USAGE_TIMEOUT) -> dict:
+        """Claude's current context breakdown, using its cheap summary path."""
+        if self._client is None or self.closed.is_set():
+            raise ProcessClosed("claude process is closed")
+        return await self._client.control("get_context_usage", timeout=timeout, detail="summary")
 
     # --- control sync ---------------------------------------------------------
     # Thin wrappers over one control request each, mirroring ``read_usage``:

@@ -55,6 +55,8 @@ from marim_harness.runtime.context import wrap_turn_context
 from marim_harness.usage import COST_DETAIL_KEY
 from tests.fakes import fake_claude_bin, read_claude_argv, read_claude_argvs, read_claude_log
 
+_STATUS_POLLS = {"get_context_usage", "get_usage"}
+
 # --- pure helpers -------------------------------------------------------------
 
 
@@ -1334,6 +1336,14 @@ async def test_request_bills_each_turn_its_own_cost_and_keeps_the_context_report
         if (m.get("request") or {}).get("subtype") == "get_usage"
     ]
     assert len(polls) == 3 and all(m["request"]["skip_behaviors"] is True for m in polls)
+    context_polls = [
+        m
+        for m in read_claude_log(tmp_path)
+        if (m.get("request") or {}).get("subtype") == "get_context_usage"
+    ]
+    # The fake's empty response exercises the malformed-response fallback:
+    # the passive assistant reading above remains the context report.
+    assert len(context_polls) == 3
 
 
 @pytest.mark.anyio
@@ -1360,6 +1370,76 @@ async def test_request_stream_settles_cost_report_and_quota_like_request(tmp_pat
     # the window), so the status bar sees it mid-turn.
     assert ContextReport(30_000, None) in seen
     assert model.quota_hint is not None and model.quota_hint.render() == "quota 11% (5h) · 59% (1w)"
+
+
+def _context_usage_scenario() -> dict:
+    return {
+        "context_usage_report": {
+            "totalTokens": 34_567,
+            "maxTokens": 180_000,
+            "rawMaxTokens": 200_000,
+            "categories": [{"name": "System prompt", "tokens": 12_000}],
+        },
+        "turns": [
+            [
+                {
+                    "raw": {
+                        "type": "assistant",
+                        "message": {
+                            "usage": {"input_tokens": 30_000, "output_tokens": 1},
+                            "content": [{"type": "text", "text": "ok"}],
+                        },
+                        "session_id": "S1",
+                    }
+                },
+                {"text": "ok"},
+                {
+                    "result": {
+                        "modelUsage": {
+                            "claude-sonnet-4-6": {"inputTokens": 1, "contextWindow": 200_000}
+                        }
+                    }
+                },
+            ]
+        ],
+    }
+
+
+@pytest.mark.anyio
+async def test_context_usage_poll_refines_and_persists_the_context_report(tmp_path, monkeypatch):
+    from marim_harness.config.context_report import CONTEXT_REPORT_KEY
+
+    scenario = _context_usage_scenario()
+    model = _model(tmp_path, monkeypatch, scenario)
+    try:
+        response = await model.request(_user("hello"), None, ModelRequestParameters())
+    finally:
+        await model.aclose()
+
+    assert model.context_report == ContextReport(34_567, 200_000)
+    assert response.provider_details == {CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}}
+    polls = [
+        m["request"]
+        for m in read_claude_log(tmp_path)
+        if (m.get("request") or {}).get("subtype") == "get_context_usage"
+    ]
+    assert polls == [{"subtype": "get_context_usage", "detail": "summary"}]
+
+
+@pytest.mark.anyio
+async def test_context_usage_poll_updates_streamed_response_details(tmp_path, monkeypatch):
+    from marim_harness.config.context_report import CONTEXT_REPORT_KEY
+
+    model = _model(tmp_path, monkeypatch, _context_usage_scenario())
+    try:
+        async with model.request_stream(_user("hello"), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            response = stream.get()
+    finally:
+        await model.aclose()
+
+    assert response.provider_details == {CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}}
 
 
 @pytest.mark.anyio
@@ -1467,7 +1547,9 @@ async def test_a_failed_turn_leaves_its_spend_for_the_next_turn_to_bill(tmp_path
 
 
 @pytest.mark.anyio
-async def test_quota_poll_failure_is_ignored_and_ephemeral_clones_skip_it(tmp_path, monkeypatch):
+async def test_status_poll_failures_are_ignored_and_ephemeral_clones_skip_them(
+    tmp_path, monkeypatch
+):
     model = _model(tmp_path, monkeypatch, {"usage_report": {"rate_limits_available": False}})
     clone = model.ephemeral_clone(cwd=str(tmp_path))
     try:
@@ -1479,9 +1561,9 @@ async def test_quota_poll_failure_is_ignored_and_ephemeral_clones_skip_it(tmp_pa
     polls = [
         m
         for m in read_claude_log(tmp_path)
-        if (m.get("request") or {}).get("subtype") == "get_usage"
+        if (m.get("request") or {}).get("subtype") in _STATUS_POLLS
     ]
-    assert len(polls) == 1  # the main model only; the clone never asks
+    assert len(polls) == 2  # two main-model polls; the clone asks for neither
 
 
 @pytest.mark.anyio
@@ -1500,6 +1582,21 @@ async def test_a_failed_quota_poll_clears_the_previous_hint(tmp_path, monkeypatc
 
     await model._refresh_quota(SimpleNamespace(alive=True, read_usage=failing_read_usage))  # type: ignore[arg-type]
     assert model.quota_hint is None
+
+
+@pytest.mark.anyio
+async def test_a_failed_context_poll_preserves_the_passive_reading(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    model = _model(tmp_path, monkeypatch, {})
+    model.context_report = ContextReport(30_000, 200_000)
+
+    async def failing_read_context_usage():
+        raise TimeoutError("no answer")
+
+    process = SimpleNamespace(alive=True, read_context_usage=failing_read_context_usage)
+    await model._refresh_context(process)  # type: ignore[arg-type]
+    assert model.context_report == ContextReport(30_000, 200_000)
 
 
 # --- background sub-agents: the turn Claude runs on its own ---------------------
@@ -1746,7 +1843,7 @@ async def test_mode_is_sent_once_per_process_and_again_only_when_it_changes(tmp_
     sent = _controls_sent(tmp_path)
     # The launch --model matches the process, unset thinking matches the CLI's
     # default: only the mode goes out, and only when the CLI-side value moves.
-    assert [r for r in sent if r["subtype"] != "get_usage"] == [
+    assert [r for r in sent if r["subtype"] not in _STATUS_POLLS] == [
         {"subtype": "set_permission_mode", "mode": "default"},
         {"subtype": "set_permission_mode", "mode": "default"},
         {"subtype": "set_permission_mode", "mode": "plan"},
@@ -1794,7 +1891,7 @@ async def test_thinking_reaches_claude_from_settings_then_the_live_level(tmp_pat
     thinking = [
         r
         for r in _controls_sent(tmp_path)
-        if r["subtype"] not in {"get_usage", "set_permission_mode"}
+        if r["subtype"] not in {*_STATUS_POLLS, "set_permission_mode"}
     ]
     assert thinking == [
         {"subtype": "set_max_thinking_tokens", "max_thinking_tokens": 32768},

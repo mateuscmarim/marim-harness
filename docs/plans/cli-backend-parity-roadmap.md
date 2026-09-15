@@ -61,19 +61,19 @@ Rules that apply to every phase:
 
 ## Phase 1 — Context and quota reporting
 
-**Status: shipped** (unreleased at the time of writing). Each CLI adapter
+**Status: shipped.** Each CLI adapter
 keeps a `ContextReport(used, window)` (`config/context_report.py`) that
 the status bar, the TUI link and `GET session` (`context` / `quota`) read;
 it is persisted on the turn's `provider_details` so a resumed session shows
 the backend's last reading cold. Claude polls `get_usage` once per turn for
 a quota hint, and the cost double-count below is fixed by a `CostMeter`
 that bills each turn the increase in `total_cost_usd` since the previous
-result. Not done from the list below: feeding the window into
-`ContextLimits` (marim's compaction of the mirror still gates on its own
-estimate; under claude-cli `last_input_tokens` is the turn's summed input,
-an overcount on multi-request turns) and `get_context_usage` (answers on
-the headless transport — verified — but the passive per-request `usage` was
-enough for the gauge).
+result. The reported window feeds `ContextLimits` after a successful turn
+and from persisted session state on resume, so compaction, masking and
+overflow classification share the backend's real limit. Claude also polls
+`get_context_usage` with `detail: summary` after each turn; its local category
+estimates refine the passive request reading without extra token-count API
+calls. Both status polls run concurrently and remain best-effort.
 
 **Goal.** The status bar's `ctx used/max` and the quota hint mean the same
 thing under a CLI backend as under a native provider.
@@ -92,7 +92,7 @@ hint existed; Claude had none.
 | Claude | every `assistant` event, `message.usage` | prompt size of that request: `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` |
 | Claude | `result.modelUsage[model]` | `contextWindow`, `maxOutputTokens`, per-model token and cost totals |
 | Claude | control `get_usage` (`skip_behaviors: true`) | the plan's rate-limit windows, same shape of information as codex's quota |
-| Claude | control `get_context_usage` (`detail: summary\|full`) | the per-category breakdown Claude's `/context` shows (*verify*: the handler answers "not supported" when its callback is unregistered; unknown on the headless transport) |
+| Claude | control `get_context_usage` (`detail: summary`) | the total and raw window from the same local category estimates as `/context`, without the token-count API calls made by `full` (verified on 2.1.271) |
 | Codex | `thread/tokenUsage/updated` | `tokenUsage.modelContextWindow` (dropped today) and `last.inputTokens` as the current prompt size |
 
 **marim seams.**
@@ -105,12 +105,15 @@ hint existed; Claude had none.
   as backend-reported, and denominates against the raw window rather than
   the 0.8 threshold: under a CLI backend the CLI's auto-compact governs, not
   marim's.
-- `ContextLimits` accepts a discovered window from the report so
+- `ContextLimits` records a discovered window from the report so
   `compact_threshold` stops riding on the default for these providers.
 - The serve `GET session` payload carries the same pair; the remote link
   reads it.
 - Claude gets a quota hint via a once-per-turn `get_usage`, mirroring the
   codex poll (and replaced by the push in phase 4 where one exists).
+- Claude refines its prompt reading once per turn via `get_context_usage
+  {detail: summary}`; malformed, unsupported or timed-out responses preserve
+  the passive assistant-event reading.
 
 **Side finding, confirmed and fixed.** The Claude binary's schema text says
 `total_cost_usd` and `modelUsage` are cumulative across turns on the
@@ -188,10 +191,8 @@ the `set_permission_mode` answer echoes the mode marim set.
 
 ## Phase 2b — Codex sub-agents
 
-**Goal.** Codex's own sub-agents (its collab tools `spawnAgent`,
-`sendInput`, `wait`, `closeAgent`) render, broker and persist as
-first-class `spawn_agent` cards, the Codex counterpart of the claude-cli
-Agent/Task demux. Independent of Phases 2 and 3 and higher payoff than 3.
+**Status: shipped.** Codex's collab tools now render, broker and persist as
+first-class `spawn_agent` cards, matching the claude-cli Agent/Task demux.
 Spec: [codex-collab-subagents.md](codex-collab-subagents.md).
 
 **Wire.** A child is a separate thread on the same app-server, announced
@@ -222,8 +223,8 @@ spawn as a `spawn_agent` call + return; marim-mobile sees it via
 
 ## Phase 3 — Backend lifecycle in the transcript
 
-**Status: implemented locally and independently verified; unreleased.** Ordered
-backend notices now share the live serve path and durable transcript metadata.
+**Status: shipped.** Ordered backend notices share the live serve path and
+durable transcript metadata.
 See [capabilities and evidence](../reference/cli-lifecycle-capabilities.md) for
 supported events, transport limits and the pinned protocol versions.
 
