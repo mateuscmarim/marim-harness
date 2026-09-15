@@ -705,9 +705,7 @@ class ClaudeProcess:
         """Claude's current context breakdown, using its cheap summary path."""
         if self._client is None or self.closed.is_set():
             raise ProcessClosed("claude process is closed")
-        return await self._client.control(
-            "get_context_usage", timeout=timeout, detail="summary"
-        )
+        return await self._client.control("get_context_usage", timeout=timeout, detail="summary")
 
     # --- control sync ---------------------------------------------------------
     # Thin wrappers over one control request each, mirroring ``read_usage``:

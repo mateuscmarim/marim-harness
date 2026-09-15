@@ -1417,9 +1417,7 @@ async def test_context_usage_poll_refines_and_persists_the_context_report(tmp_pa
         await model.aclose()
 
     assert model.context_report == ContextReport(34_567, 200_000)
-    assert response.provider_details == {
-        CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}
-    }
+    assert response.provider_details == {CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}}
     polls = [
         m["request"]
         for m in read_claude_log(tmp_path)
@@ -1434,18 +1432,14 @@ async def test_context_usage_poll_updates_streamed_response_details(tmp_path, mo
 
     model = _model(tmp_path, monkeypatch, _context_usage_scenario())
     try:
-        async with model.request_stream(
-            _user("hello"), None, ModelRequestParameters()
-        ) as stream:
+        async with model.request_stream(_user("hello"), None, ModelRequestParameters()) as stream:
             async for _ in stream:
                 pass
             response = stream.get()
     finally:
         await model.aclose()
 
-    assert response.provider_details == {
-        CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}
-    }
+    assert response.provider_details == {CONTEXT_REPORT_KEY: {"used": 34_567, "window": 200_000}}
 
 
 @pytest.mark.anyio

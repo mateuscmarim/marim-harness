@@ -84,9 +84,7 @@ def prompt_tokens(usage: dict | None) -> int:
     return total
 
 
-def context_report_from_usage(
-    raw: Any, *, window: int | None = None
-) -> ContextReport | None:
+def context_report_from_usage(raw: Any, *, window: int | None = None) -> ContextReport | None:
     """Parse Claude's ``get_context_usage`` summary into the shared gauge.
 
     ``rawMaxTokens`` is the model's physical window; ``maxTokens`` is the
