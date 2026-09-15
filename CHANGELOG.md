@@ -8,6 +8,14 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-09-15
+
+### Fixed
+
+- **Codex resume avoids deprecated full-history hydration.** Resume requests
+  now exclude historical turns from the response, preventing the pagination
+  deprecation warning while preserving Codex's conversation context.
+
 ## [0.9.0] - 2026-09-14
 
 ### Added

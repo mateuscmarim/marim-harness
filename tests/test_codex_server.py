@@ -340,6 +340,8 @@ async def test_resume_thread_unknown_returns_none(tmp_path):
             request_handler=_decline,
         )
         assert ok is not None and ok.thread_id == "thread-42"
+        resume = next(r for r in read_request_log(tmp_path) if r["method"] == "thread/resume")
+        assert resume["params"].get("excludeTurns") is True
         gone = await server.resume_thread(
             "thread-7",
             options=ThreadOptions(
@@ -379,6 +381,7 @@ async def test_resume_thread_forwards_ephemeral_like_start_thread(tmp_path):
         log = read_request_log(tmp_path)
         resume = next(r for r in log if r["method"] == "thread/resume")
         assert resume["params"]["ephemeral"] is True
+        assert resume["params"].get("excludeTurns") is True
     finally:
         await server.aclose()
 
