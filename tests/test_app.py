@@ -4027,13 +4027,28 @@ async def test_turn_started_on_the_wire_breaks_the_tool_group(tmp_path: Path):
         for cid, path in (("r1", "a.py"), ("r2", "b.py")):
             bus.publish("tool.call", {"id": cid, "name": "read_file", "args": {"path": path}})
             bus.publish("tool.result", {"id": cid, "content": "x"})
-        assert await _pump_until(pilot, lambda: "r2" in app.stream.tool_widgets)
+        # The renderer registers a call before awaiting its mount/reparenting.
+        # Its result is the next wire event, so completion also proves the
+        # preceding call finished updating the consecutive-tool run.
+        assert await _pump_until(
+            pilot,
+            lambda: (
+                "r2" in app.stream.tool_widgets and app.stream.tool_widgets["r2"].status == "done"
+            ),
+        )
         first_group = app.stream.tool_group
         assert isinstance(first_group, ToolGroupWidget)
 
         bus.publish("turn.started", {"turn_id": "t2", "prompt": "two"})
         bus.publish("tool.call", {"id": "r3", "name": "read_file", "args": {"path": "c.py"}})
-        assert await _pump_until(pilot, lambda: "r3" in app.stream.tool_widgets)
+        bus.publish("tool.result", {"id": "r3", "content": "x"})
+        assert await _pump_until(
+            pilot,
+            lambda: (
+                "r3" in app.stream.tool_widgets and app.stream.tool_widgets["r3"].status == "done"
+            ),
+        )
+        assert app.stream.tool_widgets["r3"].parent is app.query_one("#log")
         assert app.stream.tool_widgets["r3"] not in first_group.walk_children()
         assert app.stream.tool_group is not first_group
 
