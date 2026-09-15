@@ -953,6 +953,21 @@ class TurnController:
             total_tokens_limit=_remaining(limits.total_tokens_limit, spent.total_tokens),
         )
 
+    async def _compact_after_failure(
+        self, captured: list[ModelMessage], resumable: list[ModelMessage]
+    ) -> bool:
+        """Keep the terminal recovery flush when the auxiliary reduction aborts."""
+        try:
+            return await self._maybe_compact(force=True)
+        except (Exception, asyncio.CancelledError):
+            # Summary usage was already banked by the session's finally block.
+            # Preserve the current prompt and repair any captured pending call,
+            # using the same bounded flush as an ordinary failed main request.
+            # A second cancellation of that flush still propagates immediately.
+            await self._flush_resumable(captured, resumable)
+            self.deps.approval_round_active = False
+            raise
+
     async def _handle_run_failure(
         self,
         exc: BaseException,
@@ -1031,7 +1046,7 @@ class TurnController:
             and not contention
             and deferred_results is None
             and overflow
-            and await self._maybe_compact(force=True)
+            and await self._compact_after_failure(captured, resumable)
         ):
             retried.add(_RunRetry.COMPACTED)
             return _RunRetry.COMPACTED

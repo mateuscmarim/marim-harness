@@ -250,9 +250,76 @@ async def test_failed_overflow_summary_banks_usage_without_committing(tmp_path, 
     error = asyncio.CancelledError if cancelled else UsageLimitExceeded
     with pytest.raises(error):
         await tc._handle_run_failure(
-            _overflow_exc(), [], [], None, RunUsage(requests=1, input_tokens=100), set()
+            _overflow_exc(), [], original, None, RunUsage(requests=1, input_tokens=100), set()
         )
     assert tc._turn_usage.requests == tc.session.usage.requests == 2
     assert tc._turn_usage.input_tokens == tc.session.usage.input_tokens == 107
     assert tc.session.history == original
+    assert not tc.session.last_compaction_details["changed"]
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_interrupted_upstream_summary_flushes_captured_prompt_and_tool_call(
+    tmp_path, cancelled
+):
+    import asyncio
+
+    from pydantic_ai.exceptions import UsageLimitExceeded
+    from pydantic_ai.messages import ModelRequest, ToolCallPart, ToolReturnPart, UserPromptPart
+    from pydantic_ai.usage import UsageLimits
+    from pydantic_ai_harness.compaction import SummarizingCompaction
+
+    from marim_harness.session import SessionManager
+    from tests.test_session_upstream import history
+
+    started = []
+
+    async def cancelled_summary(messages, info):
+        started.append(True)
+        raise asyncio.CancelledError
+
+    tc = _make_tc(tmp_path)
+    manager = SessionManager(tmp_path, base_dir=tmp_path / "sessions")
+    tc.session.store = manager.create("overflow")
+    tc.session.history = history()
+    tc.session.persist()
+    baseline = list(tc.session.history)
+    captured = [
+        *baseline,
+        ModelRequest(parts=[UserPromptPart("keep this current prompt")]),
+        ModelResponse(parts=[ToolCallPart("read_file", {"path": "file"}, tool_call_id="pending")]),
+    ]
+    tc.session.compaction_strategy = SummarizingCompaction(max_tokens=1, keep_messages=2)
+    tc.session.auxiliary_model = FunctionModel(cancelled_summary)
+    # One main request is banked first. Remaining=1 reserves that last request
+    # for the parent, so upstream rejects the summary before calling its model.
+    tc._usage_limits = UsageLimits(request_limit=4 if cancelled else 2)
+    error = asyncio.CancelledError if cancelled else UsageLimitExceeded
+    with pytest.raises(error):
+        await tc._handle_run_failure(
+            _overflow_exc(),
+            captured,
+            baseline,
+            None,
+            RunUsage(requests=1, input_tokens=100),
+            set(),
+        )
+
+    reloaded, usage, *_ = manager.store(tc.session.store.session_id).load()
+    assert reloaded == tc.session.history
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == "keep this current prompt"
+        for message in reloaded
+        for part in message.parts
+    )
+    assert any(
+        isinstance(part, ToolReturnPart) and part.tool_call_id == "pending"
+        for message in reloaded
+        for part in message.parts
+    )
+    assert usage.input_tokens == tc._turn_usage.input_tokens == 100
+    # FunctionModel supplies no billed usage when cancelled before its response.
+    # The separate spent-summary regression covers nonzero auxiliary deltas.
+    assert tc.session.usage.requests == tc._turn_usage.requests == 1
+    assert started == ([True] if cancelled else [])
     assert not tc.session.last_compaction_details["changed"]
