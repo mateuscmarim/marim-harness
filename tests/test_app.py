@@ -715,6 +715,23 @@ async def test_failed_compaction_clears_spinner_without_replaying_stale_summary(
 
 
 @pytest.mark.anyio
+async def test_micro_compaction_does_not_replay_stale_summary(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nstale summary")])
+        ]
+        app.session.on_compact(8, 8, changed=True, summary=None, stage="micro")
+        await pilot.pause()
+        assert list(app.query(SummaryWidget)) == []
+
+
+@pytest.mark.anyio
 async def test_replay_shows_upstream_summary_and_hides_other_system_prompts(tmp_path: Path):
     from pydantic_ai.messages import ModelRequest, SystemPromptPart
 

@@ -31,3 +31,15 @@
 - The metadata publisher intentionally guards a missing `last_compaction_details`
   attribute. The main Task 3 worker must populate that controller dictionary before
   invoking the existing callback, as specified in the brief.
+
+## Fix round 1
+
+The implementer restricted history-summary fallback to legacy callbacks where
+`changed is None` and added a regression for explicit `changed=True, summary=None`
+after clearing only. Ruff and formatting checks passed for the changed files.
+After cleanup restored shared imports, root ran:
+
+```text
+uv run pytest --no-cov -n 0 tests/test_app.py -k compact
+10 passed, 205 deselected in 2.72s
+```

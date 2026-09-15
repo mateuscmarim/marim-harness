@@ -714,7 +714,10 @@ class SessionView:
             log.mount(NoticeMessage(f"compacted history: {before} → {after} messages"))
         # Surface the just-created summary as its own collapsed block so the
         # condensed context is legible immediately, not just on the next resume.
-        body = summary if summary is not None else self._latest_summary()
+        # An explicit null summary means this compaction committed no summary
+        # (for example, a micro-only pass). Search persisted history only for
+        # legacy two-count callbacks, where summary metadata was absent entirely.
+        body = self._latest_summary() if changed is None else summary
         if body is not None:
             log.mount(SummaryWidget(body))
         # RemoteLinkInfo has already folded post_tokens from the wire event;
