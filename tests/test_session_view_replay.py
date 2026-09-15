@@ -943,6 +943,10 @@ async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, m
         await app.stream.on_wire(ToolResult(type="tool.result", id="agent", content="first report"))
         card = app.stream.tool_widgets["agent"]
         assert card.status == "done"
+        pane = card.pane
+        app.stream.prune_completed()
+        app.stream.begin_run()
+        assert "agent" not in app.stream.tool_widgets
         dirty = MagicMock()
         monkeypatch.setattr(app.subagents, "mark_dirty", dirty)
         resumed = ToolCall(
@@ -951,6 +955,7 @@ async def test_live_resumed_agent_is_active_and_announced_once(tmp_path: Path, m
         await app.stream.on_wire(resumed)
         await app.stream.on_wire(resumed)
         assert app.stream.tool_widgets["agent"] is card
+        assert app.stream.subagents == [card] and card.pane is pane
         assert card.status == "pending" and card.report == ""
         dirty.assert_called_once()
         notices = [str(w.render()) for w in app.query(NoticeMessage)]
