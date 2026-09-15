@@ -635,8 +635,8 @@ class StreamRenderer:
         ``tool_widgets`` is only read mid-run: to look up a tool's widget when its
         result event arrives, to route a sub-agent's stream/notice events, and to
         skip the re-emitted call of a gated tool across approval rounds. All three
-        concern *in-flight* calls — a widget whose status has left ``"pending"`` is
-        done and will never be looked up again, so it's pure leak after the turn.
+        concern *in-flight* calls. Completed subagents can be resumed later;
+        Tool calls and nested stream routing restore retained cards as needed.
         We prune at the turn boundary (not per ``on_events`` / approval round) so
         the cross-round duplicate guard for gated tools still sees its entry while
         the turn is live.
@@ -1063,6 +1063,10 @@ class StreamRenderer:
         RunUsage or None) onto the owning card and dispatch ``wire`` (or None,
         for an event outside the surfaced vocabulary) into that agent's pane."""
         parent = self.tool_widgets.get(stream_id)
+        if parent is None:
+            # A completed container can still carry a resumed child's events.
+            # Restore routing without claiming the container itself is running.
+            parent = self._restore_subagent(stream_id)
         if not isinstance(parent, SubAgentWidget):
             return
         if usage is not None and usage.total_tokens:
@@ -1174,6 +1178,24 @@ class StreamRenderer:
             await container.mount(widget)
         self.append_stream(widget.body, text)
 
+    def _known_tool_widget(
+        self, tool_call_id: str, tool_name: str, call_args: dict
+    ) -> ToolCallWidget | SubAgentWidget | None:
+        known = self.tool_widgets.get(tool_call_id)
+        if known is not None or tool_name != "spawn_agent" or not call_args.get("resumed"):
+            return known
+        return self._restore_subagent(tool_call_id)
+
+    def _restore_subagent(self, stream_id: str) -> SubAgentWidget | None:
+        # Turn boundaries prune completed entries, but Ctrl+X retains the cards
+        # and their panes. Restore that same object before routing a resumed run;
+        # mounting another card would also collide with its existing pane ID.
+        for card in self.subagents:
+            if card.stream_id == stream_id:
+                self.tool_widgets[stream_id] = card
+                return card
+        return None
+
     async def _on_tool_call(
         self, tool_call_id: str, tool_name: str, call_args: dict, sink: "_StreamSink", container
     ) -> None:
@@ -1182,10 +1204,17 @@ class StreamRenderer:
         # mounting an orphaned duplicate. A spawn card's call re-fires with
         # ``resumed`` when its agent is put back to work after settling (a
         # Codex collab follow-up): that flips the same card live again.
-        known = self.tool_widgets.get(tool_call_id)
+        known = self._known_tool_widget(tool_call_id, tool_name, call_args)
         if known is not None:
-            if isinstance(known, SubAgentWidget) and call_args.get("resumed"):
+            if (
+                isinstance(known, SubAgentWidget)
+                and call_args.get("resumed")
+                and known.status != "pending"
+            ):
                 known.reopen()
+                self.app.subagents.mark_dirty()
+                sink.set_run(None, None)
+                await container.mount(NoticeMessage(f"Resumed subagent: {known.display_title()}"))
             return
         if await sink.intercept_tool(tool_call_id, tool_name, call_args, container):
             return

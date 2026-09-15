@@ -181,7 +181,9 @@ class SessionView:
         if isinstance(known, SubAgentWidget) and args.get("resumed"):
             # The same agent put back to work after settling (its return is
             # already replayed): the live path reopens the card, so does this.
-            known.reopen()
+            if known.status != "pending":
+                known.reopen()
+                await mount_fn(NoticeMessage(f"Resumed subagent: {known.display_title()}"))
             return
         widget = SubAgentWidget(
             str(args.get("type", "")),

@@ -273,3 +273,34 @@ def test_child_transcripts_capture_messages():
     d.route(_child_text())
     transcripts = d.child_transcripts()
     assert "t1" in transcripts and len(transcripts["t1"]) == 1
+
+
+def test_resumed_nested_claude_task_keeps_its_original_card_and_transcript():
+    d = CliSubagentDemux()
+    d.route(_spawn_obj(tid="parent"))
+    d.route(_spawn_obj(tid="child", parent="parent"))
+    done = {
+        "type": "system",
+        "subtype": "task_notification",
+        "tool_use_id": "child",
+        "status": "completed",
+        "summary": "first",
+    }
+    d.route(done)
+    start = {"type": "system", "subtype": "task_started", "tool_use_id": "child"}
+    [resumed], remainder = d.route(start)
+    assert remainder is None and resumed.stream_id == "parent"
+    assert resumed.event.part.tool_call_id == "child"
+    assert resumed.event.part.args_as_dict() == {
+        "type": "Explore",
+        "task": "do it",
+        "description": "find it",
+        "resumed": True,
+    }
+    assert d.route(start) == ([], None)
+    [finished], _ = d.route({**done, "summary": "second"})
+    assert finished.stream_id == "parent" and finished.event.part.content == "second"
+    parts = [p for m in d.child_transcripts()["parent"] for p in m.parts]
+    assert [p.part_kind for p in parts] == ["tool-call", "tool-return", "tool-call", "tool-return"]
+    assert parts[2].args_as_dict()["resumed"] is True
+    assert d.route({**start, "tool_use_id": "unknown"}) == ([], None)
