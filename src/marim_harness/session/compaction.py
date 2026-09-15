@@ -93,6 +93,19 @@ def safe_tool_result_clearer(
 
 
 @dataclass(frozen=True)
+class ReductionOptions:
+    """Strategy selection and retention policy for one history-reduction attempt."""
+
+    summary: CompactionStrategy[None] | None
+    target_tokens: int
+    keep_messages: int
+    keep_pairs: int
+    clear: bool
+    force: bool
+    focus: str | None
+
+
+@dataclass(frozen=True)
 class Reduction:
     messages: list[ModelMessage]
     stages: tuple[str, ...]
@@ -144,15 +157,9 @@ async def _compact(
 
 async def reduce_history(
     messages: list[ModelMessage],
+    options: ReductionOptions,
     *,
     model: Model,
-    summary: CompactionStrategy[None] | None,
-    target_tokens: int,
-    keep_messages: int,
-    keep_pairs: int,
-    clear: bool,
-    force: bool,
-    focus: str | None,
     usage: RunUsage,
     usage_limits: UsageLimits | None = None,
 ) -> Reduction:
@@ -162,18 +169,18 @@ async def reduce_history(
 
     changed: list[str] = []
     tiers: list[CompactionStrategy[None]] = []
-    if clear:
-        clearer = safe_tool_result_clearer(keep_pairs=keep_pairs, max_tokens=1)
+    if options.clear:
+        clearer = safe_tool_result_clearer(keep_pairs=options.keep_pairs, max_tokens=1)
         tiers.append(_ReportStage("clear", clearer, changed))
 
     trim = _ReportStage(
         "trim",
-        SlidingWindowCompaction(max_tokens=1, keep_messages=keep_messages),
+        SlidingWindowCompaction(max_tokens=1, keep_messages=options.keep_messages),
         changed,
     )
     final: CompactionStrategy[None] = trim
-    if summary is not None:
-        focused_summary = _focus(summary, focus)
+    if options.summary is not None:
+        focused_summary = _focus(options.summary, options.focus)
         final = FallbackCompaction(
             fallback_chain=[_ReportStage("summary", focused_summary, changed), trim],
             fallback_on=(ModelAPIError, FallbackExceptionGroup, UnexpectedModelBehavior),
@@ -183,12 +190,12 @@ async def reduce_history(
     logger.debug(
         "Reducing history: messages=%d force=%s clear=%s target_tokens=%d",
         len(messages),
-        force,
-        clear,
-        target_tokens,
+        options.force,
+        options.clear,
+        options.target_tokens,
     )
     result = list(messages)
-    if force:
+    if options.force:
         for strategy in tiers:
             result = await _compact(
                 strategy,
@@ -198,7 +205,7 @@ async def reduce_history(
                 usage_limits=usage_limits,
             )
     else:
-        strategy = TieredCompaction(target_tokens=target_tokens, tiers=tiers)
+        strategy = TieredCompaction(target_tokens=options.target_tokens, tiers=tiers)
         result = await _compact(
             strategy,
             result,
@@ -221,6 +228,7 @@ async def reduce_history(
 __all__ = [
     "KNOWN_MUTATING_TOOLS",
     "Reduction",
+    "ReductionOptions",
     "SafeClearToolResults",
     "reduce_history",
     "safe_tool_result_clearer",

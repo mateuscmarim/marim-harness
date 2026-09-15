@@ -58,6 +58,14 @@ def build_lsp_registry(workspace: Path, *, trust_project: bool) -> LspRegistry:
     return LspRegistry(providers)
 
 
+def _suppress_upstream_banner() -> None:
+    import pydantic_ai
+
+    # Marim owns CLI/TUI output; upstream prints its banner at the first agent run.
+    # Keep this process-wide public switch at the CLI preset, never the SDK builder.
+    pydantic_ai.BANNER_ENABLED = False
+
+
 def build_harness(
     workspace: Path,
     *,
@@ -82,11 +90,7 @@ def build_harness(
 
     ``project_memory_root`` replaces only the project's memory directory.
     Global memory remains in the user's configured global memory directory."""
-    import pydantic_ai
-
-    # Marim owns CLI/TUI output; upstream prints its banner at the first agent run.
-    # Keep this process-wide public switch at the CLI preset, never the SDK builder.
-    pydantic_ai.BANNER_ENABLED = False
+    _suppress_upstream_banner()
     cfg = load_config()
     # Resolve project trust once, store-aware: an explicit env decision wins,
     # otherwise the per-project trust store is consulted (honored only while

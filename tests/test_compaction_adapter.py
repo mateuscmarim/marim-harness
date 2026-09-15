@@ -15,7 +15,11 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.compaction import SummarizingCompaction, compact_now
 
-from marim_harness.session.compaction import reduce_history, safe_tool_result_clearer
+from marim_harness.session.compaction import (
+    ReductionOptions,
+    reduce_history,
+    safe_tool_result_clearer,
+)
 
 
 def _repeated_id_history(tool_name: str = "read_file") -> list[ModelRequest | ModelResponse]:
@@ -118,13 +122,15 @@ async def test_automatic_reduction_does_nothing_below_budget():
     result = await reduce_history(
         history,
         model=TestModel(custom_output_text="Retained task summary"),
-        summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
-        target_tokens=1_000_000,
-        keep_messages=3,
-        keep_pairs=1,
-        clear=True,
-        force=False,
-        focus=None,
+        options=ReductionOptions(
+            summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+            target_tokens=1_000_000,
+            keep_messages=3,
+            keep_pairs=1,
+            clear=True,
+            force=False,
+            focus=None,
+        ),
         usage=usage,
     )
 
@@ -142,13 +148,15 @@ async def test_clearing_that_reaches_target_skips_summary():
     result = await reduce_history(
         history,
         model=TestModel(custom_output_text="Retained task summary"),
-        summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
-        target_tokens=1_500,
-        keep_messages=3,
-        keep_pairs=1,
-        clear=True,
-        force=False,
-        focus=None,
+        options=ReductionOptions(
+            summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+            target_tokens=1_500,
+            keep_messages=3,
+            keep_pairs=1,
+            clear=True,
+            force=False,
+            focus=None,
+        ),
         usage=usage,
     )
 
@@ -164,13 +172,15 @@ async def test_forced_summary_runs_below_automatic_threshold():
     result = await reduce_history(
         _repeated_id_history(),
         model=TestModel(custom_output_text="Retained task summary"),
-        summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
-        target_tokens=1_000_000,
-        keep_messages=3,
-        keep_pairs=1,
-        clear=False,
-        force=True,
-        focus="Keep the authentication requirement",
+        options=ReductionOptions(
+            summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+            target_tokens=1_000_000,
+            keep_messages=3,
+            keep_pairs=1,
+            clear=False,
+            force=True,
+            focus="Keep the authentication requirement",
+        ),
         usage=usage,
     )
 
@@ -189,13 +199,15 @@ async def test_spent_request_budget_escapes_without_trimming_history():
         await reduce_history(
             history,
             model=TestModel(custom_output_text="Retained task summary"),
-            summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
-            target_tokens=1,
-            keep_messages=3,
-            keep_pairs=1,
-            clear=False,
-            force=True,
-            focus=None,
+            options=ReductionOptions(
+                summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+                target_tokens=1,
+                keep_messages=3,
+                keep_pairs=1,
+                clear=False,
+                force=True,
+                focus=None,
+            ),
             usage=usage,
             usage_limits=UsageLimits(request_limit=1),
         )
@@ -211,13 +223,15 @@ async def test_summary_leaves_parent_request_slot_available():
     result = await reduce_history(
         _text_history(),
         model=TestModel(custom_output_text="Retained task summary"),
-        summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
-        target_tokens=1,
-        keep_messages=3,
-        keep_pairs=1,
-        clear=False,
-        force=True,
-        focus=None,
+        options=ReductionOptions(
+            summary=SummarizingCompaction(max_tokens=1, keep_messages=3),
+            target_tokens=1,
+            keep_messages=3,
+            keep_pairs=1,
+            clear=False,
+            force=True,
+            focus=None,
+        ),
         usage=usage,
         usage_limits=limits,
     )
@@ -250,13 +264,15 @@ async def test_recoverable_summary_error_falls_back_to_exact_window_tail(error):
     result = await reduce_history(
         history,
         model=TestModel(),
-        summary=_FailingSummary(error),
-        target_tokens=1,
-        keep_messages=3,
-        keep_pairs=1,
-        clear=False,
-        force=True,
-        focus=None,
+        options=ReductionOptions(
+            summary=_FailingSummary(error),
+            target_tokens=1,
+            keep_messages=3,
+            keep_pairs=1,
+            clear=False,
+            force=True,
+            focus=None,
+        ),
         usage=RunUsage(),
     )
 
@@ -279,13 +295,15 @@ async def test_cancellation_escapes_without_trimming_history():
         await reduce_history(
             history,
             model=TestModel(),
-            summary=_CancelledSummary(),
-            target_tokens=1,
-            keep_messages=3,
-            keep_pairs=1,
-            clear=False,
-            force=True,
-            focus=None,
+            options=ReductionOptions(
+                summary=_CancelledSummary(),
+                target_tokens=1,
+                keep_messages=3,
+                keep_pairs=1,
+                clear=False,
+                force=True,
+                focus=None,
+            ),
             usage=RunUsage(),
         )
 

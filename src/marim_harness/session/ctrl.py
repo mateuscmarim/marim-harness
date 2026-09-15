@@ -31,7 +31,7 @@ from ..compaction import (
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
-from .compaction import Reduction, reduce_history
+from .compaction import Reduction, ReductionOptions, reduce_history
 from .store import SessionInfo, SessionLoadError, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
@@ -847,9 +847,8 @@ class SessionController:
     async def _reduce_and_commit(
         self,
         *,
-        force: bool,
+        options: ReductionOptions,
         trigger: str,
-        instructions: str | None,
         pre_tokens: int,
         usage_limits: UsageLimits | None,
         bank_usage: Callable[[RunUsage, str | None], None] | None,
@@ -861,19 +860,8 @@ class SessionController:
         try:
             reduction = await reduce_history(
                 list(self.history),
+                options,
                 model=self.auxiliary_model,
-                summary=self.compaction_strategy,
-                target_tokens=self.compact_threshold,
-                keep_messages=self.keep_last_messages,
-                keep_pairs=self.mask_keep_recent,
-                clear=self.mask_observations or force or trigger == "manual",
-                force=force
-                or trigger == "manual"
-                or (
-                    pre_tokens > self.compact_threshold
-                    and estimate_tokens(self.history) <= self.compact_threshold
-                ),
-                focus=instructions,
                 usage=usage,
                 usage_limits=usage_limits,
             )
@@ -921,9 +909,21 @@ class SessionController:
             if self.on_compact_start is not None:
                 self.on_compact_start()
             changed = await self._reduce_and_commit(
-                force=force,
+                options=ReductionOptions(
+                    summary=self.compaction_strategy,
+                    target_tokens=self.compact_threshold,
+                    keep_messages=self.keep_last_messages,
+                    keep_pairs=self.mask_keep_recent,
+                    clear=self.mask_observations or force or manual,
+                    force=force
+                    or manual
+                    or (
+                        pre_tokens > self.compact_threshold
+                        and estimate_tokens(self.history) <= self.compact_threshold
+                    ),
+                    focus=instructions,
+                ),
                 trigger=trigger,
-                instructions=instructions,
                 pre_tokens=pre_tokens,
                 usage_limits=usage_limits,
                 bank_usage=bank_usage,
