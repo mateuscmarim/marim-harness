@@ -263,9 +263,9 @@ show (a `model/list` against the app-server) and reports
 | `MARIM_MAX_CONTEXT_TOKENS` | — | **Deprecated** alias for `MARIM_CONTEXT_BUDGET` (same meaning); warns once, still honored when the new name is unset. |
 | `MARIM_CONTEXT_WINDOW` | unset (discover) | Manual context-window override in tokens for servers discovery can't read. Always wins over discovery. |
 | `MARIM_CONTEXT_BUDGETS` | empty | Per-model budget overrides: comma-separated `pattern=tokens` pairs. |
-| `MARIM_MASK_OBSERVATIONS` | `1` (on) | Boolean. At compaction, also elide older tool-observation payloads in the retained tail. |
-| `MARIM_MASK_KEEP_RECENT` | `4` | Positive int. Most-recent tool returns masking leaves intact. |
-| `MARIM_MASK_MIN_CHARS` | `200` | Positive int. Minimum rendered length below which a return is not masked. |
+| `MARIM_MASK_OBSERVATIONS` | `1` (on) | Boolean. At compaction, let the upstream strategy clear older non-mutating tool results. |
+| `MARIM_MASK_KEEP_RECENT` | `4` | Positive int. Approximate number of recent tool-call/result pairs clearing retains. |
+| `MARIM_MASK_MIN_CHARS` | — | **Deprecated and ignored.** Accepted for one compatibility release with a warning; upstream clearing uses a whole-pass token-savings threshold. |
 
 Compaction and masking trigger at `min(budget, 0.8 × window)`, where the 0.8
 safety ratio applies only when the window is *known* (discovered from the

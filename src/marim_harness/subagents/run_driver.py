@@ -312,6 +312,7 @@ class SpawnRunDriver:
     # Deliberately more aggressive than proactive clearing — by the time we're
     # here the provider has already rejected the request for size.
     _SHED_KEEP_RECENT = 1
+
     async def _shed_context(self, messages: list, model: Model | str) -> list | None:
         """The overflow-recovery lever: repair the captured conversation the same
         way a transient resume does, then aggressively clear stale tool results.

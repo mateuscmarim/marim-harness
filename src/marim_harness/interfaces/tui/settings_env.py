@@ -33,7 +33,6 @@ ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
     "ctx-input": ("MARIM_CONTEXT_BUDGET", "Context budget"),
     "toolsearch-threshold": ("MARIM_TOOL_SEARCH_THRESHOLD", "Tool-search threshold"),
     "mask-keep-recent": ("MARIM_MASK_KEEP_RECENT", "Mask: keep recent returns"),
-    "mask-min-chars": ("MARIM_MASK_MIN_CHARS", "Mask: min chars to elide"),
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
     "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
     "advisor-max-tokens": ("MARIM_ADVISOR_MAX_TOKENS", "Advisor max tokens"),

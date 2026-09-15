@@ -160,12 +160,12 @@ to avoid import cycles.
   git worktrees, snapshots, and the session scratchpad (a per-session /tmp dir for
   intermediate files: advertised in the prompt, reachable by the file tools as an
   extra guard root, auto-approved in ask mode, gated by `MARIM_SCRATCHPAD`). (The
-  root-level `compaction.py` builds the summarizer/titler aux agents and the
-  token-budget compaction helpers.)
+  root-level `compaction.py` retains transcript/title helpers and compatibility
+  readers; active reduction lives in `session/compaction.py` through upstream strategies.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
-  `cli_spawn.py` (`Codex -p` execute/resume orchestration), `masking.py`
-  (per-spawn context masking of stale tool observations), and `cli_backend.py`
+  `cli_spawn.py` (`Codex -p` execute/resume orchestration), upstream
+  `ClearToolResults` capabilities for native-spawn history clearing, and `cli_backend.py`
   (the optional `Codex -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a

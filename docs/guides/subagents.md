@@ -387,11 +387,9 @@ Two containment behaviors worth knowing:
   spawner as an error string, so one failing member of a fan-out never takes
   down its siblings. A crashed background spawn marks its job failed, and the
   failure surfaces in the digest.
-- **Context masking.** Each spawn gets its own observation masker: a
-  sub-agent's history is dominated by short-lived tool output (file reads,
-  grep dumps), and past a token trigger the stale payloads are swapped for a
-  placeholder on outgoing requests — the model keeps the trace of what it did
-  and can re-run a tool if it still needs the data. State is per spawn, so
-  one run's mask set never leaks into another's, and the request prefix stays
-  cache-stable between trigger events. A spawn that overflows even after
-  masking is reported with an actionable "split the task" message.
+- **Context clearing.** Each native spawn gets a fresh Pydantic AI Harness
+  `ClearToolResults` capability. Past the spawn's own model threshold it clears
+  stale, non-mutating tool results while retaining roughly the newest four pairs.
+  Overflow recovery invokes the same public capability once after history repair;
+  if it cannot reclaim tokens, the original overflow is reported with an actionable
+  "split the task" message.

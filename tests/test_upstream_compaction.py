@@ -21,9 +21,7 @@ def tool_history():
                 ModelResponse(
                     parts=[ToolCallPart("read_file", {"path": call_id}, tool_call_id=call_id)]
                 ),
-                ModelRequest(
-                    parts=[ToolReturnPart("read_file", "x" * 4000, tool_call_id=call_id)]
-                ),
+                ModelRequest(parts=[ToolReturnPart("read_file", "x" * 4000, tool_call_id=call_id)]),
             ]
         )
     return history
@@ -121,11 +119,7 @@ async def test_clear_preserves_recent_results_from_parallel_round():
 
 @pytest.mark.anyio
 async def test_clear_keeps_typed_framework_tool_results_valid():
-    payload = {
-        "discovered_tools": [
-            {"name": "example-" + "d" * 4000}
-        ]
-    }
+    payload = {"discovered_tools": [{"name": "example-" + "d" * 4000}]}
     history = [
         ModelRequest(parts=[UserPromptPart("Discover tools.")]),
         ModelResponse(parts=[ToolCallPart("search_tools", {}, tool_call_id="search")]),

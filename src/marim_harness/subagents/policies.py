@@ -27,7 +27,6 @@ class MaskingPolicy:
     limits: ContextLimits | None = None
     enabled: bool = True
     keep_recent: int = 4
-    min_chars: int = 200
     fallback_trigger: int = _FALLBACK_MASK_TRIGGER
 
     async def trigger_for(self, model_id: str | None) -> int:

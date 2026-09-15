@@ -164,15 +164,10 @@ class ModelConfig:
     # fnmatch on the model id (e.g. "anthropic/claude-opus*=60000"); "=0"
     # means unbudgeted for that model. Raw string; parsed by ContextLimits.
     context_budgets: str = ""
-    # When true, compaction also elides older tool-observation payloads in the
-    # retained tail to save tokens (see compaction.mask_stale_observations).
-    # Cache-safe because it only runs when compaction already rewrites the tail.
+    # When true, upstream compaction also clears older tool-observation payloads.
     mask_observations: bool = True
-    # How many of the most-recent tool returns masking leaves intact (the agent is
-    # most likely still acting on them), and the minimum rendered length below
-    # which a return isn't worth masking. Both consumed only when masking runs.
+    # How many of the most-recent tool returns clearing leaves intact.
     mask_keep_recent: int = 4
-    mask_min_chars: int = 200
     proactive_memory: bool = False
     # Default approval mode for a fresh interactive (TUI) session: "ask" | "auto"
     # | "plan". A durable, explicit preference — distinct from silently carrying
@@ -246,6 +241,19 @@ class ModelConfig:
 # times per process (e.g. every Settings-screen open), and the nag is only
 # useful the first time.
 _budget_deprecation_warned = False
+_mask_min_chars_deprecation_warned = False
+
+
+def _warn_deprecated_mask_min_chars() -> None:
+    """Accept the retired variable for one release and explain that it is ignored."""
+    global _mask_min_chars_deprecation_warned
+    if os.getenv("MARIM_MASK_MIN_CHARS") is None or _mask_min_chars_deprecation_warned:
+        return
+    _mask_min_chars_deprecation_warned = True
+    logger.warning(
+        "MARIM_MASK_MIN_CHARS is deprecated and ignored; upstream clearing uses a "
+        "whole-pass token-savings threshold instead of a per-result character floor."
+    )
 
 
 def _context_budget_env() -> int:
@@ -296,6 +304,7 @@ def _common_kwargs() -> dict[str, Any]:
     # clamps non-positive back to the default, which would swallow the sentinel
     # now that the default is a positive cap rather than 0. Unparseable garbage
     # falls back to the safe cap, not to unbounded.
+    _warn_deprecated_mask_min_chars()
     _concurrency = _parse_concurrency(
         os.getenv("MARIM_SUBAGENT_CONCURRENCY"), DEFAULT_SUBAGENT_CONCURRENCY
     )
@@ -325,7 +334,6 @@ def _common_kwargs() -> dict[str, Any]:
         context_budgets=os.getenv("MARIM_CONTEXT_BUDGETS", ""),
         mask_observations=_bool_env("MARIM_MASK_OBSERVATIONS", True),
         mask_keep_recent=_int_env("MARIM_MASK_KEEP_RECENT", 4),
-        mask_min_chars=_int_env("MARIM_MASK_MIN_CHARS", 200),
         proactive_memory=_bool_env("MARIM_PROACTIVE_MEMORY", False),
         default_mode=_mode_env("MARIM_DEFAULT_MODE", "ask"),
         tool_search=_enum_env("MARIM_TOOL_SEARCH", "auto", _VALID_TOOL_SEARCH),

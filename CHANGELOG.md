@@ -8,6 +8,17 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Compaction and native sub-agent history clearing now use Pydantic AI
+  Harness.** Upstream strategies own safe cutoffs, summary messages, fallback
+  trimming, and stale tool-result clearing. Recent-pair retention is approximate;
+  clearing creates no new scratchpad copies, while existing offload handles and
+  saved pointers remain readable. Summary model usage is recorded, and advanced
+  embedders configure `compaction_strategy` instead of the former unstable
+  `summarizer=` callback. `MARIM_MASK_MIN_CHARS` is accepted for one release but
+  ignored with a deprecation warning.
+
 ## [0.9.1] - 2026-09-15
 
 ### Fixed

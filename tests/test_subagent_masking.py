@@ -100,9 +100,7 @@ async def test_checkpoint_receives_sanitized_reduced_history(tmp_path):
             ModelMessagesTypeAdapter.validate_json(ModelMessagesTypeAdapter.dump_json(messages))
         )
 
-    requests, _ = await _run_tool_sequence(
-        tmp_path, rounds=3, keep_recent=1, checkpoint=checkpoint
-    )
+    requests, _ = await _run_tool_sequence(tmp_path, rounds=3, keep_recent=1, checkpoint=checkpoint)
     assert _returns(checkpoints[-1]) == _returns(requests[-1])
     assert _returns(checkpoints[-1])[:-1] == [CLEARED, CLEARED]
 
@@ -114,9 +112,7 @@ async def test_duplicate_tool_ids_keep_all_results_and_round_trip():
         history.extend(
             [
                 ModelResponse(parts=[ToolCallPart("read_file", {}, tool_call_id=call_id)]),
-                ModelRequest(
-                    parts=[ToolReturnPart("read_file", "x" * 4000, tool_call_id=call_id)]
-                ),
+                ModelRequest(parts=[ToolReturnPart("read_file", "x" * 4000, tool_call_id=call_id)]),
             ]
         )
     clearer = MaskingPolicy(keep_recent=1).clearer(1)

@@ -150,9 +150,16 @@ regular setters can't express what you need.
   your own `Deps` instead. Combining `with_hooks` with `with_deps` is a
   `build()` error rather than a silent no-op.
 - **`with_config_overrides(**fields)`** — sets `HarnessConfig` fields
-  directly (`model_source`, `context_limits`, masking knobs, …). Unstable
+  directly (`model_source`, `context_limits`, `compaction_strategy`, …). Unstable
   surface: field names track `HarnessConfig`; unknown names raise `TypeError`
   immediately (at the call, not at `build()`).
+
+  `compaction_strategy` accepts a public Pydantic AI Harness
+  `CompactionStrategy`; `None` selects deterministic trimming. This replaces the
+  former unstable `summarizer=` callback override. A direct
+  `SummarizingCompaction` uses its explicit model, while the default uses marim's
+  auxiliary model. Usage from opaque composite strategies is recorded under
+  `unknown` because their internal models are not public.
 
 ## `build()` validation
 

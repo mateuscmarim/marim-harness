@@ -154,13 +154,6 @@ def context_widgets(env_cfg: ModelConfig) -> ComposeResult:
             id="mask-keep-recent",
             type="integer",
         )
-    with Horizontal(classes="frow"):
-        yield Label("Mask: min chars to elide")
-        yield Input(
-            value=str(env_cfg.mask_min_chars),
-            id="mask-min-chars",
-            type="integer",
-        )
     yield BoxCheckbox("Proactive memory", value=env_cfg.proactive_memory, id="sw-mem")
 
 

@@ -3,8 +3,8 @@ agent can consult mid-task through the ``advisor`` tool.
 
 Client-side replica of Anthropic's advisor tool (theirs is the server-side
 ``advisor_20260301``; marim runs on arbitrary providers, so the consult is a
-plain tool-free one-shot run here). ``make_advisor`` mirrors
-``compaction.make_summarizer``: a dedicated tool-free agent reads the rendered
+plain tool-free one-shot run here). ``make_advisor`` builds a dedicated tool-free
+agent that reads the rendered
 transcript and returns guidance text. Which model it consults is re-resolved
 PER CALL through ``get_model_id`` — that per-call resolution is what makes a
 mid-session ``/advisor`` switch live without an agent rebuild.
