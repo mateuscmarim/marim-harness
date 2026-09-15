@@ -89,14 +89,19 @@ def test_context_usage_report_prefers_raw_window_and_rejects_junk():
 # --- history fallback ---------------------------------------------------------------
 
 
-def _history(*details, provider: str = "claude-cli"):
+def _history(*details, provider: str = "claude-cli", model_name: str | None = None):
     """A request/response pair per entry; each response carries ``details``
     as its provider_details (None for none) and names ``provider``."""
     out: list = []
     for d in details:
         out.append(ModelRequest(parts=[UserPromptPart(content="q")]))
         out.append(
-            ModelResponse(parts=[TextPart(content="a")], provider_details=d, provider_name=provider)
+            ModelResponse(
+                parts=[TextPart(content="a")],
+                provider_details=d,
+                provider_name=provider,
+                model_name=model_name,
+            )
         )
     return out
 
@@ -137,6 +142,17 @@ def test_current_context_report_prefers_live_then_persisted_then_nothing():
     assert current_context_report(cold_codex, history) is None
     cold_claude = SimpleNamespace(context_report=None, provider_name="claude-cli")
     assert current_context_report(cold_claude, history) == ContextReport(40_000, 200_000)
+
+
+def test_current_context_report_rejects_a_different_persisted_model_window():
+    payload = {CONTEXT_REPORT_KEY: {"used": 40_000, "window": 1_000_000}}
+    history = _history(payload, model_name="sonnet-1m")
+
+    same = SimpleNamespace(context_report=None, provider_name="claude-cli", model_name="sonnet-1m")
+    switched = SimpleNamespace(context_report=None, provider_name="claude-cli", model_name="haiku")
+
+    assert current_context_report(same, history) == ContextReport(40_000, 1_000_000)
+    assert current_context_report(switched, history) is None
 
 
 # --- quota --------------------------------------------------------------------------
