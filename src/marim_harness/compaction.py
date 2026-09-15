@@ -663,15 +663,26 @@ def _render_tool_return(part: ToolReturnPart, max_part_chars: int) -> str:
 # Marks the synthetic message that replaces a compacted middle. The TUI keys off
 # this prefix to render the summary as a distinct block instead of a user message.
 SUMMARY_PREFIX = "[Summary of earlier conversation, condensed to save context]"
+UPSTREAM_SUMMARY_PREFIX = "Summary of previous conversation:\n\n"
 
 
 def summary_text(content) -> str | None:
     """Return the summary body if ``content`` is a compaction summary message
     (a ``str`` starting with :data:`SUMMARY_PREFIX` followed by a non-empty body),
     else ``None``. The single source of truth for detecting/parsing a summary."""
-    if not isinstance(content, str) or not content.startswith(SUMMARY_PREFIX):
+    if not isinstance(content, str):
         return None
-    body = content[len(SUMMARY_PREFIX) :].strip()
+    prefix = next(
+        (
+            prefix
+            for prefix in (SUMMARY_PREFIX, UPSTREAM_SUMMARY_PREFIX)
+            if content.startswith(prefix)
+        ),
+        None,
+    )
+    if prefix is None:
+        return None
+    body = content[len(prefix) :].strip()
     return body or None
 
 

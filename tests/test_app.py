@@ -680,6 +680,65 @@ async def test_live_compaction_mounts_summary_widget(tmp_path: Path):
         assert "live-made summary body" in str(widgets[0]._body.render())
 
 
+@pytest.mark.anyio
+async def test_live_compaction_uses_explicit_summary_when_message_count_is_equal(tmp_path: Path):
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.session.on_compact_start()
+        app.session.on_compact(8, 8, changed=True, summary="upstream summary", post_tokens=123)
+        await pilot.pause()
+        widgets = list(app.query(SummaryWidget))
+        assert len(widgets) == 1
+        assert "upstream summary" in str(widgets[0]._body.render())
+
+
+@pytest.mark.anyio
+async def test_failed_compaction_clears_spinner_without_replaying_stale_summary(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    from marim_harness.compaction import SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget
+    from marim_harness.interfaces.tui.widgets.compact_notice import CompactNotice
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[UserPromptPart(content=f"{SUMMARY_PREFIX}\n\nstale summary")])
+        ]
+        app.session.on_compact_start()
+        app.session.on_compact(None, None, changed=False)
+        await pilot.pause()
+        assert app.query_one(CompactNotice).compacting is False
+        assert list(app.query(SummaryWidget)) == []
+
+
+@pytest.mark.anyio
+async def test_replay_shows_upstream_summary_and_hides_other_system_prompts(tmp_path: Path):
+    from pydantic_ai.messages import ModelRequest, SystemPromptPart
+
+    from marim_harness.compaction import UPSTREAM_SUMMARY_PREFIX
+    from marim_harness.interfaces.tui.widgets import SummaryWidget, UserMessage
+
+    app = _app(tmp_path)
+    async with app.run_test() as pilot:
+        app.harness.session.history = [
+            ModelRequest(parts=[SystemPromptPart(content="internal system instruction")]),
+            ModelRequest(
+                parts=[SystemPromptPart(content=f"{UPSTREAM_SUMMARY_PREFIX}replayed summary")]
+            ),
+        ]
+        await app.session.render_session("resume")
+        await pilot.pause()
+        summaries = list(app.query(SummaryWidget))
+        assert len(summaries) == 1
+        assert "replayed summary" in str(summaries[0]._body.render())
+        rendered = (str(widget.render()) for widget in app.query())
+        assert not any("internal system instruction" in text for text in rendered)
+        assert list(app.query(UserMessage)) == []
+
+
 def test_human_tokens_formatting():
     from marim_harness.interfaces.tui.widgets import human_tokens as _human_tokens
 

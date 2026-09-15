@@ -16,6 +16,7 @@ from marim_harness.compaction import (
     ELIDED_POINTER_PREFIX,
     MASKED_OBSERVATION,
     SUMMARY_PREFIX,
+    UPSTREAM_SUMMARY_PREFIX,
     CompactionBreaker,
     _elided_pointer,
     _summarize_prompt,
@@ -36,6 +37,11 @@ from marim_harness.tools.impl.offload import OFFLOAD_GONE_NOTE
 def test_summary_text_extracts_body_from_summary_message():
     content = f"{SUMMARY_PREFIX}\n\nWe discussed the parser and fixed a bug."
     assert summary_text(content) == "We discussed the parser and fixed a bug."
+
+
+def test_summary_text_extracts_upstream_system_summary():
+    content = f"{UPSTREAM_SUMMARY_PREFIX}We migrated compaction upstream."
+    assert summary_text(content) == "We migrated compaction upstream."
 
 
 def test_summary_text_none_for_non_summary_and_bad_input():

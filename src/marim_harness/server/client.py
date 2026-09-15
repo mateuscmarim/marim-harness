@@ -148,8 +148,8 @@ class RemoteInfo:
             # turn.finished carries the session-cumulative summary, not a
             # delta: replace, never add.
             self.usage = usage_from_summary(data["usage"])
-        elif event.type == "compaction.finished" and data.get("after") is not None:
-            self.history_tokens = int(data["after"])
+        elif event.type == "compaction.finished" and data.get("post_tokens") is not None:
+            self.history_tokens = int(data["post_tokens"])
 
     def apply_backend_state(self, data: dict) -> None:
         for key in ("inventory", "telemetry"):

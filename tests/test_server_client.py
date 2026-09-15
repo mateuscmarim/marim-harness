@@ -573,11 +573,14 @@ def test_remote_info_observe_follows_events():
     info.observe(ev("session.mode_changed", {"mode": "plan"}))
     info.observe(ev("turn.finished", {"usage": {"input_tokens": 10, "output_tokens": 1}}))
     info.observe(ev("turn.finished", {"usage": {"input_tokens": 12, "output_tokens": 2}}))
-    info.observe(ev("compaction.finished", {"after": 42}))
+    info.observe(ev("compaction.finished", {"after": 42, "post_tokens": 17}))
     info.observe(ev("text.delta", {"text": "ignored"}))
     assert info.session_name == "new" and info.mode == "plan"
     assert info.usage.input_tokens == 12  # replaced, not summed
-    assert info.history_tokens == 42
+    assert info.history_tokens == 17
+    # Older daemons omit post_tokens. Their message count must never become a token count.
+    info.observe(ev("compaction.finished", {"after": 3}))
+    assert info.history_tokens == 17
     assert usage_from_summary({}).total_tokens == 0
 
 
