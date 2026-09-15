@@ -1,16 +1,8 @@
-"""Per-spawn context masking for sub-agents.
-
-The masker rides every outgoing sub-agent request (a ProcessHistory capability).
-Its contract has three parts these tests pin: (1) below the trigger it changes
-nothing; (2) crossing the trigger masks stale tool observations in one batch,
-sparing the newest keep_recent; (3) between triggers it re-applies EXACTLY the
-committed set — a return spared at trigger time stays unmasked even after newer
-returns arrive, so the request prefix is byte-stable and the provider prompt
-cache survives. A stateless newest-N mask would fail (3).
-"""
+"""Native sub-agent request-time clearing through upstream capabilities."""
 
 import pytest
 from pydantic_ai.messages import (
+    ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -19,177 +11,165 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai_harness.compaction import ClearToolResults
 
-from marim_harness.compaction import MASKED_OBSERVATION
-from marim_harness.subagents.masking import ObservationMasker
+from marim_harness.subagents.policies import MaskingPolicy
 from tests.conftest import _make_deps, _make_harness, _text_model
 
+CLEARED = ClearToolResults(max_tokens=1).placeholder
 
-def _round(i: int, size: int) -> list:
-    """One tool round: the assistant calls tool ``t{i}``; it returns ``size`` chars."""
+
+def _returns(history: list) -> list[str]:
     return [
-        ModelResponse(parts=[ToolCallPart(tool_name="read_file", args={}, tool_call_id=f"t{i}")]),
-        ModelRequest(
-            parts=[ToolReturnPart(tool_name="read_file", content="x" * size, tool_call_id=f"t{i}")]
-        ),
+        str(part.content)
+        for message in history
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
     ]
 
 
-def _history(rounds: int, size: int) -> list:
-    history: list = [ModelRequest(parts=[UserPromptPart(content="task")])]
-    for i in range(rounds):
-        history += _round(i, size)
-    return history
+def test_policy_builds_a_fresh_upstream_clearer_per_spawn():
+    policy = MaskingPolicy(keep_recent=2)
+    first = policy.clearer(750)
+    second = policy.clearer(750)
+    assert first is not second
+    assert first is not None
+    assert first.max_tokens == 750
+    assert first.keep_pairs == 2
+    assert first.clear_tool_inputs is False
 
 
-def _returns(history) -> dict[str, str]:
-    """tool_call_id -> content for every ToolReturnPart in ``history``."""
-    return {
-        p.tool_call_id: str(p.content)
-        for m in history
-        for p in getattr(m, "parts", [])
-        if isinstance(p, ToolReturnPart)
-    }
+def test_policy_disables_request_time_clearing():
+    assert MaskingPolicy(enabled=False).clearer(1) is None
 
 
-def test_below_trigger_masks_nothing():
-    masker = ObservationMasker(trigger_tokens=75_000)
-    history = _history(rounds=3, size=400)
-    view = masker.mask(history)
-    assert all(c == "x" * 400 for c in _returns(view).values())
-
-
-def test_crossing_trigger_masks_stale_keeps_recent():
-    # trigger = 750; 4 rounds x 1200 chars ≈ 1200 tokens.
-    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
-    view = masker.mask(_history(rounds=4, size=1200))
-    returns = _returns(view)
-    assert returns["t0"] == MASKED_OBSERVATION
-    assert returns["t1"] == MASKED_OBSERVATION
-    assert returns["t2"] == "x" * 1200
-    assert returns["t3"] == "x" * 1200
-
-
-def test_never_mutates_the_input_history():
-    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
-    history = _history(rounds=4, size=1200)
-    masker.mask(history)
-    assert all(c == "x" * 1200 for c in _returns(history).values())
-
-
-def test_mask_set_is_stable_between_triggers():
-    """After a trigger, a spared return stays unmasked even once newer returns
-    arrive — until the NEXT trigger. This is the cache-stability property; a
-    stateless newest-N mask would re-mask t2 here and bust the prefix cache."""
-    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
-    history = _history(rounds=4, size=1200)
-    masker.mask(history)  # trigger 1: masks t0, t1
-    history += _round(4, size=200)  # small growth: stays under trigger
-    view = masker.mask(history)
-    returns = _returns(view)
-    assert returns["t2"] == "x" * 1200  # spared at trigger 1, STILL spared
-    assert returns["t4"] == "x" * 200
-
-
-def test_second_trigger_extends_the_mask_set():
-    masker = ObservationMasker(trigger_tokens=750, keep_recent=2, min_chars=100)
-    history = _history(rounds=4, size=1200)
-    masker.mask(history)  # trigger 1: masks t0, t1
-    history += _round(4, size=1200)  # big growth: crosses trigger again
-    view = masker.mask(history)
-    returns = _returns(view)
-    assert returns["t2"] == MASKED_OBSERVATION  # newly stale, masked at trigger 2
-    assert returns["t3"] == "x" * 1200  # newest 2 spared
-    assert returns["t4"] == "x" * 1200
-
-
-def test_small_returns_are_never_masked():
-    masker = ObservationMasker(trigger_tokens=750, keep_recent=1, min_chars=100)
-    history = [ModelRequest(parts=[UserPromptPart(content="task")])]
-    history += _round(0, size=50)  # tiny: below min_chars
-    history += _round(1, size=4000)
-    history += _round(2, size=4000)
-    view = masker.mask(history)
-    returns = _returns(view)
-    assert returns["t0"] == "x" * 50  # small stays, masking it buys nothing
-    assert returns["t1"] == MASKED_OBSERVATION
-
-
-@pytest.mark.anyio
-async def test_built_subagent_masks_stale_observations_in_requests(tmp_path):
-    """End-to-end through SubagentRunner.build: with a tiny context budget, older
-    bulky tool returns are masked in the request the model actually sees — and,
-    because pydantic-ai writes the processed history back into run state
-    (``ctx.state.message_history[:] = messages``), the masking persists into
-    ``all_messages()``. The second property is pinned so an upstream semantics
-    change is caught here instead of silently altering transcript content."""
-    seen: dict = {}
-    calls = {"n": 0}
+async def _run_tool_sequence(
+    tmp_path, *, rounds: int, keep_recent: int, checkpoint=None
+) -> tuple[list, object]:
+    requests: list[list] = []
+    calls = {"count": 0}
 
     def fn(messages, info):
-        calls["n"] += 1
-        if calls["n"] <= 3:
+        requests.append(
+            ModelMessagesTypeAdapter.validate_json(ModelMessagesTypeAdapter.dump_json(messages))
+        )
+        calls["count"] += 1
+        if calls["count"] <= rounds:
             return ModelResponse(
-                parts=[ToolCallPart(tool_name="blob", args={}, tool_call_id=f"t{calls['n']}")]
+                parts=[ToolCallPart("blob", {}, tool_call_id=f"t{calls['count']}")]
             )
-        seen["messages"] = messages
-        return ModelResponse(parts=[TextPart(content="done")])
-
-    from marim_harness.config.context_limits import ContextLimits
-    from marim_harness.subagents.policies import MaskingPolicy
+        return ModelResponse(parts=[TextPart("done")])
 
     deps = _make_deps(tmp_path)
     runner = _make_harness(FunctionModel(fn), deps).subagents
-    # threshold = 0.8 * 400 = 320 tokens; each blob is ~500 tokens.
-    runner._masking = MaskingPolicy(
-        limits=ContextLimits(budget=None, window_override=400),
-        keep_recent=1,
-        min_chars=100,
-    )
-    mask_trigger = await runner._mask_trigger_for(None)
-    sub, err = runner.build("general", mask_trigger=mask_trigger)
-    assert err is None, err
+    runner._masking = MaskingPolicy(keep_recent=keep_recent)
+    sub, error = runner.build("general", mask_trigger=1, checkpoint=checkpoint)
+    assert error is None
     assert sub is not None
 
     @sub.tool_plain
     def blob() -> str:
-        return "x" * 2000
+        return "x" * 4000
 
     result = await runner._driver.run_to_completion(sub, "go", deps, None, None)
-    assert result.output == "done"
-
-    request_returns = [
-        str(p.content)
-        for m in seen["messages"]
-        for p in getattr(m, "parts", [])
-        if isinstance(p, ToolReturnPart)
-    ]
-    assert MASKED_OBSERVATION in request_returns  # stale observations masked
-    assert any("x" * 100 in c for c in request_returns)  # newest spared
-
-    stored_returns = [
-        str(p.content)
-        for m in result.all_messages()
-        for p in getattr(m, "parts", [])
-        if isinstance(p, ToolReturnPart)
-    ]
-    # Write-back semantics: the processed (masked) history IS the stored history.
-    assert MASKED_OBSERVATION in stored_returns
+    return requests, result
 
 
 @pytest.mark.anyio
-async def test_spawn_trigger_follows_the_loaded_window_not_the_budget(tmp_path):
-    """The failure that motivated the split: LM Studio loads a 262k model at
-    ~101k while the configured budget said 180k — the spawn's mask trigger
-    must follow 0.8 × the LOADED window, resolved per spawn."""
+async def test_built_subagent_clears_stale_results_and_preserves_recent_result(tmp_path):
+    requests, result = await _run_tool_sequence(tmp_path, rounds=3, keep_recent=1)
+    final_returns = _returns(requests[-1])
+    assert final_returns[:-1] == [CLEARED, CLEARED]
+    assert final_returns[-1] == "x" * 4000
+    assert _returns(result.all_messages()) == final_returns
+
+
+@pytest.mark.anyio
+async def test_cleared_prefix_stays_stable_across_consecutive_requests(tmp_path):
+    requests, _ = await _run_tool_sequence(tmp_path, rounds=4, keep_recent=2)
+    assert _returns(requests[3])[:1] == [CLEARED]
+    assert _returns(requests[4])[:1] == [CLEARED]
+
+
+@pytest.mark.anyio
+async def test_checkpoint_receives_sanitized_reduced_history(tmp_path):
+    checkpoints: list[list] = []
+
+    def checkpoint(messages: list) -> None:
+        checkpoints.append(
+            ModelMessagesTypeAdapter.validate_json(ModelMessagesTypeAdapter.dump_json(messages))
+        )
+
+    requests, _ = await _run_tool_sequence(
+        tmp_path, rounds=3, keep_recent=1, checkpoint=checkpoint
+    )
+    assert _returns(checkpoints[-1]) == _returns(requests[-1])
+    assert _returns(checkpoints[-1])[:-1] == [CLEARED, CLEARED]
+
+
+@pytest.mark.anyio
+async def test_duplicate_tool_ids_keep_all_results_and_round_trip():
+    history = [ModelRequest(parts=[UserPromptPart("task")])]
+    for call_id in ("same", "same", "unique"):
+        history.extend(
+            [
+                ModelResponse(parts=[ToolCallPart("read_file", {}, tool_call_id=call_id)]),
+                ModelRequest(
+                    parts=[ToolReturnPart("read_file", "x" * 4000, tool_call_id=call_id)]
+                ),
+            ]
+        )
+    clearer = MaskingPolicy(keep_recent=1).clearer(1)
+    assert clearer is not None
+
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai_harness.compaction import compact_now
+
+    reduced = await compact_now(clearer, history, model=TestModel())
+    assert _returns(reduced)[:2] == ["x" * 4000, "x" * 4000]
+    encoded = ModelMessagesTypeAdapter.dump_json(reduced)
+    assert ModelMessagesTypeAdapter.validate_json(encoded) == reduced
+
+
+@pytest.mark.anyio
+async def test_parallel_tool_results_keep_the_recent_round_together():
+    history = [ModelRequest(parts=[UserPromptPart("task")])]
+    history.extend(
+        [
+            ModelResponse(
+                parts=[
+                    ToolCallPart("read_file", {}, tool_call_id="old"),
+                    ToolCallPart("read_file", {}, tool_call_id="recent-a"),
+                    ToolCallPart("read_file", {}, tool_call_id="recent-b"),
+                ]
+            ),
+            ModelRequest(
+                parts=[
+                    ToolReturnPart("read_file", "x" * 4000, tool_call_id="old"),
+                    ToolReturnPart("read_file", "a" * 4000, tool_call_id="recent-a"),
+                    ToolReturnPart("read_file", "b" * 4000, tool_call_id="recent-b"),
+                ]
+            ),
+        ]
+    )
+    clearer = MaskingPolicy(keep_recent=2).clearer(1)
+    assert clearer is not None
+
+    from pydantic_ai.models.test import TestModel
+    from pydantic_ai_harness.compaction import compact_now
+
+    reduced = await compact_now(clearer, history, model=TestModel())
+    assert _returns(reduced) == [CLEARED, "a" * 4000, "b" * 4000]
+
+
+@pytest.mark.anyio
+async def test_spawn_trigger_follows_its_loaded_model_window(tmp_path):
     from marim_harness.config.context_limits import ContextLimits
-    from marim_harness.subagents.policies import MaskingPolicy
 
     async def fake_local():
-        return {"qwen/qwen3.5-9b": 101_039}
+        return {"small": 10_000, "large": 100_000}
 
-    deps = _make_deps(tmp_path)
-    runner = _make_harness(_text_model(), deps).subagents
+    runner = _make_harness(_text_model(), _make_deps(tmp_path)).subagents
     runner._masking = MaskingPolicy(limits=ContextLimits(budget=180_000, fetch_local=fake_local))
-    trigger = await runner._mask_trigger_for("qwen/qwen3.5-9b")
-    assert trigger == int(0.8 * 101_039)
+    assert await runner._mask_trigger_for("small") == 8_000
+    assert await runner._mask_trigger_for("large") == 80_000

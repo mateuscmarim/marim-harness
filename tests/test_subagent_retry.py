@@ -250,7 +250,7 @@ async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
     assert result.output == "done"
     assert sleeps == []  # overflow recovery resumes immediately, no backoff
 
-    from marim_harness.compaction import MASKED_OBSERVATION
+    from pydantic_ai_harness.compaction import ClearToolResults
 
     contents = [
         str(p.content)
@@ -258,7 +258,7 @@ async def test_overflow_sheds_stale_observations_and_resumes(tmp_path: Path):
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "ToolReturnPart"
     ]
-    assert contents[0] == MASKED_OBSERVATION  # stale observation shed
+    assert contents[0] == ClearToolResults(max_tokens=1).placeholder
     assert contents[1] == "x" * 500  # newest spared (keep_recent=1)
 
 
@@ -268,6 +268,12 @@ async def test_overflow_with_nothing_to_shed_raises(tmp_path: Path):
     resume would fail identically — the overflow must surface, not loop."""
     runner, _ = _runner(tmp_path)
     calls = {"n": 0}
+    notices: list[tuple[str, str]] = []
+
+    async def notice(stream_id: str, message: str) -> None:
+        notices.append((stream_id, message))
+
+    runner.deps.ui.on_subagent_notice = notice
 
     def fn(messages, info):
         calls["n"] += 1
@@ -283,8 +289,37 @@ async def test_overflow_with_nothing_to_shed_raises(tmp_path: Path):
         return "x" * 500
 
     with pytest.raises(ModelHTTPError):
-        await runner._driver.run_to_completion(sub, "go", None, None, None)
+        await runner._driver.run_to_completion(sub, "go", None, None, None, "sid-1")
     assert calls["n"] == 2  # tool round + the failing request; no resume attempt
+    assert notices == []
+
+
+@pytest.mark.anyio
+async def test_overflow_compaction_receives_the_spawn_model(tmp_path: Path, monkeypatch):
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
+    from pydantic_ai.models.test import TestModel
+
+    from marim_harness.subagents import run_driver
+
+    runner, _ = _runner(tmp_path)
+    model = TestModel()
+    seen: list[object] = []
+    history = [
+        ModelRequest(parts=[UserPromptPart("task")]),
+        ModelResponse(parts=[ToolCallPart("blob", {}, tool_call_id="old")]),
+        ModelRequest(parts=[ToolReturnPart("blob", "x" * 4000, tool_call_id="old")]),
+        ModelResponse(parts=[ToolCallPart("blob", {}, tool_call_id="recent")]),
+        ModelRequest(parts=[ToolReturnPart("blob", "x" * 4000, tool_call_id="recent")]),
+    ]
+    real_compact_now = run_driver.compact_now
+
+    async def capture_model(strategy, messages, **kwargs):
+        seen.append(kwargs["model"])
+        return await real_compact_now(strategy, messages, **kwargs)
+
+    monkeypatch.setattr(run_driver, "compact_now", capture_model)
+    assert await runner._driver._shed_context(history, model) is not None
+    assert seen == [model]
 
 
 @pytest.mark.anyio
@@ -451,7 +486,7 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
 
     # (b) The resumed history the sub's model saw is the SUB's conversation:
     # its task and its (shed-masked) tool round — none of the outer agent's.
-    from marim_harness.compaction import MASKED_OBSERVATION
+    from pydantic_ai_harness.compaction import ClearToolResults
 
     sub_seen = seen["messages"]
     assert "sub task" in _texts(sub_seen)
@@ -463,7 +498,7 @@ async def test_overflow_resume_inside_main_turn_capture_uses_the_subs_history(tm
         for p in getattr(m, "parts", [])
         if type(p).__name__ == "ToolReturnPart"
     ]
-    assert contents[0] == MASKED_OBSERVATION  # stale observation shed
+    assert contents[0] == ClearToolResults(max_tokens=1).placeholder
     assert contents[1] == "x" * 500  # newest spared (keep_recent=1)
 
     # (c) The outer captured list still holds the OUTER conversation, untouched

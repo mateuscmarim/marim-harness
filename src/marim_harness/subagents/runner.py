@@ -22,7 +22,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, StructuredDict
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
@@ -215,10 +215,9 @@ class SubagentRunner:
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
         self._max_depth = max_depth
-        # Context masking for spawned sub-agents. A sub-agent does the read-heavy
-        # fan-out work, so its history is dominated by tool observations; past a
-        # token trigger those are masked per-request by an ObservationMasker (one
-        # per spawn — see masking.py for why the state matters). The MaskingPolicy
+        # Context clearing for spawned sub-agents. A sub-agent does the read-heavy
+        # fan-out work, so its history is dominated by tool results; past a token
+        # trigger upstream clears stale results. The MaskingPolicy
         # owns the resolver + knobs and the per-spawn trigger resolution (see
         # _mask_trigger_for): a per-spawn model override resolves its own window
         # and budget rather than inheriting the session model's. The reactive
@@ -463,17 +462,7 @@ class SubagentRunner:
         # harness would cycle.
         from ..runtime.harness import _drop_contentless_responses, _drop_nameless_tool_calls
 
-        capabilities: list[ProcessHistory[Deps]] = []
-        if checkpoint is not None:
-            # Sidecar checkpoint: ProcessHistory runs before EVERY model request,
-            # which is exactly the per-model-response boundary the resume design
-            # wants — each checkpoint ends at a message boundary. The processor
-            # must return the history unchanged; the write is a side effect.
-            def _checkpoint_history(messages: list) -> list:
-                checkpoint(messages)
-                return messages
-
-            capabilities.append(ProcessHistory(_checkpoint_history))
+        capabilities: list[AbstractCapability[Deps]] = []
         # Same scrub the main agent runs (harness.py): a flaky sub-agent model
         # can emit a structurally-broken tool call live mid-run (nameless, or
         # args that aren't valid JSON). Without this, the broken part rides in
@@ -486,12 +475,19 @@ class SubagentRunner:
         # carrying only reasoning, which maps to an assistant message with no
         # content and no tool_calls — a shape qwen rejects outright.
         capabilities.append(ProcessHistory(_drop_contentless_responses))
-        # One masker PER SPAWN (it holds the run's committed mask set, so sharing
-        # would leak one run's masked tool_call_ids into another's requests); None
-        # when masking is disabled.
-        masker = self._masking.masker(mask_trigger)
-        if masker is not None:
-            capabilities.append(ProcessHistory(masker.mask))
+        # Clear only after malformed history has been sanitized. The capability
+        # is fresh per spawn because capabilities may acquire run-local state.
+        clearer = self._masking.clearer(mask_trigger)
+        if clearer is not None:
+            capabilities.append(clearer)
+        if checkpoint is not None:
+            # Persist after sanitizing and clearing so an interrupted spawn resumes
+            # from the same valid, reduced history sent to the model.
+            def _checkpoint_history(messages: list) -> list:
+                checkpoint(messages)
+                return messages
+
+            capabilities.append(ProcessHistory(_checkpoint_history))
 
         get_scratchpad = self.deps.services.get_scratchpad
         scratch = get_scratchpad() if get_scratchpad is not None else None
