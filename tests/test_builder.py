@@ -20,9 +20,9 @@ def _instruction_closure_names(harness) -> set[str]:
     # See test_config_seams.test_global_instructions_gate for how this
     # reaches into pydantic-ai's Agent._instructions (no public accessor).
     return {
-        fn.__name__
-        for fn in harness.agent._instructions  # noqa: SLF001
-        if callable(fn)
+        item.instruction.__name__
+        for item in harness.agent._instructions  # noqa: SLF001
+        if callable(item.instruction)
     }
 
 

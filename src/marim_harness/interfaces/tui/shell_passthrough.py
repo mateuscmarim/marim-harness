@@ -21,6 +21,10 @@ from .interactions.sanitize import safe_text
 # knowingly kicks off installs/builds and watches them, so a short leash only
 # annoys. Still bounded — a wedged command must not hold the worker forever.
 PASSTHROUGH_TIMEOUT = 120
+# `!` results go straight to the transcript and next user prompt, outside the
+# agent's ToolOutputLimits hook. Reuse the shell's bounded head/tail collection
+# so neither destination receives megabytes, even for a single queued command.
+PASSTHROUGH_OUTPUT_BYTES = 4_000
 
 
 def parse_bang(text: str) -> str | None:
@@ -75,7 +79,13 @@ async def run_passthrough(root: Path, command: str, password: str | None = None)
     if password is not None:
         to_run = rewrite_sudo(command)
         stdin_data = (password + "\n").encode()
-    return await run_bash(root, to_run, timeout=PASSTHROUGH_TIMEOUT, stdin_data=stdin_data)
+    return await run_bash(
+        root,
+        to_run,
+        timeout=PASSTHROUGH_TIMEOUT,
+        stdin_data=stdin_data,
+        max_output_bytes=PASSTHROUGH_OUTPUT_BYTES,
+    )
 
 
 class SudoPasswordModal(ModalScreen[str | None]):

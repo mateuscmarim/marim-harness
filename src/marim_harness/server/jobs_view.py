@@ -9,6 +9,16 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..jobs import Job, result_tail
+from ..tools.impl.shell import truncate_output
+
+
+def output_preview(job: Job | None, result: str) -> str:
+    """Bound shell output for local and remote displays outside agent tool hooks.
+
+    The registry keeps the full result for agent reads through ToolOutputLimits.
+    Agent reports have their own explicit budgets and must not be clipped here.
+    """
+    return truncate_output(result) if job is not None and job.kind == "bash" else result
 
 
 def job_to_dto(job: Job, meta: dict | None) -> dict:
@@ -65,8 +75,8 @@ def assemble(
 
 def detail_dto(job: Job, result: str, meta: dict | None) -> dict:
     """A JobDto plus the drill-in fields: the spawn ``prompt`` (input) and the
-    full ``result`` (output)."""
+    ``result`` (a bounded shell preview or the complete agent report)."""
     dto = job_to_dto(job, meta)
     dto["prompt"] = job.prompt
-    dto["result"] = result
+    dto["result"] = output_preview(job, result)
     return dto

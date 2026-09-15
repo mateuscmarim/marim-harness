@@ -39,6 +39,15 @@ harness = (
   course. Reserve exceptions for genuine bugs.
 - **Async tools work too** — `async def` is registered the same way.
 
+## Large returns
+
+Return the producer's complete bounded result. Native harness agents apply
+[upstream output limits](../guides/tool-output.md) to custom tools too: results
+at the 10,000-character threshold spill with a preview, and the model reads
+the stored body with `read_tool_result`. Keep collection limits for expensive
+I/O; output reduction happens after your tool has produced its result.
+The `read_tool_result` name is reserved and cannot be reused by a custom tool.
+
 ## The import gotcha (read this)
 
 Both `RunContext` and `Deps` must be **real runtime imports** — do not move

@@ -6,11 +6,11 @@ import signal
 from collections import deque
 from pathlib import Path
 
-from .offload import LEGACY_OFFLOAD_DIR, MAX_OUTPUT_CHARS, offload_if_large
+from .offload import MAX_OUTPUT_CHARS
 
 _DEFAULT_TIMEOUT = 30
 _DEFAULT_MAX_OUTPUT = 20_000
-# Format the elided-middle marker the same way _truncate_middle does, so the live
+# Format the elided-middle marker the same way truncate_output does, so the live
 # preview and the final body present a truncation identically. ``unit`` is "chars"
 # for the decoded background buffer and the foreground byte count alike (the latter
 # is bytes, but for the flood case this is a cosmetic count, matching the existing
@@ -31,7 +31,7 @@ _DRAIN_BUDGET = 2.0  # seconds
 _READ_CHUNK = 65536  # bytes per stream read
 
 
-def _truncate_middle(text: str, max_output: int) -> str:
+def truncate_output(text: str, max_output: int = _DEFAULT_MAX_OUTPUT) -> str:
     """Cap ``text`` to ``max_output`` chars, dropping the MIDDLE rather than the
     tail. The head carries a command's opening (setup, first errors); the tail
     carries its verdict (a test summary, a final traceback) — and for tests and
@@ -53,7 +53,7 @@ class _BoundedOutput:
     and only get capped at the end — buffering hundreds of MB first. This keeps a
     bounded HEAD (the command's opening: setup, first errors) and a bounded sliding
     TAIL (its verdict: a test summary, a final traceback), the same head+tail split
-    :func:`_truncate_middle` presents, so middle-truncation still has both ends.
+    :func:`truncate_output` presents, so middle-truncation still has both ends.
     Memory stays at ~``budget`` regardless of how much the process emits. Callers
     must keep draining the pipe to EOF (the child deadlocks on a full pipe) — this
     never rejects a chunk, it just stops *growing* memory past the budget.
@@ -201,7 +201,8 @@ async def run_bash(
     command: str,
     timeout: int = _DEFAULT_TIMEOUT,
     stdin_data: bytes | None = None,
-    offload_dir: Path | None = None,
+    *,
+    max_output_bytes: int | None = None,
 ) -> str:
     """Run a shell command in the workspace root, capturing combined output.
 
@@ -211,7 +212,12 @@ async def run_bash(
     ``stdin_data`` (when given) is piped to the command's stdin in one write and
     the pipe is closed immediately, so a reader sees the bytes then EOF. With the
     default ``None`` no stdin pipe is wired at all — identical to the historical
-    behavior."""
+    behavior. ``max_output_bytes`` can lower the collection ceiling for direct
+    callers, such as TUI `!` commands, which bypass agent output reduction.
+    The exit status, truncation notice and timeout marker are outside this budget."""
+    if max_output_bytes is not None and max_output_bytes <= 0:
+        raise ValueError("max_output_bytes must be positive")
+    collection_limit = min(max_output_bytes or MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS)
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=str(root),
@@ -227,7 +233,7 @@ async def run_bash(
     # Bound memory while reading: a flood (``yes``, ``cat hugefile``) must not buffer
     # hundreds of MB before the final cap applies. The accumulator keeps a bounded
     # head + sliding tail; we keep draining the pipe to EOF either way (see below).
-    chunks = _BoundedOutput(MAX_OUTPUT_CHARS)
+    chunks = _BoundedOutput(collection_limit)
     if proc.stdout is not None:
         # ``timeout`` is a TOTAL wall-clock ceiling, not a per-read idle gap. A
         # chatty command (e.g. ``pytest -v``) emits output continuously, so a
@@ -287,25 +293,7 @@ async def run_bash(
         if body and not body.endswith("\n"):
             body += "\n"
         body += f"(timed out after {timeout}s)"
-    # timeout shapes `body` too (the trailing "(timed out after {timeout}s)"
-    # marker), and stdin_data shapes it just as much — a command like `cat` echoes
-    # its stdin straight into the body. Fold every output-affecting parameter into
-    # the key so two otherwise-identical commands that differ only in timeout or
-    # stdin_data don't collapse onto the same sha-derived offload file (see fs.py's
-    # grep key for the same reasoning). ``!r`` (not the raw bytes) distinguishes
-    # None from b"" — both would otherwise render as the same empty segment.
-    key = f"{command}\0{timeout}\0{stdin_data!r}"
-    # Note: `root` is not folded in — it's not a shaping parameter, it's the
-    # offload *namespace*: offload_if_large writes under `workspace_root/.marim/
-    # output/`, so two different roots already land in physically different
-    # directories and can't collide regardless of what's in `key`.
-    return offload_if_large(
-        body,
-        kind="bash",
-        key=key,
-        offload_dir=offload_dir or root / LEGACY_OFFLOAD_DIR,
-        capped=dropped > 0,
-    )
+    return body
 
 
 class BashProcess:
@@ -318,15 +306,9 @@ class BashProcess:
         self,
         proc: asyncio.subprocess.Process,
         max_output: int,
-        root: Path,
-        command: str,
-        offload_dir: Path | None = None,
     ) -> None:
         self._proc = proc
         self._max_output = max_output
-        self._root = root
-        self._command = command
-        self._offload_dir = offload_dir
         # Bound memory while the background command runs (see _BoundedOutput): a
         # detached flood must not grow the buffer without limit before wait() caps it.
         self._buffer = _BoundedOutput(MAX_OUTPUT_CHARS)
@@ -342,10 +324,10 @@ class BashProcess:
         if dropped > 0:
             # The buffer already elided the middle (a >budget flood). Gluing head
             # straight onto tail here would present two discontinuous regions as
-            # one continuous stream, and _truncate_middle can't rescue it — head+tail
+            # one continuous stream, and truncate_output can't rescue it — head+tail
             # may already be within the cap, so no marker gets spliced. Mirror wait():
             # splice the same elided-middle marker in, bounding each end to half the
-            # preview cap so the marker survives (a plain slice, not _truncate_middle,
+            # preview cap so the marker survives (a plain slice, not truncate_output,
             # avoids nesting a second marker inside an end).
             head_cap = self._max_output // 2
             return (
@@ -353,7 +335,7 @@ class BashProcess:
                 + _TRUNC_MARKER.format(dropped=dropped)
                 + (tail[-(self._max_output - head_cap) :] if head_cap < self._max_output else "")
             )
-        return _truncate_middle(head + tail, self._max_output)
+        return truncate_output(head + tail, self._max_output)
 
     def kill(self) -> None:
         """Kill the process tree (best-effort; already-dead is fine)."""
@@ -393,25 +375,15 @@ class BashProcess:
             # Present the cap as a truncated middle (head + marker + tail) rather than
             # a head-only clip, so the command's verdict at the very end survives.
             text = f"{head}{_TRUNC_MARKER.format(dropped=dropped)}{tail}"
-            capped = True
         else:
             text = head + tail
-            capped = False
-        body = f"exit {self._proc.returncode}\n{text}"
-        return offload_if_large(
-            body,
-            kind="bash",
-            key=self._command,
-            offload_dir=self._offload_dir or self._root / LEGACY_OFFLOAD_DIR,
-            capped=capped,
-        )
+        return f"exit {self._proc.returncode}\n{text}"
 
 
 async def start_bash(
     root: Path,
     command: str,
     max_output: int = _DEFAULT_MAX_OUTPUT,
-    offload_dir: Path | None = None,
 ) -> BashProcess:
     """Launch a shell command detached (no timeout) and return a BashProcess to
     stream, wait on, or kill. Runs in its own session so the whole tree can be
@@ -423,4 +395,4 @@ async def start_bash(
         stderr=asyncio.subprocess.STDOUT,
         start_new_session=True,
     )
-    return BashProcess(proc, max_output, root, command, offload_dir=offload_dir)
+    return BashProcess(proc, max_output)

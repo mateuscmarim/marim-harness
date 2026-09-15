@@ -377,7 +377,7 @@ async def test_fetch_aborts_when_content_length_exceeds_limit(tmp_path):
     )
 
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/huge", offload_dir=tmp_path)
+        result = await fetch_url("https://example.com/huge")
 
     assert "aborted" in result.lower()
     assert "ignored" not in result  # body was never read
@@ -427,82 +427,22 @@ async def test_fetch_empty_page():
 
 
 # ---------------------------------------------------------------------------
-# Tests — offload-to-file for large pages (when a workspace_root is given)
+# Tests — the producer returns rendered content for upstream reduction
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_fetch_small_page_with_workspace_returned_inline(tmp_path):
-    """A small page is still returned inline even when a workspace is available —
-    no file round-trip for the common case."""
-    html = "<html><body><h1>Small</h1><p>Just a little content.</p></body></html>"
-    resp = _mock_response(text=html, content_type="text/html")
-
-    with _patch_client(resp):
-        result = await fetch_url("https://example.com/small", offload_dir=tmp_path)
-
-    assert "# Small" in result
-    assert "Just a little content." in result
-    # Nothing offloaded.
-    # Nothing offloaded — no fetch-*.md files in the offload dir.
-    assert not list(tmp_path.glob("fetch-*.md"))
-
-
-@pytest.mark.anyio
-async def test_fetch_large_page_offloaded_to_file(tmp_path):
-    """A large page is written to a gitignored workspace file; the tool returns a
-    handle + preview (so read_file/grep can page through) rather than flooding
-    context with the whole body."""
+async def test_fetch_large_page_returns_complete_rendered_body():
     paras = "".join(f"<p>Paragraph number {i} with several words here.</p>" for i in range(4000))
     html = f"<html><body><h1>Big Doc</h1>{paras}</body></html>"
     resp = _mock_response(text=html, content_type="text/html")
-
     with _patch_client(resp):
-        result = await fetch_url("https://example.com/big-doc", offload_dir=tmp_path)
-
-    # The handle points at the offload dir.
-    assert "saved to" in result
-    # Preview shows the start...
+        result = await fetch_url("https://example.com/big-doc")
+    assert "Big Doc" in result
+    assert result.count("Paragraph number ") == 4000
     assert "Paragraph number 0 " in result
-    # ...but NOT the whole body (last paragraph must not be inline).
-    assert "Paragraph number 3999" not in result
-
-    # The full content lives on disk and is readable.
-    files = list(tmp_path.glob("fetch-*.md"))
-    assert len(files) == 1
-    full = files[0].read_text()
-    assert "Paragraph number 0 " in full
-    assert "Paragraph number 3999" in full
-
-
-@pytest.mark.anyio
-async def test_fetch_offload_handle_has_title_and_saved_path(tmp_path):
-    from marim_harness.tools.impl import fetch
-
-    body = "# My Title\n" + "\n".join(f"para {i}" for i in range(50))
-    out = fetch._offload(body, "https://example.com/x", tmp_path)
-    assert out.startswith("# My Title")
-    assert "Fetched https://example.com/x" in out
-    assert "saved to" in out
-    saved = list(tmp_path.glob("fetch-*.md"))
-    assert len(saved) == 1 and saved[0].read_text() == body
-
-
-@pytest.mark.anyio
-async def test_fetch_offload_handle_shows_absolute_path(tmp_path):
-    """The path in the handle must be absolute so the agent can hand it straight
-    to read_file/grep regardless of the offload directory's location."""
-    paras = "".join(f"<p>Filler paragraph {i} with enough text to grow.</p>" for i in range(4000))
-    html = f"<html><body>{paras}</body></html>"
-    resp = _mock_response(text=html, content_type="text/html")
-
-    with _patch_client(resp):
-        result = await fetch_url("https://example.com/big", offload_dir=tmp_path)
-
-    files = list(tmp_path.glob("fetch-*.md"))
-    assert len(files) == 1
-    assert str(tmp_path) in result  # absolute path of offload dir shown
-    assert files[0].as_posix() in result
+    assert "Paragraph number 3999 " in result
+    assert "saved to" not in result
 
 
 # ---------------------------------------------------------------------------

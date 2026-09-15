@@ -8,6 +8,8 @@
   CI: output formats, exit codes, the management subcommands.
 - [`guides/sessions.md`](guides/sessions.md) — sessions, resuming, compaction,
   checkpoints, and `/rewind`.
+- [`guides/tool-output.md`](guides/tool-output.md) — large-result previews,
+  `read_tool_result`, output storage, and resume behavior.
 - [`guides/subagents.md`](guides/subagents.md) — sub-agents and background
   jobs: spawning, agent specs, model tiers, the `claude-cli` backend.
 - [`guides/workflows.md`](guides/workflows.md) — dynamic workflows: the
