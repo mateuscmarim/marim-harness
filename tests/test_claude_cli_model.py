@@ -1813,6 +1813,73 @@ async def test_backend_jobs_stop_spinning_when_process_closes(tmp_path, monkeypa
     assert job.status == "failed" and "unavailable" in job.result
 
 
+@pytest.mark.anyio
+async def test_reused_claude_agent_reopens_ui_and_jobs_across_parent_turns(tmp_path, monkeypatch):
+    from marim_harness.config.external_cli import CLI_ACTIVITY_KEY
+    from marim_harness.jobs import JobRegistry
+    from tests.test_cli_demux import _spawn_obj
+
+    started = {
+        "type": "system",
+        "subtype": "task_started",
+        "tool_use_id": "t1",
+        "task_id": "agent-1",
+        "is_backgrounded": True,
+    }
+    finished = {
+        "type": "system",
+        "subtype": "task_notification",
+        "tool_use_id": "t1",
+        "task_id": "agent-1",
+        "status": "completed",
+        "summary": "first report",
+    }
+    model = _model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [{"raw": _spawn_obj()}, {"raw": started}, {"raw": finished}, {"text": "Done."}],
+                [{"raw": started}, {"text": "Resumed."}],
+                [{"raw": {**finished, "summary": "second report"}}, {"text": "Done again."}],
+            ]
+        },
+    )
+    model.job_registry = JobRegistry()
+    activity = []
+
+    async def on_activity(events):
+        activity.extend(events)
+
+    model.on_activity = on_activity
+
+    async def request(prompt):
+        async with model.request_stream(_user(prompt), None, ModelRequestParameters()) as stream:
+            async for _ in stream:
+                pass
+            return stream.get()
+
+    try:
+        await request("first")
+        [job] = model.job_registry.list()
+        assert job.status == "done"
+        response = await request("follow up")
+        assert model.job_registry.list() == [job] and job.status == "running"
+        calls = [
+            e.part
+            for e in activity
+            if isinstance(e, FunctionToolCallEvent) and e.part.tool_name == "spawn_agent"
+        ]
+        assert [p.tool_call_id for p in calls] == ["t1", "t1"]
+        assert calls[-1].args_as_dict()["resumed"] is True
+        ledger = response.provider_details[CLI_ACTIVITY_KEY]
+        assert ledger[0]["kind"] == "call" and ledger[0]["args"]["resumed"] is True
+        await request("result")
+        assert job.status == "done" and job.result == "second report"
+    finally:
+        await model.aclose()
+
+
 def _controls_sent(tmp_path: Path) -> list[dict]:
     """Every non-handshake control request the fake read, oldest first."""
     return [

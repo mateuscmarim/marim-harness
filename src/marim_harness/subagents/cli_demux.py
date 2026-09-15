@@ -31,6 +31,7 @@ because this module imports from ``cli_backend``)."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -46,6 +47,7 @@ from .cli_backend import CliStreamTranslator, _flatten_tool_result, synth_usage
 
 # Claude Code's sub-agent spawn tool: "Agent" since CLI 2.1.x, "Task" before.
 SPAWN_TOOL_NAMES = frozenset({"Agent", "Task"})
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,6 +73,7 @@ class _Spawn:
     container: str | None  # stream its tool_use appeared in (None = main)
     async_started: bool = False  # task_started seen → its tool_result is launch noise
     finished: bool = False
+    args: dict | None = None  # original call, needed when SendMessage resumes this task
 
 
 class CliSubagentDemux:
@@ -109,12 +112,7 @@ class CliSubagentDemux:
                     self._routed(str(sid), ev) for ev in self._translator(str(sid)).translate(obj)
                 ], None
         if subtype == "task_started":
-            tid = str(obj.get("tool_use_id") or "")
-            if tid:
-                self._spawns.setdefault(tid, _Spawn(container=None)).async_started = True
-                if isinstance(obj.get("agent_id"), str):
-                    self._agent_streams[obj["agent_id"]] = tid
-            return [], None
+            return self._started(obj), None
         if subtype == "task_notification":
             tid = str(obj.get("tool_use_id") or "")
             status = str(obj.get("status") or "completed")
@@ -123,6 +121,23 @@ class CliSubagentDemux:
         if subtype == "task_updated":
             return [], None  # progress patches; the notification carries the report
         return [], obj
+
+    def _started(self, obj: dict) -> list[RoutedEvent]:
+        tid = str(obj.get("tool_use_id") or "")
+        if not tid:
+            return []
+        spawn = self._spawns.setdefault(tid, _Spawn(container=None))
+        spawn.async_started = True
+        if isinstance(obj.get("agent_id"), str):
+            self._agent_streams[obj["agent_id"]] = tid
+        # Modern Claude resumes through SendMessage, without a new Agent call.
+        # Only a real task_started reactivates it: messages/progress alone may
+        # be late or refused. A duplicate start while running changes nothing.
+        if not spawn.finished or spawn.args is None:
+            return []
+        spawn.finished = False
+        logger.debug("claude subagent resumed: stream=%s", tid)
+        return self._call_event(tid, spawn, {**spawn.args, "resumed": True})
 
     def _finish(self, tid: str, content: str, *, failed: bool) -> list[RoutedEvent]:
         spawn = self._spawns.get(tid)
@@ -203,10 +218,14 @@ class CliSubagentDemux:
             "task": str(inp.get("prompt") or inp.get("description") or ""),
             "description": str(inp.get("description") or ""),
         }
+        spawn.args = args
+        return self._call_event(tid, spawn, args)
+
+    def _call_event(self, tid: str, spawn: _Spawn, args: dict) -> list[RoutedEvent]:
         part = ToolCallPart(tool_name="spawn_agent", args=args, tool_call_id=tid)
-        if container is not None:
-            self._translator(container).record_call(part)
-        return [self._routed(container, FunctionToolCallEvent(part=part))]
+        if spawn.container is not None:
+            self._translator(spawn.container).record_call(part)
+        return [self._routed(spawn.container, FunctionToolCallEvent(part=part))]
 
     def _claim_spawn_results(
         self, obj: dict, container: str | None, out: list[RoutedEvent]
