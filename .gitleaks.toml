@@ -43,3 +43,13 @@ regexes = [
   '''^gm-key-12345678$''',
   '''^zen-key-12345678$''',
 ]
+
+# Public request-deduplication UUID in serve-api.md. This is an operation ID,
+# not an authentication credential. Match only that exact example value so
+# the documentation and every other value remain fully scanned, including
+# history containing the original example.
+[[allowlists]]
+description = "Public Idempotency-Key UUID example; grants no authentication."
+regexes = [
+  '''^4ea1b17f-6cdf-4e71-9b62-9db82d4f4e5d$''',
+]

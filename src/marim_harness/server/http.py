@@ -13,7 +13,9 @@ import contextlib
 import json
 import logging
 import re
+import sqlite3
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..config import MultiModelSource, detect_active_providers
@@ -32,6 +35,7 @@ from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
 from ..jobs import history_rows
+from ..runtime.backend_jobs import drain_task
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
 from ..session.store import SessionLoadError
@@ -42,6 +46,7 @@ from . import jobs_view
 from .auth import token_matches
 from .files import InvalidFileRequest, WorkspaceFile, WorkspaceFileNotFound, open_workspace_file
 from .host import HostClosed, SessionHost, TurnQueueFull
+from .idempotency import Claim, OperationStore, StoredResponse, request_fingerprint, valid_key
 from .schema import (
     AskAnswerIn,
     MessageIn,
@@ -57,6 +62,29 @@ from .workspaces import WorkspaceRegistry
 
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 logger = logging.getLogger(__name__)
+
+
+class _CapabilityApp(Starlette):
+    """Advertise safe retries even on errors, without buffering HTTP/WS streams."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        application = super().build_middleware_stack()
+
+        async def advertised(scope: Scope, receive: Receive, send: Send) -> None:
+            async def send_with_capability(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    message = {
+                        **message,
+                        "headers": [
+                            *message.get("headers", []),
+                            (b"x-marim-idempotency", b"v1"),
+                        ],
+                    }
+                await send(message)
+
+            await application(scope, receive, send_with_capability)
+
+        return advertised
 
 
 def _error(status: int, code: str, message: str) -> JSONResponse:
@@ -78,6 +106,120 @@ def _unauthorized(request: Request) -> JSONResponse | None:
     if header.startswith("Bearer ") and token_matches(token, header[len("Bearer ") :]):
         return None
     return _error(401, "unauthorized", "missing or invalid bearer token")
+
+
+def _idempotency_error(state: str) -> Response:
+    messages = {
+        "conflict": "idempotency key was already used for another request",
+        "in_progress": "operation is still executing; retry with the same key",
+        "unknown": "operation result is unavailable; do not repeat with a new key",
+        "unavailable": "operation storage unavailable; no operation was started",
+    }
+    response = _error(409 if state == "conflict" else 503, f"idempotency_{state}", messages[state])
+    if state == "in_progress":
+        response.headers["Retry-After"] = "1"
+    return response
+
+
+def _stored_response(response: Response) -> StoredResponse:
+    # No credentials or cookies enter the ledger. Mutations are small, finite
+    # JSON responses; streaming reads and WebSockets never use this wrapper.
+    retained = {b"content-type", b"content-length", b"cache-control", b"location", b"retry-after"}
+    return StoredResponse(
+        response.status_code,
+        bytes(response.body),
+        [(key, value) for key, value in response.raw_headers if key in retained],
+    )
+
+
+async def _claim_operation(store: OperationStore, key: str, fingerprint: str) -> Claim:
+    claiming = asyncio.create_task(run_in_threadpool(store.claim, key, fingerprint))
+    try:
+        # SQLite and the store's mutex may wait for another writer. Keep that
+        # wait off the event loop, but drain its outcome before cancellation
+        # releases this request: a worker thread cannot itself be cancelled.
+        await drain_task(claiming)
+    except asyncio.CancelledError:
+        if (
+            not claiming.cancelled()
+            and claiming.exception() is None
+            and claiming.result() == "claimed"
+        ):
+            # Only abandon our own admission. A cancelled duplicate must
+            # not remove the active marker of another executing request.
+            await drain_task(asyncio.create_task(run_in_threadpool(store.abandon, key)))
+        raise
+    return claiming.result()
+
+
+async def _execute_claimed(
+    request: Request,
+    endpoint: Callable[[Request], Awaitable[Response]],
+    store: OperationStore,
+    key: str,
+) -> Response:
+    try:
+        response = await endpoint(request)
+        await drain_task(
+            asyncio.create_task(run_in_threadpool(store.complete, key, _stored_response(response)))
+        )
+    except asyncio.CancelledError:
+        logger.warning("idempotent mutation interrupted key=%s", key)
+        raise
+    except Exception as exc:
+        # Endpoint exceptions may follow an effect. Never release their claim
+        # or expose a response that has not been durably recorded. Exception
+        # text can contain user payloads, so diagnostics record its type only.
+        logger.warning(
+            "idempotent mutation result unknown key=%s cause=%s", key, type(exc).__name__
+        )
+        return _idempotency_error("unknown")
+    finally:
+        # The lock can be held by another SQLite writer. Cleanup must neither
+        # block the event loop nor race a still-running completion worker.
+        await drain_task(asyncio.create_task(run_in_threadpool(store.abandon, key)))
+    logger.debug("idempotent mutation completed key=%s status=%s", key, response.status_code)
+    response.headers["Idempotency-Status"] = "completed"
+    response.headers["Idempotency-Key"] = key
+    return response
+
+
+def _idempotent(endpoint: Callable[[Request], Awaitable[Response]]):
+    async def protected(request: Request) -> Response:
+        # Authenticate before reading the body or consulting the ledger. Replay
+        # must not bypass revoked credentials or expose a previous response.
+        denied = _unauthorized(request)
+        if denied is not None:
+            return denied
+        keys = request.headers.getlist("idempotency-key")
+        if len(keys) != 1 or not valid_key(keys[0]):
+            return _error(400, "bad_request", "provide one canonical UUID Idempotency-Key")
+        key = keys[0]
+        original_path = request.scope["path"].replace("/v1/idempotent/", "/v1/", 1)
+        fingerprint = request_fingerprint(
+            request.method, original_path, request.scope["query_string"], await request.body()
+        )
+        store: OperationStore = request.app.state.operation_store
+        try:
+            claim = await _claim_operation(store, key, fingerprint)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            logger.warning("idempotency claim unavailable cause=%s", type(exc).__name__)
+            return _idempotency_error("unavailable")
+        if isinstance(claim, StoredResponse):
+            response = Response(claim.body, status_code=claim.status)
+            response.raw_headers = list(claim.headers)
+            response.headers["Idempotency-Replayed"] = "true"
+            response.headers["Idempotency-Status"] = "completed"
+            response.headers["Idempotency-Key"] = key
+            logger.debug("idempotent mutation replayed key=%s", key)
+            return response
+        if claim != "claimed":
+            logger.debug("idempotent mutation refused key=%s state=%s", key, claim)
+            return _idempotency_error(claim)
+        logger.debug("idempotent mutation claimed key=%s", key)
+        return await _execute_claimed(request, endpoint, store, key)
+
+    return protected
 
 
 def _registry(request: Request | WebSocket) -> WorkspaceRegistry:
@@ -1025,9 +1167,19 @@ def create_app(
             # cancel parked asks, persist every host.
             await supervisor.aclose()
 
-    app = Starlette(routes=routes, lifespan=lifespan)
+    aliases = [
+        Route(
+            route.path.replace("/v1/", "/v1/idempotent/", 1),
+            _idempotent(route.endpoint),
+            methods=sorted(route.methods),
+        )
+        for route in routes
+        if isinstance(route, Route) and route.methods and route.methods <= {"POST", "DELETE"}
+    ]
+    app = _CapabilityApp(routes=[*routes, *aliases], lifespan=lifespan)
     app.state.registry = registry
     app.state.supervisor = supervisor
     app.state.token = token
     app.state.models_cache = {"at": None, "data": []}
+    app.state.operation_store = OperationStore(registry.state_dir / "idempotency")
     return app
