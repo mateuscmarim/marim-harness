@@ -2,6 +2,7 @@
 
 import asyncio
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -450,6 +451,156 @@ def test_capability_on_unhandled_error(tmp_path):
         response = client.get("/broken")
         assert response.status_code == 500
         assert response.headers["X-Marim-Idempotency"] == "v1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stage", ["claim", "complete"])
+async def test_locked_ledger_does_not_block_health(tmp_path, monkeypatch, stage):
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    locker = None
+
+    async def endpoint(request):
+        if stage == "complete":
+            locker.execute("BEGIN IMMEDIATE")
+        return Response(b"done")
+
+    monkeypatch.setattr(http, "create_workspace", endpoint)
+    app = make_app(tmp_path)
+    store = app.state.operation_store
+    # Create the actual ledger, then observe when the mutation reaches its
+    # contended SQL statement. The competing connection holds a real write lock.
+    store._connect().close()
+    connect = store._connect
+
+    def traced_connect():
+        connection = connect()
+
+        def trace(sql):
+            marker = "BEGIN IMMEDIATE" if stage == "claim" else "UPDATE operations SET"
+            if sql.startswith(marker):
+                loop.call_soon_threadsafe(entered.set)
+
+        connection.set_trace_callback(trace)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", traced_connect)
+    locker = sqlite3.connect(tmp_path / "state/idempotency/operations.sqlite3")
+    if stage == "claim":
+        locker.execute("BEGIN IMMEDIATE")
+    request = None
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app), base_url="http://test"
+        ) as client:
+            request = asyncio.create_task(
+                client.post(PROTECTED, json={}, headers={**AUTH, "Idempotency-Key": str(uuid4())})
+            )
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            health = await client.get("/v1/health")
+            assert health.status_code == 200
+            # This must finish while SQLite is still waiting, not after its
+            # one-second busy timeout has already stalled the whole event loop.
+            assert not request.done()
+            locker.rollback()
+            assert (await request).status_code == 200
+    finally:
+        locker.close()
+        if request is not None:
+            await request
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("method,after", [("claim", False), ("claim", True), ("complete", False)])
+async def test_cancellation_drains_ledger_worker_before_releasing_request(
+    tmp_path, monkeypatch, method, after
+):
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    app = make_app(tmp_path)
+    store = app.state.operation_store
+    operation = getattr(store, method)
+
+    def paused(*args):
+        result = operation(*args) if after else None
+        loop.call_soon_threadsafe(entered.set)
+        assert release.wait(timeout=5), "test did not release the ledger worker"
+        return result if after else operation(*args)
+
+    monkeypatch.setattr(store, method, paused)
+    headers = {**AUTH, "Idempotency-Key": str(uuid4())}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        request = asyncio.create_task(client.post(PROTECTED, json={"name": "one"}, headers=headers))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            request.cancel()
+            await asyncio.sleep(0)
+            request.cancel()
+            await asyncio.sleep(0)
+            assert (await client.get("/v1/health")).status_code == 200
+            assert not request.done()
+        finally:
+            release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        retry = await client.post(PROTECTED, json={"name": "one"}, headers=headers)
+        listed = (await client.get("/v1/workspaces", headers=AUTH)).json()["workspaces"]
+        if method == "claim":
+            assert retry.status_code == 503
+            assert retry.json()["error"]["code"] == "idempotency_unknown"
+            assert listed == []
+        else:
+            assert retry.status_code == 201
+            assert retry.headers["Idempotency-Replayed"] == "true"
+            assert len(listed) == 1
+
+
+@pytest.mark.anyio
+async def test_cancelled_duplicate_does_not_abandon_live_owner(tmp_path, monkeypatch):
+    handler_entered = asyncio.Event()
+    finish_handler = asyncio.Event()
+    duplicate_entered = asyncio.Event()
+    release_duplicate = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    async def endpoint(request):
+        handler_entered.set()
+        await finish_handler.wait()
+        return Response(b"done")
+
+    monkeypatch.setattr(http, "create_workspace", endpoint)
+    app = make_app(tmp_path)
+    claim = app.state.operation_store.claim
+
+    def paused_claim(*args):
+        result = claim(*args)
+        loop.call_soon_threadsafe(duplicate_entered.set)
+        assert release_duplicate.wait(timeout=5), "test did not release the duplicate worker"
+        return result
+
+    headers = {**AUTH, "Idempotency-Key": str(uuid4())}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        owner = asyncio.create_task(client.post(PROTECTED, json={}, headers=headers))
+        try:
+            await asyncio.wait_for(handler_entered.wait(), timeout=5)
+            monkeypatch.setattr(app.state.operation_store, "claim", paused_claim)
+            duplicate = asyncio.create_task(client.post(PROTECTED, json={}, headers=headers))
+            await asyncio.wait_for(duplicate_entered.wait(), timeout=5)
+            duplicate.cancel()
+            release_duplicate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await duplicate
+            retry = await client.post(PROTECTED, json={}, headers=headers)
+            assert retry.json()["error"]["code"] == "idempotency_in_progress"
+        finally:
+            release_duplicate.set()
+            finish_handler.set()
+            assert (await owner).status_code == 200
 
 
 @pytest.mark.anyio

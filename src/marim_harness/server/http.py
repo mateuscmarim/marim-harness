@@ -35,6 +35,7 @@ from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
 from ..jobs import history_rows
+from ..runtime.backend_jobs import drain_task
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
 from ..session.store import SessionLoadError
@@ -45,7 +46,7 @@ from . import jobs_view
 from .auth import token_matches
 from .files import InvalidFileRequest, WorkspaceFile, WorkspaceFileNotFound, open_workspace_file
 from .host import HostClosed, SessionHost, TurnQueueFull
-from .idempotency import OperationStore, StoredResponse, request_fingerprint, valid_key
+from .idempotency import Claim, OperationStore, StoredResponse, request_fingerprint, valid_key
 from .schema import (
     AskAnswerIn,
     MessageIn,
@@ -131,6 +132,26 @@ def _stored_response(response: Response) -> StoredResponse:
     )
 
 
+async def _claim_operation(store: OperationStore, key: str, fingerprint: str) -> Claim:
+    claiming = asyncio.create_task(run_in_threadpool(store.claim, key, fingerprint))
+    try:
+        # SQLite and the store's mutex may wait for another writer. Keep that
+        # wait off the event loop, but drain its outcome before cancellation
+        # releases this request: a worker thread cannot itself be cancelled.
+        await drain_task(claiming)
+    except asyncio.CancelledError:
+        if (
+            not claiming.cancelled()
+            and claiming.exception() is None
+            and claiming.result() == "claimed"
+        ):
+            # Only abandon our own admission. A cancelled duplicate must
+            # not remove the active marker of another executing request.
+            await drain_task(asyncio.create_task(run_in_threadpool(store.abandon, key)))
+        raise
+    return claiming.result()
+
+
 async def _execute_claimed(
     request: Request,
     endpoint: Callable[[Request], Awaitable[Response]],
@@ -139,7 +160,9 @@ async def _execute_claimed(
 ) -> Response:
     try:
         response = await endpoint(request)
-        store.complete(key, _stored_response(response))
+        await drain_task(
+            asyncio.create_task(run_in_threadpool(store.complete, key, _stored_response(response)))
+        )
     except asyncio.CancelledError:
         logger.warning("idempotent mutation interrupted key=%s", key)
         raise
@@ -152,7 +175,9 @@ async def _execute_claimed(
         )
         return _idempotency_error("unknown")
     finally:
-        store.abandon(key)
+        # The lock can be held by another SQLite writer. Cleanup must neither
+        # block the event loop nor race a still-running completion worker.
+        await drain_task(asyncio.create_task(run_in_threadpool(store.abandon, key)))
     logger.debug("idempotent mutation completed key=%s status=%s", key, response.status_code)
     response.headers["Idempotency-Status"] = "completed"
     response.headers["Idempotency-Key"] = key
@@ -176,7 +201,7 @@ def _idempotent(endpoint: Callable[[Request], Awaitable[Response]]):
         )
         store: OperationStore = request.app.state.operation_store
         try:
-            claim = store.claim(key, fingerprint)
+            claim = await _claim_operation(store, key, fingerprint)
         except (OSError, sqlite3.Error, ValueError) as exc:
             logger.warning("idempotency claim unavailable cause=%s", type(exc).__name__)
             return _idempotency_error("unavailable")
