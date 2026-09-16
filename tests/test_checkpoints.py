@@ -34,6 +34,14 @@ class _FakeStore:
         self.session_id = session_id
 
 
+class _Message(str):
+    """One-part message; retain readable string expectations in manager tests."""
+
+    @property
+    def parts(self):
+        return [self]
+
+
 class _FakeSession:
     """Minimal stand-in for SessionController for manager unit tests."""
 
@@ -47,7 +55,14 @@ class _FakeSession:
         return self._history
 
     def set_history(self, value: list) -> None:
-        self._history = value
+        self._history = [_Message(message) for message in value]
+
+    @property
+    def transcript(self) -> list:
+        return list(self._history)
+
+    def restore_history(self, history: list, transcript: list) -> None:
+        self.set_history(history)
 
     def persist(self, *, force: bool = False) -> None:
         self.persisted += 1

@@ -1389,7 +1389,10 @@ class TurnController:
         sanitized = _drop_contentless_responses(_drop_nameless_tool_calls(self.session.history))
         repaired = _repair_unanswered_tool_calls(sanitized)
         if repaired is not self.session.history:
-            self.session.history = repaired
+            # Repair may change part counts. It is context maintenance, not
+            # new conversation: preserve recorded content and rebase its cursor
+            # before the next run appends anything (as compaction/load do).
+            self.session.restore_history(repaired, self.session.transcript)
             # Offload the sanitizing write off the event loop, consistent with the
             # success/rollback sites below.
             await asyncio.to_thread(self.session.persist)

@@ -5,6 +5,8 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from itertools import count
 from typing import TYPE_CHECKING, SupportsIndex
 
@@ -32,9 +34,34 @@ from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
 from .compaction import Reduction, ReductionOptions, reduce_history
+from .history import slice_message_parts
 from .store import SessionInfo, SessionLoadError, SessionManager, SessionStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _HistoryState:
+    """One atomic pairing of model context and its archived display prefix.
+
+    A reduction/reload freezes the complete recorded transcript and marks all
+    installed context as already represented. Normal turn commits only append
+    the later context tail. Keeping these in one object lets a persist worker
+    capture either side of a transition, never context from one and its archive
+    from the other. The archive is never passed to the model.
+    """
+
+    context: list[ModelMessage]
+    prefix: list[ModelMessage]
+    boundary: int
+
+    def transcript(self, context: list[ModelMessage]) -> list[ModelMessage]:
+        if not self.boundary:
+            return self.prefix + context
+        # Pydantic normalizes adjacent request envelopes at run startup (for
+        # example summary + retained prompt). Parts survive that normalization,
+        # whereas a message-count cursor would swallow newly appended messages.
+        return self.prefix + slice_message_parts(context, start=self.boundary)
 
 
 def aux_model_for(model: Model, *, cwd: str) -> Model:
@@ -174,10 +201,11 @@ class SessionController:
         self._persist_lock = threading.Lock()
         self._write_generations = count(1)
         self._written_generation = 0
-        # ``history`` is a property; the underlying list lives in ``_history``.
+        # ``history`` is a property; its list lives in ``_history_state.context``.
         # The setter bumps ``history_version`` so the persist cache can detect
         # no-op writes — set both fields before the first assignment below.
         # No annotation here: it would redeclare the property and shadow it.
+        self._history_state = _HistoryState([], [], 0)
         self.history = []
         self.usage: RunUsage = RunUsage()
         # The provider-reported input-token count of the most recent request, i.e.
@@ -296,13 +324,32 @@ class SessionController:
     # that prefer an explicit method can call ``set_history`` instead.
     @property
     def history(self) -> list[ModelMessage]:
-        return self._history
+        return self._history_state.context
 
     @history.setter
     def history(self, value: list[ModelMessage]) -> None:
         # Wrap in a version-tracking proxy so in-place mutations
         # (append/+=/[i]=) bump the version too — see _VersionedHistory.
-        self._history = _VersionedHistory(value, self)
+        self._history_state = replace(self._history_state, context=_VersionedHistory(value, self))
+        self.history_version += 1
+
+    @property
+    def transcript(self) -> list[ModelMessage]:
+        """Recorded conversation for replay, independent of model compaction."""
+        state = self._history_state
+        return state.transcript(list(state.context))
+
+    def restore_history(self, history: list[ModelMessage], transcript: list[ModelMessage]) -> None:
+        """Install both views together at reduction, load, reset or rewind.
+
+        Deep-copy the archive once at this boundary: retained context objects
+        may subsequently be repaired/cleared, but recorded content must not change.
+        """
+        self._history_state = _HistoryState(
+            _VersionedHistory(history, self),
+            deepcopy(transcript),
+            sum(len(message.parts) for message in history),
+        )
         self.history_version += 1
 
     def set_history(self, history: list[ModelMessage]) -> None:
@@ -352,13 +399,15 @@ class SessionController:
                 # is still iterating it, dump_python can raise "list changed
                 # size during iteration" or write a torn snapshot. `list(...)`
                 # gives the orphan its own fixed-length copy that later
-                # appends can't touch, regardless of what `self._history`
+                # appends can't touch, regardless of what `self._history_state`
                 # points to afterward. A SHALLOW copy suffices: the
                 # ModelMessage objects inside are still shared, not
                 # deep-copied, but that's fine because turn code only ever
                 # appends new messages, never mutates ones already in the
                 # list.
-                history_snapshot = list(self.history)
+                state = self._history_state
+                history_snapshot = list(state.context)
+                transcript_snapshot = state.transcript(history_snapshot)
                 # Snapshot tasks and jobs at the SAME point as the history, into
                 # locals, rather than reading them live as save() arguments. The
                 # three must describe one generation: an abandoned/orphaned writer
@@ -376,6 +425,7 @@ class SessionController:
                     tasks_snapshot,
                     duration_seconds=self.duration_seconds + elapsed,
                     jobs=jobs_snapshot,
+                    transcript=transcript_snapshot,
                 )
                 self._last_persisted_version = version
                 self._written_generation = generation
@@ -553,6 +603,7 @@ class SessionController:
         sets an attribute on the recorder; the rest are attribute/property
         writes)."""
         history, usage, tasks, prev_duration, jobs = store.load()  # may raise
+        transcript = store.loaded_transcript
         # A session can outlive its /tmp scratchpad (reboot, systemd-tmpfiles
         # aging), leaving elided-pointer placeholders in the persisted history
         # that promise a read_file the model can no longer perform. Revalidate
@@ -601,7 +652,7 @@ class SessionController:
             ) from exc
         self.store = store
         self._repoint_stats(store.session_id)
-        self.history = history
+        self.restore_history(history, transcript)
         self.usage = usage
         # Per-request context size isn't persisted, and it belongs to the process
         # that made the request — a resumed/switched session hasn't sent one yet,
@@ -642,7 +693,7 @@ class SessionController:
 
     def reset(self) -> None:
         self.cancel_autoname()
-        self.history = []
+        self.restore_history([], [])
         self.usage = RunUsage()
         self.last_input_tokens = None
         self.duration_seconds = 0.0
@@ -692,7 +743,7 @@ class SessionController:
         self._repoint_stats(self.store.session_id)
         if model_id is not None:
             self.store.model = model_id
-        self.history = []
+        self.restore_history([], [])
         self.usage = RunUsage()
         self.last_input_tokens = None
         self.duration_seconds = 0.0
@@ -818,7 +869,7 @@ class SessionController:
         return model if isinstance(model, str) else getattr(model, "model_name", None)
 
     def _commit_reduction(self, reduction: Reduction) -> str:
-        self.history = reduction.messages
+        self.restore_history(reduction.messages, self.transcript)
         self.last_input_tokens = None
         # Absolute indices can move even when a replacement has the same length.
         # Invalidate BEFORE persisting so a crash cannot publish stale rewind points.

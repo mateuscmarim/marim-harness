@@ -370,7 +370,7 @@ async def test_orphaned_flush_persist_does_not_clobber_newer_write(tmp_path):
             self.release = threading.Event()
             self._blocked = False
 
-        def save(self, history, usage, tasks, *, duration_seconds, jobs) -> None:
+        def save(self, history, usage, tasks, *, duration_seconds, jobs, transcript) -> None:
             snapshot = list(history)
             if not self._blocked:
                 self._blocked = True

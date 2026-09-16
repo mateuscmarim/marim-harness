@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import warnings
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,7 +125,7 @@ def _header_fields(path: Path) -> dict | None:
     """Parse just the pre-``messages`` header of a session file, or None when
     the fast path can't apply (old layout, oversized header, unreadable file).
 
-    ``save`` writes the messages array *last* precisely so picker rows never
+    ``save`` writes the messages/transcript arrays after the header so picker rows never
     pay for parsing it — on a long session that array is multi-MB while the
     header is a few hundred bytes. The cut point is self-validating: the raw
     sequence ``, "messages":`` can't occur inside a JSON string (its quotes
@@ -147,6 +148,25 @@ def _header_fields(path: Path) -> dict | None:
     if isinstance(data, dict) and "message_count" in data:
         return data
     return None
+
+
+def decode_messages(raw: list, path: Path, session_id: str) -> list:
+    """Validate either saved context or transcript using the same media rules."""
+    if not isinstance(raw, list):
+        raise SessionLoadError(f"can't read session {path}: messages must be an array")
+    try:
+        # Media hydration and legacy repairs mutate dictionaries. Keep the
+        # caller's raw wire snapshot intact (HTTP returns cache refs, not bytes).
+        raw = rehydrate_images(deepcopy(raw), session_id)
+        if repaired := repair_masked_narrowed_returns(raw):
+            logger.debug("repaired %d masked typed tool-return(s) in %s", repaired, path)
+        return ModelMessagesTypeAdapter.validate_python(raw)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise SessionLoadError(
+            f"can't read session {path}: its messages don't match this "
+            f"version's schema ({type(exc).__name__}). Move the file aside "
+            f"or start a fresh session."
+        ) from exc
 
 
 @dataclass
@@ -221,6 +241,9 @@ class SessionStore:
         # thread id, prefixed with the provider). Per-session, never
         # inherited by `create` — a new marim session is a new thread.
         self.cli_thread_id = cli_thread_id
+        # Published only after a successful load, from that SAME JSON snapshot.
+        # Keep load()'s long-standing five-tuple contract for existing embedders.
+        self.loaded_transcript: list = []
 
     def save(
         self,
@@ -229,6 +252,8 @@ class SessionStore:
         tasks: list | None = None,
         duration_seconds: float | None = None,
         jobs: list | None = None,
+        *,
+        transcript: list | None = None,
     ) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -260,19 +285,23 @@ class SessionStore:
             # Cheap header field so SessionManager.list() can report the count
             # without parsing the (potentially multi-MB) messages array. Old
             # files predate it; list() falls back to len(messages) when absent.
-            "message_count": len(history),
+            "message_count": len(history if transcript is None else transcript),
         }
         # dump_python(mode="json") yields the same jsonable structure as
         # json.loads(dump_json(...)) but skips one full serialize+parse round
         # trip (we still do a single json.dumps below to write the file).
         messages_json = ModelMessagesTypeAdapter.dump_python(history, mode="json")
         messages_json = externalize_images(messages_json, self.session_id)
-        # Assign "messages" LAST so it serializes at the tail of the object: the
+        # Assign the large arrays AFTER the cheap metadata: the
         # picker fast path (_header_fields) cuts the file at `, "messages":` and
         # parses only the header before it. Insertion order is preserved by
-        # json.dumps, so keep this the final key — moving it earlier would push
+        # json.dumps, so keep both arrays here — moving them earlier would push
         # multi-MB of messages in front of the header and defeat the fast path.
         payload["messages"] = messages_json
+        if transcript is not None:
+            payload["transcript"] = externalize_images(
+                ModelMessagesTypeAdapter.dump_python(transcript, mode="json"), self.session_id
+            )
         # Serialize same-session saves across processes (TUI + headless, or two
         # runs) with a best-effort advisory lock. Without it, two writers racing
         # on the same session_id last-writer-wins on os.replace and a whole
@@ -327,6 +356,7 @@ class SessionStore:
         written before task/duration/jobs tracking simply have no key and load
         as defaults."""
         if not self.path.exists():
+            self.loaded_transcript = []
             return [], RunUsage(), [], None, []
         try:
             data = json.loads(self.path.read_text())
@@ -338,26 +368,15 @@ class SessionStore:
                 f"can't read session {self.path}: {exc}. Move the file aside or "
                 f"start a fresh session."
             ) from exc
-        raw_messages = rehydrate_images(data.get("messages", []), self.session_id)
-        # Sessions written before the typed-tool-return guard can hold a masked
-        # ToolSearchReturnPart, which no longer validates. Repair it here rather
-        # than letting the load fail — the alternative is telling the user to
-        # move a perfectly recoverable session aside.
-        if repaired := repair_masked_narrowed_returns(raw_messages):
-            logger.debug("repaired %d masked typed tool-return(s) in %s", repaired, self.path)
-        try:
-            messages = ModelMessagesTypeAdapter.validate_python(raw_messages)
-        except ValidationError as exc:
-            # Valid JSON whose messages no longer validate — a session written
-            # by a different marim/pydantic-ai version. Same contract as the
-            # corrupt-JSON branch above: fail loudly with an actionable path,
-            # not a raw pydantic traceback.
-            raise SessionLoadError(
-                f"can't read session {self.path}: its messages don't match this "
-                f"version's schema ({type(exc).__name__}). Move the file aside "
-                f"or start a fresh session."
-            ) from exc
+        messages = decode_messages(data.get("messages", []), self.path, self.session_id)
         messages = _sanitize_loaded(messages, self.path)
+        transcript = (
+            _sanitize_loaded(
+                decode_messages(data["transcript"], self.path, self.session_id), self.path
+            )
+            if "transcript" in data
+            else messages
+        )
         tok = data.get("tokens", {})
         # Old files predate the extra fields, so each defaults to 0 / {}.
         usage = RunUsage(
@@ -372,6 +391,7 @@ class SessionStore:
             tool_calls=tok.get("tool_calls", 0),
             details=tok.get("details") or {},
         )
+        self.loaded_transcript = transcript
         return (
             messages,
             usage,
