@@ -830,7 +830,9 @@ class HarnessApp(App):
         opening settings. An off/unset level stays silent — that's the default."""
         advisor = self.link.info.advisor_model_id
         if advisor is not None:
-            self.append_log(NoticeMessage(f"Advisor: {advisor} · /advisor"))
+            from ...advisor import selection_notice
+
+            self.append_log(NoticeMessage(selection_notice(advisor, self.link.info.model_id)))
         level = self.link.info.thinking_level_id
         if level is not None and level != "off":
             self.append_log(NoticeMessage(f"Thinking: {level} · /think"))

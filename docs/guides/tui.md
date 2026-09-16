@@ -203,7 +203,7 @@ known command reports an error instead of being sent to the model.
 | `/mode` | — | Set the approval mode: `/mode [ask|auto|plan]`; bare `/mode` cycles. |
 | `/trust` | — | Bare `/trust` shows the project trust decision (trusted/untrusted, and which layer decided) plus the gated project surface (hooks/MCP/skills/agents/plugins a grant would enable). `/trust on` grants it — persists the decision and hot-applies it (hooks reload, MCP config loads, LSP registry rebuilds). `/trust off` revokes it — persists the decision; already-running MCP servers and language servers stop only on restart. |
 | `/model` | — | Switch the model: `/model <id>` applies it directly; bare `/model` opens the model picker. Refused mid-turn. |
-| `/advisor` | — | Set the advisor model (a second model the agent can consult mid-task): `/advisor <id>`, `/advisor off`, or bare for a picker. Applies to the next consultation; persisted per session. |
+| `/advisor` | — | Set the advisor model (a second model the agent can consult mid-task): `/advisor <id>`, `/advisor off`, or bare for a picker. Applies to the next turn; persisted per session. |
 | `/think` | `/effort` | Set the thinking (reasoning-effort) level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`; bare opens a picker. Applies from the next turn; persisted per session. |
 | `/theme` | — | List color themes or switch: `/theme [name]`. The choice persists as the startup theme. |
 | `/remember` | — | `/remember <fact>` starts a turn that has the agent save the fact to persistent memory (it picks scope, type, and title). |
@@ -260,7 +260,14 @@ also works after a successful rewind you regret.
   `.env` default the next time it loads.
 - `/advisor` configures a second model the agent may consult mid-task for
   strategic guidance via its `advisor` tool. `off` disables it. Switchable
-  mid-turn; each change applies to the next consultation.
+  mid-turn; each change applies to the next turn. Active approval/retry rounds
+  retain their starting choice. The agent calls `advisor(prompt: str)` with its
+  question and current evidence; completed history is forwarded. Settings label
+  the call cap per model request (0 = unlimited), with a 1024-token minimum for
+  output. Provider errors propagate as normal turn failures. Runtime routing
+  resolves Marim's configured model for upstream local execution; explicit SDK
+  `Advisor` supports native/auto routing. Runtime advice is unavailable for
+  Claude/Codex CLI main executors, but both work as isolated advisor models.
 - `/think` sets the reasoning-effort level for the main model (and is
   inherited by sub-agents unless their spec overrides it). Levels:
   `off minimal low medium high xhigh`. Unsupported models ignore it. Under

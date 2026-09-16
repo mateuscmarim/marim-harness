@@ -10,8 +10,9 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic_ai import Agent, DeferredToolRequests
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai_harness import Advisor
 
-from ..advisor import ADVISOR_OFF, make_advisor
+from ..advisor import ADVISOR_OFF
 from ..config.external_cli import ExternalCliModel
 from ..mcp.discovered_instructions_capability import DiscoveredInstructionsCapability
 
@@ -51,6 +52,7 @@ from ..tools.provider import ToolGroups, ToolProvider
 from ..workspace.catalog import make_supports_images
 from ..workspace.scratchpad import ensure_scratchpad
 from ..workspace.snapshot import GitSnapshotter
+from .advisor_lifecycle import AdvisorLifecycle
 from .backend_jobs import CliJobPersistence, drain_task
 from .context import (
     actionable_error_note as _actionable_error_note,  # noqa: F401 — re-exported for tests
@@ -240,7 +242,7 @@ class HarnessConfig:
     subagent_tiers: SubagentTiers | None = None
     # Advisor: the DEFAULT advisor model (provider:slug, or any pydantic-ai
     # model string when no model_source is composed; None = no advisor), the
-    # output cap per consultation, and the per-turn call cap (None =
+    # output cap per consultation, and the per-model-request call cap (None =
     # unlimited). The session store's advisor_model overrides advisor_model
     # at runtime — see Harness._apply_saved_advisor.
     advisor_model: str | None = None
@@ -391,6 +393,7 @@ def build_collaborators(
             ProcessHistory(suggest_unknown_tool_retry),
             DiscoveredInstructionsCapability(mcp),
             session_output_limits(),
+            AdvisorLifecycle(),
             *cast("list[AbstractCapability]", cfg.capabilities),
         ],
     )
@@ -658,22 +661,19 @@ class Harness:
             get_thinking=lambda: self.thinking_level_id,
             output_type=cfg.output_type,
             usage_limits=cfg.usage_limits,
+            get_advisor=lambda: self.advisor_model_id,
+            build_advisor=self._build_turn_advisor,
         )
-        # Advisor: build ONE advise callable for the harness lifetime; which
-        # model it consults is re-resolved PER CALL through the closure over
-        # advisor_model_id, so /advisor switches apply to the next
-        # consultation with no rebuild. services.advise is the live on/off
-        # seam: the tool's prepare hook and the
-        # steering-instructions closure both read it per request.
+        # Configuration is persisted immediately; the controller snapshots it
+        # before its first await, then composes one upstream capability per turn.
         self._advisor_env_default = cfg.advisor_model
         self.advisor_model_id: str | None = None
-        self.deps.advisor_max_uses = cfg.advisor_max_uses
-        self._advise_fn = make_advisor(
-            self._build_advisor_model,
-            lambda: self.advisor_model_id,
-            cwd=str(deps.workspace.root),
-            max_tokens=cfg.advisor_max_tokens,
-        )
+        self._advisor_max_tokens = cfg.advisor_max_tokens
+        self._advisor_max_uses = cfg.advisor_max_uses
+        self._explicit_advisor = any(isinstance(cap, Advisor) for cap in cfg.capabilities)
+        # Upstream owns validation as well as execution. Constructing a string
+        # capability is lazy and does not create a provider client.
+        Advisor("test", max_tokens=cfg.advisor_max_tokens, max_uses=cfg.advisor_max_uses)
         self._apply_saved_advisor()
         self._apply_saved_thinking()
 
@@ -1149,13 +1149,28 @@ class Harness:
         exists (cross-provider qualified slugs, the same routing /model uses),
         else pydantic-ai's stock ``infer_model`` — so an embedded harness
         without a source can still pass standard model strings to
-        ``with_advisor``. Errors propagate to make_advisor, which folds them
-        into the advice-unavailable string."""
+        ``with_advisor``. Errors propagate to the normal turn error handling."""
         if self.model_source is not None:
             return self.model_source.build(model_id)
         from pydantic_ai.models import infer_model
 
         return infer_model(model_id)
+
+    def _build_turn_advisor(self, model_id: str | None) -> Advisor | None:
+        if model_id is None or isinstance(self.current_model, ExternalCliModel):
+            return None
+        if self._explicit_advisor:
+            raise ValueError("Choose either with_advisor or an explicit Advisor capability")
+        model = aux_model_for(
+            self._build_advisor_model(model_id), cwd=str(self.deps.workspace.root)
+        )
+        return Advisor(
+            model,
+            mode="local",
+            forward_history=True,
+            max_tokens=self._advisor_max_tokens,
+            max_uses=self._advisor_max_uses,
+        )
 
     def _resolve_advisor_id(self) -> str | None:
         """Session override → env/config default → None. The "off" sentinel is
@@ -1167,24 +1182,17 @@ class Harness:
         return saved or self._advisor_env_default
 
     def _apply_saved_advisor(self) -> None:
-        """Point the advisor seam at the active session's choice. Called at
+        """Read the advisor choice for the next turn. Called at
         build and after every session change (resume/new/switch), mirroring
         ``_apply_saved_model``."""
         self.advisor_model_id = self._resolve_advisor_id()
-        if self.deps.services is not None:
-            self.deps.services.advise = (
-                self._advise_fn if self.advisor_model_id is not None else None
-            )
 
     def set_advisor_model(self, model_id: str | None, *, persist: bool = True) -> None:
-        """Switch the advisor at runtime (None = disable). Unlike set_model
-        this is safe mid-turn: resolution is per-consultation, so a switch
-        simply applies to the next advisor call; the prepare hook and the
-        steering block follow ``services.advise`` on the next model request
-        (breaking the prompt cache once — inherent to a client-side advisor)."""
+        """Persist the advisor for the next turn (None = disable).
+
+        Active approval, retry and output-correction rounds retain their snapshot.
+        """
         self.advisor_model_id = model_id
-        if self.deps.services is not None:
-            self.deps.services.advise = self._advise_fn if model_id is not None else None
         if persist:
             self.session.set_advisor(model_id if model_id is not None else ADVISOR_OFF)
 

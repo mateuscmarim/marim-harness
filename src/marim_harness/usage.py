@@ -10,6 +10,7 @@ slug OpenRouter uses for model ids.
 
 import dataclasses
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 
 from pydantic_ai.usage import RunUsage
 
@@ -68,10 +69,30 @@ def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, 
     """The best available cost as ``(usd, is_exact)``. Prefers the provider's
     billed amount (``is_exact=True``) and falls back to the genai-prices estimate
     (``is_exact=False``); ``(None, False)`` when neither is available."""
+    if usage.details.get("advisor_mixed_cost"):
+        if usage.details.get("estimated_cost_unknown"):
+            return None, False
+        if usage.cost is not None:
+            return float(usage.cost), False
+        micro = usage.details.get("estimated_cost_micro_usd")
+        return (micro / 1_000_000 if micro is not None else None), False
     billed = exact_cost(usage)
     if billed is not None:
         return billed, True
     return estimate_cost(usage, model_ref), False
+
+
+def preserve_usage_cost(usage: RunUsage) -> None:
+    """Keep upstream's aggregate estimate in the existing integer detail bag.
+
+    The session format predates RunUsage.cost. Recording each banked delta
+    preserves its estimate without a schema change or executor-rate repricing.
+    Unknown contributions remain unknown after addition and session reload.
+    """
+    if usage.cost is None:
+        usage.details["estimated_cost_unknown"] = 1
+    else:
+        usage.details["estimated_cost_micro_usd"] = round(usage.cost * 1_000_000)
 
 
 def usage_summary(usage: RunUsage, model_ref: str | None) -> dict:
@@ -108,8 +129,11 @@ def usage_from_dump(data: dict) -> RunUsage:
     usage — a mispriced card must never break the render."""
     fields = {f.name for f in dataclasses.fields(RunUsage)}
     try:
-        return RunUsage(**{k: v for k, v in data.items() if k in fields})
-    except (TypeError, ValueError):
+        values = {k: v for k, v in data.items() if k in fields}
+        if values.get("cost") is not None:
+            values["cost"] = Decimal(str(values["cost"]))
+        return RunUsage(**values)
+    except (TypeError, ValueError, InvalidOperation):
         return RunUsage()
 
 

@@ -181,17 +181,19 @@ to avoid import cycles.
   deltas via `SessionController.add_usage`. Query via `load_overview()`/`load_models()`.
   Scoped to sessions base; best-effort never fails a turn. Opt-out via `stats=False` or
   `MARIM_STATS=0`. No backfill from old sessions; docs at `docs/sdk/sessions-and-state.md`.
-- `advisor.py` (root) — the advisor: an `advisor()` tool on the main agent
-  forwards the full transcript to a separately-configured model
-  (`MARIM_ADVISOR_MODEL`, any provider) and returns strategic guidance.
-  Live seam is `services.advise` (a pydantic-ai `prepare` hook omits the tool
-  when it's `None`, so `/advisor <model>`/`/advisor off` toggle without a
-  rebuild — at the cost of one prompt-cache break per toggle). Session
-  persistence mirrors `store.model` (`"off"` sentinel = explicitly disabled);
-  per-turn call cap `MARIM_ADVISOR_MAX_USES` rides on `Deps`. Main loop only
-  (sub-agents have tiering); the tool doesn't exist under the Codex-cli
-  main-loop provider (marim's tools don't apply there), but a Codex-cli
-  *advisor* model works via the `aux_model_for` clone.
+- Advisor — consultations use `pydantic_ai_harness.Advisor`; Marim owns model
+  selection, session persistence, UI, and turn-lifecycle integration. Runtime
+  advice uses the configured model object in local mode with completed-history
+  forwarding; the executor supplies the current question through `advisor(prompt)`.
+  `/advisor <model>` and `/advisor off` persist immediately and apply next turn,
+  without rebuilding the main Agent. A turn retains its selection through approval,
+  retry, and output-correction rounds. `MARIM_ADVISOR_MAX_USES` is per model request;
+  nested usage shares the parent's limits, and provider errors use normal turn
+  failure handling. The saved `"off"` sentinel overrides configuration defaults.
+  Claude/Codex CLI main executors do not run Marim's advisor tool; either may serve
+  as an advisor through an isolated read-only `aux_model_for` clone. Embedders can
+  compose upstream Advisor directly for its native/auto modes, but cannot combine
+  an explicit Advisor with the runtime advisor in the same turn.
 - `thinking.py` (root) — thinking level (reasoning effort): one ordered
   vocabulary (`off/minimal/low/medium/high/xhigh`) and three pure helpers —
   `parse_thinking_level` (env/CLI/`/think` coercion), `settings_for` (fold a

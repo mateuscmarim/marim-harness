@@ -251,7 +251,7 @@ def _advisor_widgets(env_cfg: ModelConfig) -> ComposeResult:
             classes="num",
         )
     with Horizontal(id="row-advisor-uses", classes="frow dep-row"):
-        yield Label("Advisor max uses/turn")
+        yield Label("Advisor calls per model request")
         yield Input(
             value=str(env_cfg.advisor_max_uses or 0),
             id="advisor-max-uses",

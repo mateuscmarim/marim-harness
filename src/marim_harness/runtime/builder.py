@@ -252,11 +252,12 @@ class HarnessBuilder:
         self, model: str, *, max_tokens: int = 2048, max_uses: int | None = None
     ) -> HarnessBuilder:
         """Configure an advisor: a model the main agent can consult mid-task
-        via the ``advisor`` tool (the full transcript is forwarded to it).
+        via ``advisor(prompt=...)`` with completed history forwarded upstream.
         ``model`` is a pydantic-ai model string, or a qualified
         ``provider:slug`` when a model_source override is composed.
         ``max_tokens`` caps each consultation's output; ``max_uses`` caps
-        calls per turn (None = unlimited)."""
+        calls per model request (None = unlimited). Output requires at least
+        1024 tokens. Selection changes apply on the next Marim turn."""
         return self.with_config_overrides(
             advisor_model=model,
             advisor_max_tokens=max_tokens,

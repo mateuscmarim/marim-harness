@@ -36,10 +36,10 @@ ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
     "subagent-req-limit": ("MARIM_SUBAGENT_REQUEST_LIMIT", "Sub-agent request limit"),
     "wake-depth-cap": ("MARIM_WAKE_DEPTH_CAP", "Autonomous wake turns"),
     "advisor-max-tokens": ("MARIM_ADVISOR_MAX_TOKENS", "Advisor max tokens"),
-    "advisor-max-uses": ("MARIM_ADVISOR_MAX_USES", "Advisor max uses/turn"),
+    "advisor-max-uses": ("MARIM_ADVISOR_MAX_USES", "Advisor calls per model request"),
 }
 # Integer inputs whose domain includes 0. The context budget's label promises
-# "0 = unbudgeted" (window-only); the advisor per-turn cap's label promises
+# "0 = unbudgeted" (window-only); the advisor per-request cap's label promises
 # "0 = unlimited" — both must accept it; every other integer field still
 # requires a positive value.
 ZERO_OK_INPUTS = frozenset({"ctx-input", "advisor-max-uses"})
@@ -113,8 +113,8 @@ FIELD_HELP: dict[str, str] = {
         "default to .env (new sessions); /advisor overrides per session, "
         "live. 'off' clears."
     ),
-    "advisor-max-tokens": "Token cap on advisor replies. Applies next launch.",
-    "advisor-max-uses": ("Advisor calls per turn; 0 = unlimited. Applies next launch."),
+    "advisor-max-tokens": "Token cap on advisor replies (minimum 1024). Applies next launch.",
+    "advisor-max-uses": ("Advisor calls per model request; 0 = unlimited. Applies next launch."),
     "thinking-change": (
         "Reasoning effort (off/minimal/low/medium/high/xhigh). Saves the "
         "default to .env (new sessions); /think overrides per session, live."
@@ -181,6 +181,8 @@ def parse_int_field(widget_id: str, raw: str) -> int | None:
     sentinel there); the rest require a positive integer. Pure — the caller turns
     None into the field-specific message from ``int_field_error``."""
     minimum = 0 if widget_id in ZERO_OK_INPUTS else 1
+    if widget_id == "advisor-max-tokens":
+        minimum = 1024
     try:
         value = int(raw.strip())
     except ValueError:
@@ -191,6 +193,8 @@ def parse_int_field(widget_id: str, raw: str) -> int | None:
 def int_field_error(widget_id: str) -> str:
     """The rejection message for a field ``parse_int_field`` returned None for."""
     label = ENV_INT_INPUTS[widget_id][1]
+    if widget_id == "advisor-max-tokens":
+        return f"{label} must be at least 1024."
     kind = "non-negative" if widget_id in ZERO_OK_INPUTS else "positive"
     return f"{label} must be a {kind} integer."
 

@@ -64,7 +64,10 @@ def _dump_usage(usage: object) -> dict:
         if isinstance(dumped, dict):
             return dumped
     if dataclasses.is_dataclass(usage) and not isinstance(usage, type):
-        return dataclasses.asdict(usage)
+        dumped = dataclasses.asdict(usage)
+        if dumped.get("cost") is not None:
+            dumped["cost"] = str(dumped["cost"])
+        return dumped
     return {}
 
 
