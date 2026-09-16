@@ -23,17 +23,19 @@ reverified before its requested PR and babysitting workflow.
 
 ## Handoff
 
-### Upstream advisor — port verification pending
+### Upstream advisor — port verified, PR authorized
 
 Branch `refactor/upstream-advisor` ports advisor-only commits from the original
-feature onto fb558301d2def1f3c90011dbeec0ec262c6ec888. The original feature passed
-31/31 checks at 35cae596, with report retained as historical evidence in
-`.specs/features/upstream-advisor/verification.md`; that PASS does not cover this
-port. Fresh builder evidence is in checks.md: Python 3.13.14 ordered lint, format,
-type, full offline suite (5104 passed, 7 skipped, 1 xfailed), build, base-only smoke,
-and all 57 named advisor cases passed. Independent full-diff verification remains
-pending. The user requested a PR and babysitting after adaptation/reverification.
-Nothing has been pushed by the builder. Existing master lessons are unchanged.
+feature onto fb558301d2def1f3c90011dbeec0ec262c6ec888. Independent full-diff
+verification at 96daf5b0 passed all 31 checks, with 57 named advisor cases rerun,
+build/base-only smoke passing, and completion validator exit 0. The report in
+`.specs/features/upstream-advisor/verification.md` covers this port, not merely the
+historical feature. Fresh full offline suites on Python 3.12 and 3.13 each passed
+5104 tests, with 7 skipped and 1 expected failure. Python 3.12 line/branch coverage
+is 95.4353%/89.6746%, above the unchanged quality thresholds. Existing master
+lessons, dependency pins, and unrelated original-workspace edits are unchanged.
+The user authorized publishing a PR and babysitting review plus CI; no merge is
+authorized. This acceptance-record commit precedes publication.
 
 ### Prior CLI lifecycle handoff (preserved)
 

@@ -299,3 +299,18 @@ S1–S4 are complete locally. Independent light-profile verification of the comp
 new base-to-HEAD diff remains required; the old PASS report does not settle it.
 The orchestrator owns complementary matrix results, independent verification,
 and the user-requested PR/babysitting. The builder did not push or open a PR.
+
+## Current port acceptance
+
+Independent full-diff verification at `96daf5b0` passed all 31 obligations and
+reran all 57 named cases, lint/format/type checks, build, and the isolated base-only
+smoke. The fresh report is `verification.md`; its completion validator exited 0
+with no warnings. Light-profile limitations remain explicit.
+
+The orchestrator additionally ran ordered lint, pyright, and the complete offline
+suite on Python 3.12.13 in a separate environment: 5104 passed, 7 skipped,
+1 xfailed, 22 warnings in 68.46s. Branch-enabled coverage measured 25277/26486
+lines (95.4353%) and 6835/7622 branches (89.6746%), meeting the existing quality
+thresholds without changing the baseline. No production/test changes followed
+these runs; the acceptance commit changes records only. Remote review and CI are
+still to be observed after the user-authorized PR publication; merge is not authorized.
