@@ -168,6 +168,8 @@ format or its explicit between-run reductions.
    history repairs too, since repairs can change part counts without new conversation.
 3. `session/store.py` (exists) writes context and transcript in one atomic session
    snapshot (door 1), using the existing lock, generation, and media conventions.
+   A typed paired-messages snapshot travels through the existing first `save`
+   argument; legacy list callers retain the same five-argument call shape and writer.
 4. `server/http.py` (exists) reads the transcript for `/history` (door 2);
    `interfaces/tui/link.py` and `interfaces/tui/app.py` (exist) expose it for replay.
 5. `session/checkpoints.py` and `session/ctrl.py` (existing) preserve the corresponding

@@ -35,7 +35,7 @@ from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
 from .compaction import Reduction, ReductionOptions, reduce_history
 from .history import slice_message_parts
-from .store import SessionInfo, SessionLoadError, SessionManager, SessionStore
+from .store import SessionInfo, SessionLoadError, SessionManager, SessionMessages, SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -420,12 +420,11 @@ class SessionController:
                 tasks_snapshot = self.deps.tasks.to_payload()
                 jobs_snapshot = self.deps.jobs.export_settled()
                 self.store.save(
-                    history_snapshot,
+                    SessionMessages(history_snapshot, transcript_snapshot),
                     self.usage,
                     tasks_snapshot,
                     duration_seconds=self.duration_seconds + elapsed,
                     jobs=jobs_snapshot,
-                    transcript=transcript_snapshot,
                 )
                 self._last_persisted_version = version
                 self._written_generation = generation

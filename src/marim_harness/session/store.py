@@ -12,6 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelMessagesTypeAdapter,
     ModelResponse,
     ToolCallPart,
@@ -198,6 +199,19 @@ def filter_sessions(sessions: list[SessionInfo], query: str) -> list[SessionInfo
     return [s for s in sessions if q in s.name.lower()]
 
 
+@dataclass(frozen=True)
+class SessionMessages:
+    """The paired message views in one committed session snapshot.
+
+    Accepted in save's existing history argument so legacy list callers keep
+    their five-argument API, while transcript-aware writers cannot pass one
+    view independently of the other. Both use the same atomic write path.
+    """
+
+    context: list[ModelMessage]
+    transcript: list[ModelMessage]
+
+
 class SessionStore:
     """Persists one named conversation to a JSON file, so it can be resumed
     across launches. Created by a :class:`SessionManager`, which decides the
@@ -247,14 +261,15 @@ class SessionStore:
 
     def save(
         self,
-        history: list,
+        history: list | SessionMessages,
         usage: RunUsage,
         tasks: list | None = None,
         duration_seconds: float | None = None,
         jobs: list | None = None,
-        *,
-        transcript: list | None = None,
     ) -> None:
+        transcript = None
+        if isinstance(history, SessionMessages):
+            history, transcript = history.context, history.transcript
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "id": self.session_id,

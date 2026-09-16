@@ -372,7 +372,7 @@ async def test_transcript_delayed_save(tmp_path, monkeypatch):
         if not entered.is_set():
             entered.set()
             assert release.wait(5)
-        snapshots.append((deepcopy(history), deepcopy(kwargs["transcript"])))
+        snapshots.append((deepcopy(history.context), deepcopy(history.transcript)))
         save(history, *args, **kwargs)
 
     monkeypatch.setattr(controller.store, "save", delayed)
@@ -728,3 +728,32 @@ async def test_http_media_refs_are_not_rehydrated(tmp_path, monkeypatch):
         response = await client.get(base + "/history", headers={"Authorization": "Bearer test"})
     assert response.status_code == 200
     assert response.json()["messages"] == raw_transcript
+
+
+def test_paired_save_preserves_legacy_contract(tmp_path):
+    from inspect import signature
+
+    controller = _controller(tmp_path)
+    store = controller.store
+    assert list(signature(store.save).parameters) == [
+        "history",
+        "usage",
+        "tasks",
+        "duration_seconds",
+        "jobs",
+    ]
+    from marim_harness.session.store import SessionMessages
+
+    context, transcript = _turn("context"), _turn("recorded conversation")
+    usage, tasks, jobs = RunUsage(input_tokens=11), [{"text": "task", "status": "pending"}], []
+    store.save(context, usage, tasks, 7.0, jobs)
+    legacy = json.loads(store.path.read_text())
+    assert "transcript" not in legacy
+    assert legacy["messages"][-1]["parts"][0]["content"] == "context"
+    store.save(SessionMessages(context, transcript), usage, tasks, 7.0, jobs)
+    saved = json.loads(store.path.read_text())
+    assert saved["messages"] == legacy["messages"]
+    assert saved["transcript"][-1]["parts"][0]["content"] == "recorded conversation"
+    assert saved["tokens"] == legacy["tokens"]
+    assert saved["tasks"] == tasks and saved["jobs"] == jobs
+    assert saved["duration_seconds"] == 7.0

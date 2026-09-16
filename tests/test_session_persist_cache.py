@@ -261,12 +261,12 @@ def test_persist_hands_store_a_snapshot_not_the_live_history(tmp_path):
     original_save = store.save
 
     def racing_save(history, *args, **kwargs):
-        received["is_live_object"] = history is ctrl.history
-        received["len_at_call"] = len(history)
+        received["is_live_object"] = history.context is ctrl.history
+        received["len_at_call"] = len(history.context)
         # A subsequent turn appending to the live history while this "save"
         # is mid-serialization — exactly what the orphaned worker races with.
         ctrl.history.append(_msg("appended-during-save"))
-        received["len_after_concurrent_append"] = len(history)
+        received["len_after_concurrent_append"] = len(history.context)
         return original_save(history, *args, **kwargs)
 
     store.save = racing_save

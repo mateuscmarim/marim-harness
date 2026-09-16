@@ -116,3 +116,13 @@ One builder: estimated reading under 600 KB / 4 = 150k token budget before code.
 Validation on 2026-09-16: ruff lint and format checks pass; pyright reports zero errors; full pytest passes (5128 passed, 9 skipped, 1 xfailed; coverage 95.47%); uv build produces sdist and wheel. The existing checkpoint/store test doubles were updated for the extended interfaces without weakening their assertions.
 
 Focused red/green evidence: aggregate CLI measurement (15 initial failures); missing transcript API (reduction cases); reset/switch retention failures; restart losing archive; post-summary append lost at normalization; tool-only checkpoint archive truncation; normalized model-context rewind; HTTP transcript pagination and malformed handling; cached media wire-ref mutation and nested malformed-parts error. All were rerun green.
+
+### Quality-gate follow-up
+
+PR 151 exposed a missed CI-specific check: normal lint passed, but the quality gate's explicitly selected PLR0913 rule counted the added sixth `SessionStore.save` argument, increasing source violations from 57 to 58. The fix passes a typed `SessionMessages(context, transcript)` pair through the existing first argument, retaining the five-argument legacy list call and the same atomic writer. No suppression, threshold change, untyped argument hiding, or assertion weakening was used.
+
+Additional compatibility proof for the existing persistence obligations: `uv run pytest --no-cov tests/test_session_transcript.py::test_paired_save_preserves_legacy_contract`. It failed before the fix on the extra parameter and now passes, asserting the exact five-argument signature, a legacy five-positional-argument save, and the paired save's equivalent context and metadata plus transcript.
+
+The exact quality rule selection was rerun: `uv run ruff check --select C901,PLR0911,PLR0912,PLR0913,PLR0915 --no-cache --output-format=json src tests`. Against an exported `fb558301` baseline, normalized by relative path, rule, and message, source diagnostics are 57 → 57 and source-plus-test diagnostics are 91 → 91, with no new diagnostics. Ruff exits 1 for these pre-existing diagnostics; the comparison reports zero added violations.
+
+Final source validation after the fix: normal ruff lint and format check pass, pyright reports zero errors, and full pytest passes (5129 passed, 9 skipped, 1 xfailed; coverage 95.47%). C1–C24 proofs remain intact; the focused transcript file now has 58 passing cases. Independent scoped re-verification is delegated to the orchestrator after this implementation commit.
