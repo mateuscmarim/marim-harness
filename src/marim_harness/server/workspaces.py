@@ -50,6 +50,10 @@ class WorkspaceRegistry:
         self.workspaces_root = workspaces_root
         self._records: dict[str, WorkspaceRecord] = self._load()
 
+    @property
+    def state_dir(self) -> Path:
+        return self._file.parent
+
     def _load(self) -> dict[str, WorkspaceRecord]:
         if not self._file.exists():
             return {}

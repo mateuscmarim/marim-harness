@@ -170,6 +170,66 @@ Codes used: `unauthorized` (401), `bad_request` (400), `not_found` (404),
 `busy` (409), `claimed` (409), `not_running` (409), `queue_full` (429),
 `host_closed` (404), `unreadable` (500), `trust_store_error` (500).
 
+## Safe mutation retries (opt-in)
+
+Every HTTP response advertises `X-Marim-Idempotency: v1`. Clients can learn this
+passively from an ordinary read; no extra capability request is required. After
+observing it, use `/v1/idempotent/workspaces...` in place of `/v1/workspaces...`
+for **any POST or DELETE** in the endpoint table. The protected aliases use the
+same body, query parameters, response JSON and status codes as the original
+routes, with one mandatory request header:
+
+```http
+Idempotency-Key: 4ea1b17f-6cdf-4e71-9b62-9db82d4f4e5d
+```
+
+Use a fresh canonical lowercase UUID for each logical operation. Retry that
+operation using exactly the same key, method, target, query bytes and body bytes.
+All keys share one daemon-wide namespace; changing any of these inputs while
+reusing a key returns `409 idempotency_conflict` without another effect. Missing,
+malformed or repeated key headers return `400 bad_request`. Authentication is
+checked before reading the request body or consulting the operation ledger,
+including on replay; token rotation does not invalidate recorded operations.
+
+The server commits a claim before invoking the handler, then records its status,
+body and relevant response headers durably before sending the result. Both
+successful responses and ordinary handler rejections are recorded. A recorded
+response carries `Idempotency-Status: completed` and echoes `Idempotency-Key`.
+Repeating a completed request returns its recorded result with those headers and
+`Idempotency-Replayed: true`, even if its session or workspace has since been
+deleted. The response describes the original outcome, not the current state.
+Pre-claim failures, authentication failures and unresolved claims never carry
+`Idempotency-Status: completed`; a later authentication rejection alone cannot
+settle an earlier lost response. A recorded server error is still an error:
+`completed` says its outcome is recorded, not that the requested effect succeeded.
+
+Additional standard-envelope errors are:
+
+| Status / code | Meaning |
+| --- | --- |
+| `503 idempotency_in_progress` | The same operation is executing in this app instance. `Retry-After: 1`; retry with the same key. |
+| `503 idempotency_unknown` | A claim exists without a durable response, following interruption, restart, another app instance, or a failure to save the result. It will **never execute again** with that key. Inspect server state before deciding on another logical operation. |
+| `503 idempotency_unavailable` | The ledger could not be consulted or its claim committed. This request did not start the handler. A retry must still use the same key. |
+
+Clients should bound automatic retries (for example, two retries on transport
+errors or HTTP 5xx), retain uncertainty when a durable result is unavailable, and
+never switch a protected request to the original route. The distinct alias is
+intentional: an older server that ignores unknown headers returns 404 for the
+protected path instead of executing a supposedly protected mutation. Clients
+that have not observed the capability should retain conservative legacy behavior.
+The original routes retain their existing semantics and do not deduplicate keys.
+
+The ledger lives in `<state-dir>/idempotency/operations.sqlite3`, with directory
+permissions 0700 and database permissions 0600. It stores request fingerprints
+and response data, never raw request bodies or bearer tokens. Responses are
+capped at 1 MiB; a larger result remains unresolved. Records are retained without
+automatic expiry or pruning, including unresolved claims. Back up the ledger
+with server state; deleting it removes retry protection for previously used keys.
+This is not an offline mutation queue or an exactly-once guarantee: a process
+can stop between applying an effect and recording its response. Keeping that
+claim unresolved prevents a retry from repeating an effect that may have occurred.
+WebSocket and streaming read behavior are unchanged.
+
 ## Endpoint summary
 
 | Method | Path                                              | Purpose                            |
