@@ -109,7 +109,7 @@ Proof: `uv run pytest --no-cov tests/test_session_transcript.py::test_checkpoint
 
 One builder: estimated reading under 600 KB / 4 = 150k token budget before code. Final measured changed source/test files total 555,666 bytes / 4 = 138,917 tokens; no slice handoff needed.
 
-- **Boundary:** C1–C24 closed in the implementation commit accompanying this artifact. All 57 parameterized/focused cases in `tests/test_session_transcript.py` passed, including every named proof selector. Independent verification is still pending.
+- **Boundary:** C1–C24 closed in implementation commit `f1a1aea9`. All 57 parameterized/focused cases in `tests/test_session_transcript.py` passed, including every named proof selector. Independent light-profile verification passed at that commit; see `verification.md` for per-check evidence and limits.
 - **Settled mid-build:** Added optional context_tokens for remote gauge parity and context_parts for normalization-stable checkpoint rewind. Preserved public upstream reduction and documented why result.new_messages alone cannot cover failure capture/approval rollback.
 - **Abandoned:** A message-count archive cursor failed the actual post-summary Harness turn test because upstream merges adjacent request envelopes; replaced with part-position slicing and explicit rebasing for context-only repair.
 

@@ -13,10 +13,10 @@ or substitute archived token estimates for current context measurements.
 ## Handoff
 
 **Feature**: preserve-session-transcript
-**Where**: C1–C24 builder proofs passed; independent verification pending.
-**In progress**: `.specs/features/preserve-session-transcript/checks.md` carries evidence.
-**Next step**: orchestrator dispatches an independent Verifier over `fb558301..HEAD`.
-**Blockers**: none for local build; publication belongs to the orchestrator.
+**Where**: C1–C24 independently verified PASS at `f1a1aea9` (light profile).
+**In progress**: local implementation and verification complete; PR publication and CI monitoring next.
+**Next step**: publish `fix/preserve-session-transcript` and babysit CI/review without merging.
+**Blockers**: no local correctness findings; review-bot currently rejects jobs with `backend_rejected` (observed separately on cancellation PR #149).
 **Uncommitted**: none after the accompanying implementation commit.
 **Branch**: `fix/preserve-session-transcript`
 
