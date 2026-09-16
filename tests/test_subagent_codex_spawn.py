@@ -6,7 +6,14 @@ import asyncio
 from pathlib import Path
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    PartDeltaEvent,
+    TextPart,
+    TextPartDelta,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.codex.env import CodexUnavailable
@@ -262,8 +269,9 @@ async def test_run_codex_resumes_a_persisted_thread(tmp_path: Path, monkeypatch)
     assert not any(r["method"] == "thread/start" for r in log)
 
 
+@pytest.mark.parametrize("first_delta_delay", [0, 0.5])
 async def test_cancelled_spawn_checkpoints_the_thread_id_before_the_turn_completes(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, first_delta_delay: float
 ):
     """Important #3 (final review): the sidecar must carry `codex_thread_id`
     as soon as the thread exists, not only once a turn finishes — otherwise a
@@ -279,6 +287,7 @@ async def test_cancelled_spawn_checkpoints_the_thread_id_before_the_turn_complet
             "resumable": ["thread-1"],
             "turns": [
                 [
+                    {"sleep": first_delta_delay},
                     {
                         "notify": "item/agentMessage/delta",
                         "params": {"itemId": "m1", "delta": "partial"},
@@ -292,10 +301,29 @@ async def test_cancelled_spawn_checkpoints_the_thread_id_before_the_turn_complet
     _write_codex_agent(tmp_path)
     store = _session_store(tmp_path)
     harness = _make_harness(_dummy_model(), _make_deps(tmp_path), store=store)
+    partial_received = asyncio.Event()
+
+    async def on_event(stream_id, event, usage):
+        if (
+            isinstance(event, PartDeltaEvent)
+            and isinstance(event.delta, TextPartDelta)
+            and stream_id == "s1"
+            and event.delta.content_delta == "partial"
+        ):
+            partial_received.set()
+
+    harness.deps.ui.on_subagent_event = on_event
 
     task = asyncio.create_task(harness.subagents.run("codex-worker", "go", stream_id="s1"))
-    await asyncio.sleep(0.3)
-    task.cancel()
+    try:
+        # Cancel mid-turn only after the intended partial response is consumed.
+        # A fixed delay can expire before startup/streaming on a busy CI runner;
+        # waiting for the event (not the sidecar) still exposes checkpoint bugs.
+        await asyncio.wait_for(partial_received.wait(), timeout=10)
+        assert not task.done()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     with pytest.raises(asyncio.CancelledError):
         await task
 
