@@ -8,6 +8,17 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-16
+
+### Added
+
+- **Safe retries for `marim serve` mutations.** Compatible clients can reuse
+  an operation ID on protected routes to recover a lost response without
+  repeating a message, approval, or configuration change. Durable claims and
+  saved responses survive daemon restarts; unresolved claims prevent duplicate
+  execution. Every attempt requires authentication, and ledger I/O runs off the
+  event loop. Existing clients and routes keep their current behavior.
+
 ### Changed
 
 - **Dynamic workflows use Pydantic AI Harness.** Scripts now use
