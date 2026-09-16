@@ -49,7 +49,9 @@ below the 150k budget. Author: root. Independent verifier required after commit.
 
 - **Boundary:** C1-C2 closed: both delayed cases reproduced the CI failures before
   the readiness fix; all four cases and 143 Claude/Codex model tests pass after it.
-  Ruff lint/format and pyright pass. Full Python 3.10 suite is running separately.
+  Ruff lint/format and pyright pass. Full Python 3.10 suite at a67ce6f1:
+  5,074 passed, 9 skipped, 1 xfailed, 95.42% coverage. Wheel/sdist build passes.
+  Independent light-profile verification passes in verification.md.
 - **Settled mid-build:** no product changes or assertion weakening; wait for the
   model's turn handle and fake-server log, bounded at five seconds.
 - **Abandoned:** fixed startup sleeps; elapsed time does not prove turn readiness.
