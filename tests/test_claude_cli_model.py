@@ -983,6 +983,39 @@ async def test_request_cancel_interrupts_the_turn(tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_cancel_before_first_stream_object_interrupts_the_open_turn(tmp_path, monkeypatch):
+    """Cancellation may land after ``send_turn`` but before its first object.
+
+    ``request()`` / ``request_stream()`` have not entered their cleanup scopes
+    then, so ``_open_turn`` itself must stop the Claude-side turn.
+    """
+    model = _model(tmp_path, monkeypatch, {"turns": [[{"await_interrupt": True}]]})
+    first_read = asyncio.Event()
+    never = asyncio.Event()
+
+    async def wait_before_first_object(process, handle):
+        first_read.set()
+        await never.wait()
+
+    monkeypatch.setattr(claude_cli_model, "next_turn_object", wait_before_first_object)
+    task = asyncio.create_task(model.request(_user("hi"), None, ModelRequestParameters()))
+    await asyncio.wait_for(first_read.wait(), 3.0)
+    task.cancel()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)
+        assert not model._process.turn_open
+        assert any(
+            message.get("type") == "control_request"
+            and message["request"].get("subtype") == "interrupt"
+            for message in read_claude_log(tmp_path)
+        )
+    finally:
+        await model.aclose()
+
+
+@pytest.mark.anyio
 async def test_steer_folds_into_the_open_turn(tmp_path, monkeypatch):
     model = _model(tmp_path, monkeypatch, {"turns": [[{"text": "a"}, {"await_user": True}]]})
     assert model.steer("early") is False  # no turn open yet

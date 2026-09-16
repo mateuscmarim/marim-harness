@@ -744,6 +744,21 @@ def _turn_stream(
     return cast("AsyncGenerator[dict, None]", turn_objects(process, handle, first))
 
 
+async def _first_turn_object(process: ClaudeProcess, handle: TurnHandle) -> dict:
+    """Read a turn's first object without orphaning a pre-stream cancellation.
+
+    ``request()`` and ``request_stream()`` install their cleanup handlers only
+    after ``_start_turn()`` returns. A cancellation while that startup waits for
+    its first object must therefore interrupt the CLI turn here; otherwise the
+    next mobile request inherits a Claude turn Marim already declared stopped.
+    """
+    try:
+        return await next_turn_object(process, handle)
+    except asyncio.CancelledError:
+        await process.interrupt(handle)
+        raise
+
+
 def _log_steer_failure(task: asyncio.Task) -> None:
     """Retrieve a fire-and-forget steer's exception so asyncio does not report
     it as never-retrieved, and leave a trace: the send can fail (the process
@@ -1010,7 +1025,7 @@ class ClaudeCliModel(ExternalCliModel):
         # nothing buffered — a finished-jobs digest — is sent like any other.)
         buffered = process.take_unsolicited() if _is_autonomous(messages) else None
         if buffered is not None:
-            return process, buffered, await next_turn_object(process, buffered)
+            return process, buffered, await _first_turn_object(process, buffered)
         await self._sync_controls(process, model_settings)
         content = claude_input(prompt_content(messages, history=not resumed))
         logger.debug(
@@ -1019,7 +1034,7 @@ class ClaudeCliModel(ExternalCliModel):
             not resumed,
         )
         handle = await process.send_turn(content)
-        first = await next_turn_object(process, handle)
+        first = await _first_turn_object(process, handle)
         if resumed and _is_missing_session(first):
             logger.warning(
                 "claude session %s is gone; starting a fresh one from the flattened history",
@@ -1029,7 +1044,7 @@ class ClaudeCliModel(ExternalCliModel):
             process = await self._spawn(resume_id=None, system=extract_system(messages) or None)
             await self._sync_controls(process, model_settings)
             handle = await process.send_turn(claude_input(prompt_content(messages, history=True)))
-            first = await next_turn_object(process, handle)
+            first = await _first_turn_object(process, handle)
         return process, handle, first
 
     # --- control sync -------------------------------------------------------------
