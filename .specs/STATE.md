@@ -13,10 +13,10 @@ or substitute archived token estimates for current context measurements.
 ## Handoff
 
 **Feature**: preserve-session-transcript
-**Where**: C1–C24 independently verified PASS at `f1a1aea9` (light profile).
-**In progress**: local implementation and verification complete; PR publication and CI monitoring next.
-**Next step**: publish `fix/preserve-session-transcript` and babysit CI/review without merging.
-**Blockers**: no local correctness findings; review-bot currently rejects jobs with `backend_rejected` (observed separately on cancellation PR #149).
+**Where**: C1–C24 independently reverified PASS at `ad0b7b62` (light profile, scoped round 2).
+**In progress**: PR #151; CI-specific complexity regression fixed with typed paired snapshots, full suite 5129 passed, source complexity restored to 57.
+**Next step**: push the verified follow-up and babysit new-head CI/review without merging.
+**Blockers**: no remaining local findings; review-bot rejects jobs with non-retryable `backend_rejected` on both PR #149 and PR #151.
 **Uncommitted**: none after the accompanying implementation commit.
 **Branch**: `fix/preserve-session-transcript`
 

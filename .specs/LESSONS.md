@@ -32,6 +32,12 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - evidence: verification.md: C11 round-1 literal-search gap (tests)
 - last seen: 2026-09-15T08:17:50Z
 
+### L-004 - Check the ratchet force-selected complexity rules when adding parameters; default Ruff lint does not enable them.
+- signal: `gate_fail` · recurrence: 1 feature(s) · scope: `quality-gate` · harmful: 0
+- features: preserve-session-transcript
+- evidence: verification.md: Resolved CI finding and fix evidence, PR151 run4572/job10390 (quality-gate)
+- last seen: 2026-09-16T23:45:01Z
+
 ## Quarantined (failed when applied - ignore)
 
 A confirmed lesson that recurred alongside failure. Kept for the maintainer to review.
