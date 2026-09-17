@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, TextPart
 from pydantic_ai.models import ModelRequestParameters, StreamedResponse
 from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer
-from pydantic_ai.usage import RequestUsage
+from pydantic_ai.usage import RequestUsage, RunUsage
 
 from ..codex.approvals import ApprovalBroker, UiSeams, policy_for, sandbox_for, sandbox_mode_for
 from ..codex.collab import ChildSinks, ChildStreams, CollabRouter, LedgerOnly, Routed, router_for
@@ -54,7 +54,7 @@ from ..codex.server import (
 )
 from ..codex.transcript import activity_events
 from ..codex.translate import ActivityEnd, ActivityStart, Notice, TextDelta, ThinkingDelta
-from ..codex.turn import TurnState, finish_turn, turn_events
+from ..codex.turn import TurnState, finish_turn, record_turn_usage, turn_events
 from ..runtime.permissions import Mode
 from .cli_input import attachment_content, codex_input, extract_system, prompt_content
 from .context_report import CONTEXT_REPORT_KEY, ContextReport
@@ -135,6 +135,9 @@ class CodexCliModel(ExternalCliModel):
         self._model_id = model_id or None
         self.ephemeral = ephemeral
         self.context_invalidated = False
+        # The model adapter can fail before returning any ModelResponse. Keep
+        # provider-observed spend available to embedders on that path too.
+        self.observed_usage = RunUsage()
         self._context_window: int | None = None
         # Injected in tests; production models share the process-wide server
         # (one `codex app-server` per marim process, spec §Supervisor).
@@ -470,6 +473,7 @@ class CodexCliModel(ExternalCliModel):
                 # child's spawn card is the `▸ spawn_agent` line above.
         finally:
             self._seal_children()
+            self._record_usage(handle, state)
         await self._refresh_quota(server)
         usage = finish_turn(handle, state)
         return ModelResponse(
@@ -509,10 +513,15 @@ class CodexCliModel(ExternalCliModel):
         try:
             yield stream
         finally:
+            self._record_usage(handle, state)
             if handle.current_turn_id is not None:  # abandoned mid-turn
                 with contextlib.suppress(Exception):
                     await server.interrupt(handle)
                 handle.current_turn_id = None
+
+    def _record_usage(self, handle: ThreadHandle, state: TurnState) -> None:
+        self.observed_usage.incr(record_turn_usage(handle, state))
+        self.observed_usage.requests += 1
 
     def _seal_children(self) -> list[LedgerOnly]:
         """End of a turn: the ledger-only returns for the children still

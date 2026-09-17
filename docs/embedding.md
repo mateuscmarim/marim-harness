@@ -119,6 +119,13 @@ such as `project_doc_max_bytes=0` for an untrusted repository or the sandbox
 implementation required by a container. Marim's extension-isolation overrides
 remain applied afterward. Never derive these overrides from model or PR content.
 
+`CodexCliModel.observed_usage` is a cumulative provider ledger, including tokens
+reported before failure or cancellation. A request that raises before returning
+a model response cannot contribute those tokens to Pydantic AI's normal response
+ledger. An embedder that owns a fresh Codex model per attempt can use
+`observed_usage` for attempt accounting; do not add it to response usage, which
+would count successful turns twice. Unreported provider usage cannot be recovered.
+
 ### Session claims
 
 A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))
