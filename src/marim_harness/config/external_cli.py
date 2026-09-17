@@ -3,8 +3,8 @@
 ``ClaudeCliModel`` (claude-cli) and ``CodexCliModel`` (codex-cli) both make
 marim a *launcher*: the external process runs its own tool loop and marim
 receives a single text-only ``ModelResponse`` plus out-of-band activity. The
-harness binds the same late seams on either at three call sites (bootstrap,
-``Harness.bind_ui``, ``Harness.set_model``) through ``Harness.wire_cli_model``,
+harness binds the same late seams on either during builder construction and
+UI/model/session changes through ``Harness.wire_cli_model``,
 and ``session.ctrl.aux_model_for`` swaps either for an ``ephemeral_clone``
 before building the aux (titler/summarizer) agents. Keeping those seams on one
 base means a new external CLI never grows a second isinstance ladder.
