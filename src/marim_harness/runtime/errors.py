@@ -11,11 +11,15 @@ the model-actionable note in :mod:`marim_harness.runtime.harness`.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
+import os
 import re
 from pathlib import Path
+from uuid import uuid4
 
-from ..atomic_io import atomic_write_text
+logger = logging.getLogger(__name__)
 
 # The screen message for an unrecoverable context overflow. Deliberately
 # provider-agnostic (the `local` server, OpenRouter, or a direct API can all
@@ -401,14 +405,73 @@ def provider_error_payload(exc: BaseException) -> dict | None:
     }
 
 
+def _open_dump_directory(workspace_root: Path) -> int:
+    """Pin the dump directory without following any untrusted path components."""
+    root = workspace_root.absolute()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    directory = os.open(root.anchor, flags)
+    try:
+        for component in root.parts[1:]:
+            child = os.open(component, flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(".marim", mode=0o700, dir_fd=directory)
+        return os.open(".marim", flags, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def _write_provider_dump(directory: int, text: str) -> None:
+    """Atomically replace the leaf using only the already-open directory.
+
+    atomic_write_text uses path-based temporary files and replacement, so it
+    cannot safely target a workspace-controlled directory. Both ends of this
+    rename stay anchored even if .marim is replaced by a symlink mid-write.
+    Replacing a leaf symlink replaces the link itself, never its target.
+    """
+    name = "last-provider-error.json"
+    temporary = f".{name}.{uuid4().hex}.tmp"
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+        dir_fd=directory,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        with contextlib.suppress(OSError):
+            os.fsync(directory)
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary, dir_fd=directory)
+
+
 def dump_provider_error(workspace_root: Path, exc: BaseException) -> Path | None:
     """Write the full provider error payload to ``.marim/last-provider-error.json``
     so the complete upstream detail survives the truncated on-screen view.
-    Returns the path written, or None when ``exc`` isn't a provider error."""
+    Returns the path written, or None for non-provider errors or failed writes.
+    This diagnostic is best-effort: unsupported no-follow filesystem operations
+    fail closed rather than risking a write outside an embedded workspace.
+    """
     payload = provider_error_payload(exc)
     if payload is None:
         return None
     out = Path(workspace_root) / ".marim" / "last-provider-error.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(out, json.dumps(payload, indent=2, default=str))
+    try:
+        text = json.dumps(payload, indent=2, default=str)
+        directory = _open_dump_directory(Path(workspace_root))
+        try:
+            _write_provider_dump(directory, text)
+        finally:
+            os.close(directory)
+    except Exception as dump_exc:
+        # Do not let diagnostic I/O replace the provider failure, or include a
+        # raw exception message which may contain paths or provider payloads.
+        logger.debug("provider error dump skipped (%s)", type(dump_exc).__name__)
+        return None
     return out
