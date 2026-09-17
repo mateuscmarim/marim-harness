@@ -8,6 +8,29 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-17
+
+### Added
+
+- **Trusted Codex embedding configuration.** Embedders can supply explicit,
+  validated CLI configuration overrides without relying on project configuration.
+
+### Fixed
+
+- **External CLI models start in the configured SDK workspace.** The builder
+  binds the workspace, live permission mode, and session hooks before returning,
+  so the first turn works without attaching a UI or manually wiring the model.
+- **Claude structured output stays separate from progress.** Native JSON Schema
+  output uses the terminal payload for validation, preserves tool callbacks, and
+  forwards validation feedback on retries. Schema changes and model switches keep
+  the CLI process configured for the requested output, including plain text.
+- **Codex structured output works in embedded turns.** Output schemas and
+  corrective feedback reach the CLI, progress text stays out of validated output,
+  and failed turns retain their usage for embedding callers.
+- **Provider diagnostic writes cannot follow workspace symlinks.** Atomic writes
+  use no-follow directory descriptors, and diagnostic failures preserve the
+  original provider error.
+
 ## [0.11.0] - 2026-09-16
 
 ### Added
