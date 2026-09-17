@@ -326,8 +326,8 @@ class SessionView:
         # already does.
         await log.mount(UserMessage(strip_turn_context(text)))
 
-    async def _replay_ask_user(self, part, log, tool_widgets) -> None:
-        """ToolCallPart(ask_user) arm of ``replay_history``.
+    async def _replay_standalone_tool(self, part, log, tool_widgets) -> None:
+        """Conversation-facing tool arm of ``replay_history``.
 
         Mirror the live path (intercept_tool): ask_user mounts standalone and
         breaks the run, so the question + answer aren't buried in a collapsed
@@ -403,10 +403,10 @@ class SessionView:
                         group = None
                         solo = None
                         await log.mount(SummaryWidget(body))
-                elif isinstance(part, ToolCallPart) and part.tool_name == "ask_user":
+                elif isinstance(part, ToolCallPart) and part.tool_name in {"ask_user", "advisor"}:
                     group = None
                     solo = None
-                    await self._replay_ask_user(part, log, tool_widgets)
+                    await self._replay_standalone_tool(part, log, tool_widgets)
                 else:
                     group, solo = await self._replay_parts(
                         part,

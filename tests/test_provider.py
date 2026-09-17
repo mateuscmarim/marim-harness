@@ -28,11 +28,7 @@ def _tool_names(agent: Agent) -> set[str]:
         names.update(tool.name for tool in info.function_tools)
         return ModelResponse(parts=[TextPart("done")])
 
-    async def advise(messages):
-        return "unused"
-
     deps = _make_deps(Path.cwd())
-    deps.services.advise = advise  # expose the optional advisor for inventory checks
     with agent.override(model=FunctionModel(observe)):
         agent.run_sync("List available tools", deps=deps)
     return names
@@ -1107,7 +1103,6 @@ def test_bare_groups_register_only_file_tools():
         "grep",
         "write_file",
         "edit_file",
-        "advisor",
     }
 
 

@@ -78,7 +78,6 @@ def test_bare_build_defaults(tmp_path: Path):
         "grep",
         "write_file",
         "edit_file",
-        "advisor",
     }
     assert h.deps.workspace.mode is Mode.auto
     assert h.session.store is None  # in-memory: nothing hits XDG

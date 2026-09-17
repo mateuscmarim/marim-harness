@@ -8,6 +8,17 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Advisor uses Pydantic AI Harness.** Calls now require `advisor(prompt=...)`;
+  completed history is forwarded and nested usage shares turn limits. The use
+  cap is per model request, output limits require at least 1024 tokens, model
+  switches apply next turn, and provider errors propagate. Runtime routing
+  preserves Marim's configured clients through local execution; SDK imports
+  directly alias upstream Advisor for one release, with upstream defaults and
+  options. Historical advisor messages remain readable. Advisor uses the existing
+  base Harness dependency; workflows/Monty remain optional.
+
 ## [0.11.1] - 2026-09-17
 
 ### Added

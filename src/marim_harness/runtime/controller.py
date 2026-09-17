@@ -20,6 +20,7 @@ from pydantic_ai import DeferredToolRequests, StructuredDict, capture_run_messag
 from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_ai_harness import Advisor
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -35,10 +36,14 @@ if TYPE_CHECKING:
     from ..session.checkpoints import CheckpointManager
     from .deps import Deps, HarnessAgent
 
+from ..advisor import ADVISOR_GUIDANCE
 from ..compaction import estimate_tokens, last_request_input_tokens
 from ..config.context_report import current_context_report
+from ..config.external_cli import ExternalCliModel
 from ..thinking import settings_for
 from ..tools.names import LSP_TOOLS
+from ..usage import preserve_usage_cost
+from .backend_jobs import drain_task
 from .cli_activity import expand_cli_activity
 from .context import (
     actionable_error_note as _actionable_error_note,
@@ -388,6 +393,8 @@ class TurnController:
         lsp_toolset: FunctionToolset[Deps] | None = None,
         output_type: Any = None,
         usage_limits: UsageLimits | None = None,
+        get_advisor: Callable[[], str | None] = lambda: None,
+        build_advisor: Callable[[str | None], Advisor | None] = lambda _: None,
     ) -> None:
         self.agent = agent
         self.session = session
@@ -407,6 +414,9 @@ class TurnController:
         # mutable thinking_level_id), read PER ROUND so a /think switch applies
         # to the next turn with no agent rebuild — the get_model pattern.
         self.get_thinking = get_thinking
+        self.get_advisor = get_advisor
+        self.build_advisor = build_advisor
+        self._turn_advisor: Advisor | None = None
         self.lsp_toolset = lsp_toolset
         # Structured output for embedder turns (HarnessBuilder.with_output_type).
         # Resolved ONCE here: a dict schema becomes StructuredDict (the
@@ -914,6 +924,7 @@ class TurnController:
         reached session.usage but not the turn accumulator would let the next
         round overshoot the turn's usage limit and under-report the outcome's
         ``usage``."""
+        preserve_usage_cost(delta)
         self._turn_usage.incr(delta)
         self.session.add_usage(delta)
 
@@ -1237,6 +1248,8 @@ class TurnController:
                         # a structured harness overrides it on every round,
                         # continuations included (see _run_output_type).
                         output_type=self._run_output_type(),
+                        capabilities=[self._turn_advisor] if self._turn_advisor else None,
+                        instructions=ADVISOR_GUIDANCE if self._turn_advisor else None,
                     )
                 except BaseException as exc:
                     if self._is_structured_exhaustion(exc):
@@ -1356,9 +1369,10 @@ class TurnController:
     ) -> TurnOutcome:
         """Run the agent until it produces a final answer, looping through any
         approval rounds. Returns the terminal TurnOutcome."""
-        # Fresh per-turn advisor budget: the cap is per TURN, but Deps is
-        # session-lived, so the counter must be re-zeroed as each turn starts.
-        self.deps.advisor_uses = 0
+        # Snapshot before the first await, including compaction and approval
+        # waits. Every continuation and dictionary correction shares this choice.
+        advisor_id = self.get_advisor()
+        self._turn_advisor = None
         # Fresh per-turn spend accumulator (a NEW object, not a reset in place:
         # the previous turn's TurnOutcome still references the old one).
         self._turn_usage = RunUsage()
@@ -1418,6 +1432,7 @@ class TurnController:
         # permanently eat the hook context / jobs digest and leak the dead
         # checkpoint snapshotted above.
         try:
+            self._turn_advisor = self.build_advisor(advisor_id)
             # Guarantee an on-disk baseline before any long-running work, so a
             # hard interrupt mid-turn can't leave a never-persisted (lost)
             # session. One-shot: no-ops on every turn after the first.
@@ -1489,3 +1504,7 @@ class TurnController:
             raise
         finally:
             self._active_run_ctx = None
+            advisor = self._turn_advisor
+            self._turn_advisor = None
+            if advisor is not None and isinstance(advisor.model, ExternalCliModel):
+                await drain_task(asyncio.create_task(advisor.model.aclose()))

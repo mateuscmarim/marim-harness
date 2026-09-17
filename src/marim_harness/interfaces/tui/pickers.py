@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ...advisor import selection_notice
 from .model_picker import ModelPickerModal
 from .thinking_picker import ThinkingPickerModal
 from .widgets import NoticeMessage
@@ -94,10 +95,12 @@ class ModelPickers:
         # would leave the seam active and every consult failing to build it).
         if chosen.strip().lower() == "off":
             self._app.require_local("the advisor picker").set_advisor_model(None)
-            self._app.append_log(NoticeMessage("advisor: off"))
+            self._app.append_log(
+                NoticeMessage(selection_notice(None, self._app.link.info.model_id))
+            )
             return
         self._app.require_local("the advisor picker").set_advisor_model(chosen)
-        self._app.append_log(NoticeMessage(f"advisor: {chosen}"))
+        self._app.append_log(NoticeMessage(selection_notice(chosen, self._app.link.info.model_id)))
 
     async def open_thinking(self) -> None:
         """Fixed-list picker for the session thinking level. The choice lands

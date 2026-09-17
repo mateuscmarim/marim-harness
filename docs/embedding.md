@@ -68,7 +68,7 @@ plain tool path, not marim's approval gating or `CommandPolicy`. Prefer
 marim's own groups (`with_bash`, `with_defaults`) where they overlap, and
 reserve capabilities for what marim doesn't provide.
 
-marim also ships its own capabilities to attach here — see
+For upstream Advisor composition and the legacy import aliases, see
 [Exported capabilities](sdk/capabilities.md).
 
 Persistent sessions compact through Pydantic AI Harness strategies. Advanced
@@ -78,13 +78,22 @@ Setting the strategy to `None` keeps deterministic sliding-window trimming.
 
 ### `with_advisor(model, *, max_tokens=2048, max_uses=None)`
 
-Gives the main agent an `advisor` tool: calling it forwards the full
-conversation transcript to `model` (a pydantic-ai model string) and returns
-its strategic guidance as the tool result. The tool is only advertised while
-an advisor is configured (`harness.set_advisor_model(None)` disables it live),
-advice output is capped at `max_tokens`, and `max_uses` caps calls per turn.
-Advisor failures come back as text inside the tool result — a broken advisor
-never fails the turn. Note: the transcript is sent to `model`'s provider.
+Gives the main agent upstream `advisor(prompt: str)`. Include a self-contained
+question and current evidence; completed history is forwarded, excluding the
+current response. Marim resolves a concrete model through its configured model
+source and selects upstream local execution, preserving provider/client settings.
+`max_tokens` defaults to 2048 and must be at least 1024. `max_uses` is a
+per-model-request cap (`None` = unlimited), reset on each executor request.
+Provider and usage-limit errors propagate through normal turn handling; usage
+joins the parent turn budget. Aggregate mixed-model cost is estimated or unknown.
+
+`harness.set_advisor_model(id_or_none)` persists immediately and applies on the
+next turn, including when called during an approval wait. An active turn retains
+its choice through retries and output correction without rebuilding the Agent.
+Claude/Codex CLI main executors cannot use Marim's runtime advisor; either CLI
+can be an advisor through an ephemeral read-only clone. For upstream native/auto
+routing use `with_capability(Advisor(...))` instead; enabling both is rejected
+before a provider request. See [SDK migration](sdk/capabilities.md).
 
 ### `with_thinking(level)`
 

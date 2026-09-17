@@ -516,10 +516,11 @@ message endpoints see it before its first turn.
 `queued` is the number of prompts waiting behind the running turn.
 
 The response is what an attaching client seeds its view from. When the
-session's live host is loaded, the `session` object's `mode`, `model`,
-`advisor_model` and `thinking` are the host's **live** values (a mode
-cycled in the TUI is never persisted, so the listing's value may lag) and
-gain `model_label` (the display form of the model, provider-aware).
+session's live host is loaded, the `session` object's `mode`, `model`, and
+`thinking` reflect its live values (a mode cycled in the TUI is never persisted,
+so the listing's value may lag). `advisor_model` is the persisted next-turn
+selection, which can differ from the active turn's snapshot. The response also
+gains `model_label` (the display form of the model, provider-aware).
 `workspace_path` is the workspace's root on disk (what an attached TUI
 shows as its subtitle and resolves relative paths against). `usage` is
 the session-cumulative token split with cost, and `compact_threshold`

@@ -215,7 +215,7 @@ class ModelConfig:
     # Advisor: a model the main agent can consult mid-task via the advisor
     # tool. ``advisor_model`` is a qualified ``provider:model_id`` (or a bare
     # slug for the default provider); None = no advisor. ``advisor_max_tokens``
-    # caps each consultation's output; ``advisor_max_uses`` caps calls per turn
+    # caps each consultation's output (minimum 1024); ``advisor_max_uses`` caps calls per request
     # (None = unlimited).
     advisor_model: str | None = None
     advisor_max_tokens: int = 2048

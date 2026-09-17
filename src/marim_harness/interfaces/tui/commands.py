@@ -283,17 +283,18 @@ async def _cmd_model(app: HarnessApp, arg: str) -> None:
 
 
 async def _cmd_advisor(app: HarnessApp, arg: str) -> None:
+    from ...advisor import selection_notice
+
     harness = app.require_local("/advisor")
-    # Unlike /model, no mid-turn refusal: the advisor model is resolved per
-    # consultation, so a switch simply applies to the next advisor call.
+    # The controller retains the active turn's snapshot while this saves metadata.
     arg = arg.strip()
     if arg.lower() == "off":
         harness.set_advisor_model(None)
-        await app.post_system("Advisor: **off** (persisted for this session)")
+        await app.post_system(selection_notice(None, getattr(harness, "model_id", None)))
         return
     if arg:
         harness.set_advisor_model(arg)
-        await app.post_system(f"Advisor: `{arg}` — applies to the next consultation.")
+        await app.post_system(selection_notice(arg, getattr(harness, "model_id", None)))
         return
     await app.pickers.open_advisor()
 

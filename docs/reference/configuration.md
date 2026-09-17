@@ -432,15 +432,22 @@ is installed.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MARIM_ADVISOR_MODEL` | unset (no advisor) | Model the agent may consult mid-task via the `advisor` tool: qualified `provider:model_id`, or a bare slug for the default provider. |
-| `MARIM_ADVISOR_MAX_TOKENS` | `2048` | Positive int. Output cap per consultation. |
-| `MARIM_ADVISOR_MAX_USES` | unset (unlimited) | Positive int. Per-turn call cap; unset or `0` = unlimited. |
+| `MARIM_ADVISOR_MAX_TOKENS` | `2048` | Output cap per consultation; minimum 1024. |
+| `MARIM_ADVISOR_MAX_USES` | unset (unlimited) | Calls per model request; unset or `0` = unlimited. |
 
 When `MARIM_ADVISOR_MODEL` is unset the tool is not offered to the model at
-all. `/advisor <model>` and `/advisor off` toggle it live; the session
-persists the choice (an explicit `off` overrides the env default on resume).
-The advisor exists on the main loop only, and not under the `claude-cli`
-main-loop provider (marim's tools don't apply there) — though a claude-cli
-*advisor* model works.
+all. `/advisor <model>` and `/advisor off` persist immediately and apply on the
+next turn; an explicit saved `off` overrides the env default on resume.
+The model calls `advisor(prompt: str)` with a self-contained question and current
+evidence. Completed history is forwarded, excluding the current response.
+The call allowance resets per model request. Provider errors propagate through
+normal turn handling, and nested usage shares the turn's usage limits.
+
+Runtime configuration resolves a concrete model through Marim's model source and
+uses upstream local execution. The SDK's explicit upstream `Advisor` also offers
+native/auto routing with upstream provider resolution. See [SDK migration](../sdk/capabilities.md).
+Runtime advice is unavailable with a `claude-cli` or `codex-cli` main executor;
+either CLI works as an advisor using a separate ephemeral read-only conversation.
 
 ## Thinking
 
