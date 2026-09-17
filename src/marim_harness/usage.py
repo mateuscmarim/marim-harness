@@ -72,10 +72,12 @@ def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, 
     if usage.details.get("advisor_mixed_cost"):
         if usage.details.get("estimated_cost_unknown"):
             return None, False
-        if usage.cost is not None:
-            return float(usage.cost), False
+        # The persisted detail includes pre-reload turns; RunUsage.cost only
+        # includes turns since reload because the session format omits it.
         micro = usage.details.get("estimated_cost_micro_usd")
-        return (micro / 1_000_000 if micro is not None else None), False
+        if micro is not None:
+            return micro / 1_000_000, False
+        return (float(usage.cost) if usage.cost is not None else None), False
     billed = exact_cost(usage)
     if billed is not None:
         return billed, True

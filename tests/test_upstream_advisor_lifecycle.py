@@ -388,3 +388,50 @@ async def test_mixed_advisor_cost_is_not_falsely_exact(tmp_path, cost):
     assert outcome.usage.details["advisor_mixed_cost"] == 1
     assert resolve_cost(outcome.usage, "anthropic:claude-sonnet-4-6") == expected
     assert resolve_cost(h.session.store.load()[1], "anthropic:claude-sonnet-4-6") == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_cost,expected", [(Decimal("0.0123"), 0.0168), (None, None)])
+async def test_mixed_advisor_cost_accumulates_after_resume(tmp_path, first_cost, expected):
+    import json
+
+    from marim_harness.server.host import _dump_usage
+    from marim_harness.usage import usage_from_dump
+
+    per_request = first_cost / 3 if first_cost is not None else None
+
+    def executor(messages, info):
+        # Prior turns' advice must not suppress consultation on the next turn.
+        finished = any(isinstance(part, ToolReturnPart) for part in messages[-1].parts)
+        return ModelResponse(
+            parts=[TextPart("done")]
+            if finished
+            else [ToolCallPart("advisor", {"prompt": "check"})],
+            usage=RequestUsage(input_tokens=11, output_tokens=5, cost=per_request),
+        )
+
+    def advisor(messages, info):
+        return ModelResponse(
+            parts=[TextPart("advice")],
+            usage=RequestUsage(input_tokens=7, output_tokens=3, cost=per_request),
+        )
+
+    h = persisted_harness(tmp_path, FunctionModel(executor), FunctionModel(advisor))
+    try:
+        await h.run_turn("first")
+        assert resolve_cost(h.session.usage, None) == (
+            float(first_cost) if first_cost is not None else None,
+            False,
+        )
+        h.resume()
+        assert h.session.usage.cost is None  # Legacy session format stores cost in details.
+
+        per_request = Decimal("0.0015")
+        outcome = await h.run_turn("after resume")
+        assert resolve_cost(outcome.usage, None) == (0.0045, False)
+        assert resolve_cost(h.session.usage, None) == (expected, False)
+        wire = json.loads(json.dumps(_dump_usage(h.session.usage)))
+        assert resolve_cost(usage_from_dump(wire), None) == (expected, False)
+        assert resolve_cost(h.session.store.load()[1], None) == (expected, False)
+    finally:
+        await h.aclose()
