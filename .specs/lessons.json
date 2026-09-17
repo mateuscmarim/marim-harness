@@ -3,7 +3,7 @@
   "promote_threshold": 2,
   "window_days": 45,
   "quarantine_threshold": 2,
-  "next_id": 4,
+  "next_id": 5,
   "lessons": [
     {
       "id": "L-001",
@@ -58,6 +58,24 @@
       ],
       "created": "2026-09-15T08:17:50Z",
       "last_seen": "2026-09-15T08:17:50Z"
+    },
+    {
+      "id": "L-004",
+      "key": "ac_gap::for delegated cli providers test observed usage before provider failure and cancellation a missing modelresponse must not erase attempt spend",
+      "text": "For delegated CLI providers, test observed usage before provider failure and cancellation; a missing ModelResponse must not erase attempt spend.",
+      "signal": "ac_gap",
+      "scope": "config/codex_cli_model.py",
+      "status": "candidate",
+      "features": [
+        "codex-structured-output"
+      ],
+      "recurrence": 1,
+      "harmful": 0,
+      "evidence": [
+        "codex-structured-output/validation.md:STRUCT-07 (config/codex_cli_model.py)"
+      ],
+      "created": "2026-09-17T00:17:10Z",
+      "last_seen": "2026-09-17T00:17:10Z"
     }
   ]
 }
