@@ -951,7 +951,7 @@ class HarnessApp(App):
         """What the replay reads: the live history in process, the last
         fetched snapshot when attached."""
         if self.harness is not None:
-            return self.harness.session.history
+            return self.harness.session.transcript
         return self._remote_history
 
     def session_manager(self) -> SessionManager | None:

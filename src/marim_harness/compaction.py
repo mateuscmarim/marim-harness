@@ -14,6 +14,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
+    ModelResponse,
     TextPart,
     ThinkingPart,
     ToolCallPart,
@@ -23,6 +24,7 @@ from pydantic_ai.messages import (
 from pydantic_ai_harness.compaction import estimate_token_count
 
 from .binary_safe import has_binary_content, render_binary_safe
+from .config.context_report import last_context_report
 from .tools.impl.offload import OFFLOAD_GONE_NOTE, find_offload_paths
 
 
@@ -50,6 +52,15 @@ def last_request_input_tokens(history: list[ModelMessage]) -> int | None:
     live context size. Returns ``None`` when no response carries usage (some
     providers/streams omit it), which leaves the gate on the estimate alone."""
     for message in reversed(history):
+        if isinstance(message, ModelResponse) and message.provider_name in {
+            "claude-cli",
+            "codex-cli",
+        }:
+            # CLI adapters bank a whole tool-running turn into response.usage.
+            # Only their separate current-context report measures one request.
+            # A missing report is unknown, never permission to reuse old spend.
+            report = last_context_report([message])
+            return report.used if report is not None else None
         usage = getattr(message, "usage", None)
         tokens = getattr(usage, "input_tokens", None)
         if tokens:

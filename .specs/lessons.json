@@ -3,7 +3,7 @@
   "promote_threshold": 2,
   "window_days": 45,
   "quarantine_threshold": 2,
-  "next_id": 5,
+  "next_id": 6,
   "lessons": [
     {
       "id": "L-001",
@@ -76,6 +76,24 @@
       ],
       "created": "2026-09-17T00:17:10Z",
       "last_seen": "2026-09-17T00:17:10Z"
+    },
+    {
+      "id": "L-005",
+      "key": "gate_fail::check the ratchet force selected complexity rules when adding parameters default ruff lint does not enable them",
+      "text": "Check the ratchet force-selected complexity rules when adding parameters; default Ruff lint does not enable them.",
+      "signal": "gate_fail",
+      "scope": "quality-gate",
+      "status": "candidate",
+      "features": [
+        "preserve-session-transcript"
+      ],
+      "recurrence": 1,
+      "harmful": 0,
+      "evidence": [
+        "verification.md: Resolved CI finding and fix evidence, PR151 run4572/job10390 (quality-gate)"
+      ],
+      "created": "2026-09-17T03:53:27Z",
+      "last_seen": "2026-09-17T03:53:27Z"
     }
   ]
 }

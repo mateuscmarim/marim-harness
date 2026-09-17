@@ -287,7 +287,7 @@ class LocalSessionLink:
         self.harness.set_model(model_id)
 
     async def history(self) -> HistorySnapshot:
-        return HistorySnapshot(list(self.harness.session.history), None)
+        return HistorySnapshot(self.harness.session.transcript, None)
 
     async def refresh(self) -> None:
         """Nothing to fetch: the live view already reads the harness."""

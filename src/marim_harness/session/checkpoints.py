@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from ..atomic_io import atomic_write_text, file_lock
+from .history import slice_message_parts
 
 if TYPE_CHECKING:
     from .ctrl import SessionController
@@ -29,6 +30,8 @@ class Checkpoint:
     commit: str | None  # shadow commit sha (restore target), or None
     created: str  # ISO-8601 UTC timestamp
     prompt_preview: str  # first ~80 chars of the turn's user prompt
+    transcript_len: int | None = None  # legacy sidecars used the context boundary
+    context_parts: int | None = None  # stable through adjacent-request normalization
 
     def to_dict(self) -> dict:
         return {
@@ -37,6 +40,8 @@ class Checkpoint:
             "commit": self.commit,
             "created": self.created,
             "prompt_preview": self.prompt_preview,
+            "transcript_len": self.transcript_len,
+            "context_parts": self.context_parts,
         }
 
     @classmethod
@@ -47,6 +52,10 @@ class Checkpoint:
             commit=d.get("commit"),
             created=str(d.get("created", "")),
             prompt_preview=str(d.get("prompt_preview", "")),
+            transcript_len=int(d["transcript_len"])
+            if d.get("transcript_len") is not None
+            else None,
+            context_parts=int(d["context_parts"]) if d.get("context_parts") is not None else None,
         )
 
 
@@ -114,6 +123,7 @@ class CheckpointManager:
         # tree — has no shadow commit, so without this stash a rewind's truncation
         # would be irreversible.
         self._pre_rewind_history: list | None = None
+        self._pre_rewind_transcript: list | None = None
         # Checkpoints a rewind dropped (index > the rewind target). Kept — with their
         # git refs alive — until the undo window closes, so undo_rewind can restore
         # them. Without this, rewinding to #3 then undoing brought the conversation
@@ -250,6 +260,7 @@ class CheckpointManager:
         self.snapshotter.delete(self._pre_undo_ref())
         self._pre_rewind_checkpoints = None
         self._pre_rewind_history = None
+        self._pre_rewind_transcript = None
         self._pre_restore_commit = None
         self._stash_session_id = None
 
@@ -273,6 +284,7 @@ class CheckpointManager:
             self.snapshotter.delete(self._pre_undo_ref_for(sid))
         self._pre_rewind_checkpoints = None
         self._pre_rewind_history = None
+        self._pre_rewind_transcript = None
         self._pre_restore_commit = None
         self._stash_session_id = None
 
@@ -291,6 +303,8 @@ class CheckpointManager:
             Checkpoint(
                 index=index,
                 history_len=len(self.session.history),
+                transcript_len=len(self.session.transcript),
+                context_parts=sum(len(message.parts) for message in self.session.history),
                 commit=commit,
                 created=_now(),
                 prompt_preview=(prompt_preview or "")[:80],
@@ -373,7 +387,14 @@ class CheckpointManager:
         # _reap_stash_refs — the store may be rebound before reload() runs).
         self._stash_session_id = self._session_id()
         self._pre_rewind_history = list(self.session.history)
-        self.session.set_history(self.session.history[: cp.history_len])
+        self._pre_rewind_transcript = self.session.transcript
+        transcript_len = cp.history_len if cp.transcript_len is None else cp.transcript_len
+        context = (
+            self.session.history[: cp.history_len]
+            if cp.context_parts is None
+            else slice_message_parts(self.session.history, stop=cp.context_parts)
+        )
+        self.session.restore_history(context, self.session.transcript[:transcript_len])
         self.session.persist(force=True)
         # Stash the later checkpoints instead of deleting them: keep their git refs
         # alive so undo_rewind can restore them to the list (rewinding to #3 then
@@ -401,9 +422,12 @@ class CheckpointManager:
         no-op."""
         undone = False
         if self._pre_rewind_history is not None:
-            self.session.set_history(self._pre_rewind_history)
+            self.session.restore_history(
+                self._pre_rewind_history, self._pre_rewind_transcript or []
+            )
             self.session.persist(force=True)
             self._pre_rewind_history = None
+            self._pre_rewind_transcript = None
             undone = True
         if self._pre_restore_commit is not None:
             # Safety net: undo's restore deletes files present now but absent from
