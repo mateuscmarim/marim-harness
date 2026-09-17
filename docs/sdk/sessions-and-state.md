@@ -28,6 +28,20 @@ directory, …) is a `BuilderError` at `build()`, not a surprise at first
 persist. Persisted histories are kept resumable across process kills — see
 [Turns § Resumability](turns.md#resumability-persisted-sessions).
 
+`harness.session.history` is model context: compaction may summarize or trim it.
+`harness.session.transcript` is the recorded conversation for replay. Compaction
+preserves that transcript, including recorded tool results; mobile and local/attached
+TUI history read it instead of the reduced context. Both views are saved together
+in the session JSON (`messages` and `transcript`) at the existing resumable boundary.
+Rewind, clear, and session deletion still remove the corresponding conversation.
+
+Older session files without `transcript` start with their available `messages`.
+This prevents future compaction loss, but cannot reconstruct messages already
+discarded by an older release. Retained transcripts increase session-file size;
+external image caches and expired tool-output files keep their existing lifetimes.
+CLI context gauges/compaction use the backend's current-context report, while
+aggregate tool-running-turn usage remains unchanged in the spend ledger.
+
 ## Memory
 
 Off by default. `with_memory()` enables the `remember`/`recall` tools:

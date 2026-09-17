@@ -30,6 +30,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from ..compaction import estimate_tokens
 from ..config import MultiModelSource, detect_active_providers
 from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
@@ -38,7 +39,7 @@ from ..jobs import history_rows
 from ..runtime.backend_jobs import drain_task
 from ..runtime.permissions import Mode
 from ..session import SessionManager, TranscriptStore
-from ..session.store import SessionLoadError
+from ..session.store import SessionLoadError, decode_messages
 from ..trust import record_decision, resolve_project_trust, stored_decision
 from ..trust_surface import ProjectSurface, scan_project_surface
 from ..usage import usage_summary
@@ -1015,9 +1016,12 @@ async def get_history(request: Request) -> Response:
         return _error(404, "not_found", "unknown session")
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+        messages = data.get("transcript", data.get("messages", []))
+        context = decode_messages(data.get("messages", []), path, session_id)
+        if "transcript" in data:
+            decode_messages(messages, path, session_id)
+    except (json.JSONDecodeError, OSError, SessionLoadError):
         return _error(500, "unreadable", "session file is unreadable")
-    messages = data.get("messages", [])
     try:
         offset = max(0, int(request.query_params.get("offset", "0")))
         limit = max(1, int(request.query_params.get("limit", "100")))
@@ -1038,6 +1042,7 @@ async def get_history(request: Request) -> Response:
             "message_count": len(messages),
             "offset": offset,
             "history_seq": history_seq,
+            "context_tokens": estimate_tokens(context),
             "messages": messages[offset : offset + limit],
         },
         "max-age=10",

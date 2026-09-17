@@ -4,7 +4,7 @@
 > Canonical state lives in `.specs/lessons.json`. Edit lessons only via the script.
 > promote_threshold=2 distinct features · window_days=45 · quarantine_threshold=2
 
-## Confirmed (load these at Specify/Design)
+## Confirmed (load these at Plan/Checks)
 
 Corroborated across multiple features. Safe to apply as guidance.
 
@@ -37,6 +37,12 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - features: codex-structured-output
 - evidence: codex-structured-output/validation.md:STRUCT-07 (config/codex_cli_model.py)
 - last seen: 2026-09-17T00:17:10Z
+
+### L-005 - Check the ratchet force-selected complexity rules when adding parameters; default Ruff lint does not enable them.
+- signal: `gate_fail` · recurrence: 1 feature(s) · scope: `quality-gate` · harmful: 0
+- features: preserve-session-transcript
+- evidence: verification.md: Resolved CI finding and fix evidence, PR151 run4572/job10390 (quality-gate)
+- last seen: 2026-09-17T03:53:27Z
 
 ## Quarantined (failed when applied - ignore)
 

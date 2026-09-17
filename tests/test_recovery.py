@@ -371,7 +371,7 @@ async def test_orphaned_flush_persist_does_not_clobber_newer_write(tmp_path):
             self._blocked = False
 
         def save(self, history, usage, tasks, *, duration_seconds, jobs) -> None:
-            snapshot = list(history)
+            snapshot = list(history.context)
             if not self._blocked:
                 self._blocked = True
                 self.entered.set()

@@ -1885,7 +1885,13 @@ def test_persist_snapshots_tasks_and_jobs_with_history(tmp_path):
         # persist already snapshotted them, so the payload handed to save reflects
         # the pre-write generation, not this mutation.
         deps.tasks.load([{"text": "t1", "status": "done"}])
-        return real_save(history, usage, tasks, duration_seconds=duration_seconds, jobs=jobs)
+        return real_save(
+            history,
+            usage,
+            tasks,
+            duration_seconds=duration_seconds,
+            jobs=jobs,
+        )
 
     store.save = racing_save  # type: ignore[method-assign]
     ctrl.persist(force=True)

@@ -237,6 +237,7 @@ class RemoteSessionHost:
         # How many persisted messages ``history_tokens`` already accounts for;
         # ``refresh`` fetches only the tail past it.
         self._counted_messages = 0
+        self._history_context_tokens: int | None = None
 
     # ------------------------------------------------------------- paths --
     @property
@@ -395,6 +396,7 @@ class RemoteSessionHost:
         history_seq: int | None = None
         while True:
             page = await self._history_page(offset + len(raw), HISTORY_PAGE)
+            self._history_context_tokens = page.get("context_tokens")
             history_seq = page.get("history_seq")
             chunk = page.get("messages", [])
             raw.extend(chunk)
@@ -408,7 +410,11 @@ class RemoteSessionHost:
         returns repaired, then pydantic-ai's adapter)."""
         raw, history_seq = await self._raw_history(0)
         messages = _deserialise(raw, self.target.session_id)
-        self.info.history_tokens = estimate_tokens(messages)
+        self.info.history_tokens = (
+            self._history_context_tokens
+            if self._history_context_tokens is not None
+            else estimate_tokens(messages)
+        )
         self.info.message_count = len(messages)
         self._counted_messages = len(messages)
         return HistorySnapshot(messages, history_seq)
@@ -424,7 +430,12 @@ class RemoteSessionHost:
             self.info.history_tokens = 0
         if self.info.message_count > self._counted_messages:
             raw, _ = await self._raw_history(self._counted_messages)
-            self.info.history_tokens += estimate_tokens(_deserialise(raw, self.target.session_id))
+            if self._history_context_tokens is not None:
+                self.info.history_tokens = self._history_context_tokens
+            else:
+                self.info.history_tokens += estimate_tokens(
+                    _deserialise(raw, self.target.session_id)
+                )
             self._counted_messages += len(raw)
 
     # -------------------------------------------------------------- feed --
