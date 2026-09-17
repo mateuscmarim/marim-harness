@@ -204,9 +204,13 @@ class CodexServer:
         binary: str | None = None,
         env: dict[str, str] | None = None,
         timeout: float | None = None,
+        config_overrides: tuple[str, ...] = (),
     ) -> None:
         self._binary = binary
         self._env = env
+        # Trusted embedding policy (e.g. disable project instructions or choose
+        # a container-compatible sandbox). Never populate from model/PR text.
+        self._config_overrides = config_overrides
         self._timeout = timeout if timeout is not None else codex_timeout()
         self._proc: asyncio.subprocess.Process | None = None
         self._client: JsonRpcClient | None = None
@@ -289,6 +293,7 @@ class CodexServer:
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 binary,
+                *(arg for value in self._config_overrides for arg in ("-c", value)),
                 *overrides,
                 "app-server",
                 stdin=asyncio.subprocess.PIPE,

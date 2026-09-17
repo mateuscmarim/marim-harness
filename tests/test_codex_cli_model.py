@@ -364,37 +364,66 @@ async def test_server_crash_raises_with_stderr_tail(tmp_path):
         await m.aclose()
 
 
-async def test_cancel_interrupts_the_turn(tmp_path):
+@pytest.fixture(params=[0, 0.5], ids=["normal-start", "slow-start"])
+def turn_start_delay(monkeypatch, request):
+    """Exercise controls even when startup exceeds the old 300 ms sleep."""
+    start_turn = CodexServer.start_turn
+
+    async def delayed_start(*args, **kwargs):
+        await asyncio.sleep(request.param)
+        return await start_turn(*args, **kwargs)
+
+    monkeypatch.setattr(CodexServer, "start_turn", delayed_start)
+
+
+async def _wait_until(predicate):
+    async def poll():
+        while not predicate():
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=5)
+
+
+async def test_cancel_interrupts_the_turn(tmp_path, turn_start_delay):
     m = _model(tmp_path, {"turns": [[{"hang": True}], _hello_turn()]})
+    task = asyncio.create_task(m.request(_msgs(), None, PARAMS))
     try:
-        task = asyncio.create_task(m.request(_msgs(), None, PARAMS))
-        await asyncio.sleep(0.3)
+        # Process startup is not bounded by a 300 ms sleep on a loaded CI runner.
+        await _wait_until(lambda: m.thread is not None and m.thread.current_turn_id is not None)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.2)
+        await _wait_until(
+            lambda: any(r["method"] == "turn/interrupt" for r in read_request_log(tmp_path))
+        )
         assert any(r["method"] == "turn/interrupt" for r in read_request_log(tmp_path))
         # The thread survives the interrupt: the next turn reuses it.
         resp = await m.request(_msgs("again"), None, PARAMS)
         assert resp.parts[0].content == "Hi there"
     finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await m.aclose()
 
 
-async def test_steer_forwards_to_active_turn_only(tmp_path):
+async def test_steer_forwards_to_active_turn_only(tmp_path, turn_start_delay):
     m = _model(tmp_path, {"turns": [[{"hang": True}]]})
+    assert m.steer("nothing running") is False
+    task = asyncio.create_task(m.request(_msgs(), None, PARAMS))
     try:
-        assert m.steer("nothing running") is False
-        task = asyncio.create_task(m.request(_msgs(), None, PARAMS))
-        await asyncio.sleep(0.3)
+        await _wait_until(lambda: m.thread is not None and m.thread.current_turn_id is not None)
         assert m.steer("also check tests") is True
-        await asyncio.sleep(0.2)
+        await _wait_until(
+            lambda: any(r["method"] == "turn/steer" for r in read_request_log(tmp_path))
+        )
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         steer = next(r for r in read_request_log(tmp_path) if r["method"] == "turn/steer")
         assert steer["params"]["input"][0]["text"] == "also check tests"
     finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await m.aclose()
 
 

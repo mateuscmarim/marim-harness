@@ -1098,8 +1098,8 @@ class Harness:
         (request_approval/ask_user — both CLIs broker their tool-permission
         prompts through them), the scratchpad, the live thinking level and the
         persisted provider-side conversation reference. A no-op for every other
-        provider's model. Public because ``bootstrap`` (the CLI preset) binds it
-        once after build, before any UI attaches — the internal set_model/bind_ui
+        provider's model. Public because ``HarnessBuilder`` binds it before
+        returning, before any UI attaches — the internal set_model/bind_ui
         callers use it too, so a UI attached later re-binds the fresh callbacks."""
         if not isinstance(model, ExternalCliModel):
             return

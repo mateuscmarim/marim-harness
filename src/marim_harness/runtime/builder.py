@@ -638,7 +638,14 @@ class HarnessBuilder:
         config_fields.update(self._config_overrides)
 
         self._built = True
-        return Harness(model, provider, deps, instructions, config=HarnessConfig(**config_fields))
+        harness = Harness(
+            model, provider, deps, instructions, config=HarnessConfig(**config_fields)
+        )
+        # Embedders can run immediately, without bootstrap or bind_ui. Bind
+        # the external CLI's workspace and live mode before its first request
+        # so plan-mode builds cannot launch in the process cwd with auto mode.
+        harness.wire_cli_model(harness.current_model)
+        return harness
 
 
 class _ComposedProvider(BuiltinToolProvider):

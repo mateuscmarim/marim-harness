@@ -4,7 +4,7 @@
 > Canonical state lives in `.specs/lessons.json`. Edit lessons only via the script.
 > promote_threshold=2 distinct features · window_days=45 · quarantine_threshold=2
 
-## Confirmed (load these at Plan/Checks)
+## Confirmed (load these at Specify/Design)
 
 Corroborated across multiple features. Safe to apply as guidance.
 
@@ -31,6 +31,12 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - features: upstream-output-limits
 - evidence: verification.md: C11 round-1 literal-search gap (tests)
 - last seen: 2026-09-15T08:17:50Z
+
+### L-004 - For delegated CLI providers, test observed usage before provider failure and cancellation; a missing ModelResponse must not erase attempt spend.
+- signal: `ac_gap` · recurrence: 1 feature(s) · scope: `config/codex_cli_model.py` · harmful: 0
+- features: codex-structured-output
+- evidence: codex-structured-output/validation.md:STRUCT-07 (config/codex_cli_model.py)
+- last seen: 2026-09-17T00:17:10Z
 
 ## Quarantined (failed when applied - ignore)
 
