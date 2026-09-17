@@ -186,6 +186,12 @@ generation provider-side and is checked after the turn — one corrective
 round runs if it fails. Infra/provider errors still raise; only schema
 failures become error outcomes. JSON Schemas must be object-rooted.
 
+`ClaudeCliModel` forwards the schema through Claude's native `--json-schema`
+option. Only the terminal structured payload reaches validation; tool activity
+continues through the activity callbacks. Validation retries include the correction
+in the next CLI prompt. Changing schemas, including switching back to plain text,
+restarts the CLI process and resumes its session with the new output setting.
+
 ## Resumability (persisted sessions)
 
 With `with_sessions()` on, histories are persisted such that they can be

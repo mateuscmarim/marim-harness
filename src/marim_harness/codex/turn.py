@@ -55,6 +55,7 @@ class TurnState:
     # become ``spawn_agent`` cards. Owned by the caller per THREAD (children
     # outlive a turn), only referenced here per turn.
     router: CollabRouter | None = None
+    recorded_usage: RequestUsage | None = None
 
 
 def text_input(text: str) -> dict:
@@ -215,15 +216,26 @@ def _seeded_baseline(handle: ThreadHandle, state: TurnState) -> dict:
     return delta_since(state.first_usage.total, state.first_usage.last)
 
 
+def record_turn_usage(handle: ThreadHandle, state: TurnState) -> RequestUsage:
+    """Snapshot observed spend once, including failed or interrupted turns."""
+    if state.recorded_usage is None:
+        state.recorded_usage = (
+            usage_from_total(delta_since(state.usage_total, _seeded_baseline(handle, state)))
+            if state.usage_total
+            else RequestUsage()
+        )
+        if state.usage_total:
+            handle.usage_baseline = dict(state.usage_total)
+    return state.recorded_usage
+
+
 def finish_turn(handle: ThreadHandle, state: TurnState) -> RequestUsage:
     """Per-turn usage for a completed turn; raises ``CliModelError`` when the
     turn failed (or never reported completion). Advances the thread's usage
     baseline so the next turn's delta starts from here."""
+    usage = record_turn_usage(handle, state)
     done = state.done
     if done is None or done.status == "failed":
         msg = (done.error if done else None) or state.failure or "codex turn failed"
         raise CliModelError(f"codex: {msg}")
-    usage = usage_from_total(delta_since(state.usage_total, _seeded_baseline(handle, state)))
-    if state.usage_total:
-        handle.usage_baseline = dict(state.usage_total)
     return usage

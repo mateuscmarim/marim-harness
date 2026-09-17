@@ -32,11 +32,17 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - evidence: verification.md: C11 round-1 literal-search gap (tests)
 - last seen: 2026-09-15T08:17:50Z
 
-### L-004 - Check the ratchet force-selected complexity rules when adding parameters; default Ruff lint does not enable them.
+### L-004 - For delegated CLI providers, test observed usage before provider failure and cancellation; a missing ModelResponse must not erase attempt spend.
+- signal: `ac_gap` · recurrence: 1 feature(s) · scope: `config/codex_cli_model.py` · harmful: 0
+- features: codex-structured-output
+- evidence: codex-structured-output/validation.md:STRUCT-07 (config/codex_cli_model.py)
+- last seen: 2026-09-17T00:17:10Z
+
+### L-005 - Check the ratchet force-selected complexity rules when adding parameters; default Ruff lint does not enable them.
 - signal: `gate_fail` · recurrence: 1 feature(s) · scope: `quality-gate` · harmful: 0
 - features: preserve-session-transcript
 - evidence: verification.md: Resolved CI finding and fix evidence, PR151 run4572/job10390 (quality-gate)
-- last seen: 2026-09-16T23:45:01Z
+- last seen: 2026-09-17T03:53:27Z
 
 ## Quarantined (failed when applied - ignore)
 

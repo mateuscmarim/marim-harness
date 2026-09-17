@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import signal
@@ -123,6 +124,7 @@ class ProcessOptions:
     append_system: str | None = None
     persist: bool = True
     env: dict[str, str] | None = None
+    json_schema: dict | None = None
 
 
 def build_process_argv(options: ProcessOptions) -> list[str]:
@@ -139,6 +141,8 @@ def build_process_argv(options: ProcessOptions) -> list[str]:
         argv += ["--append-system-prompt", options.append_system]
     if not options.persist:
         argv.append("--no-session-persistence")
+    if options.json_schema is not None:
+        argv += ["--json-schema", json.dumps(options.json_schema)]
     return argv
 
 
