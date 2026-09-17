@@ -64,3 +64,9 @@ node_modules/
 # Superpowers SDD scratch — ledgers, task briefs/reports, review packages.
 # Working state for the current dev branch, not source. Ignored wholesale.
 /.superpowers/
+
+# Keep new development specs and plans local to reduce PR noise.
+# Existing tracked files remain tracked; these rules do not hide their edits.
+/.specs/
+/docs/superpowers/specs/
+/docs/superpowers/plans/
