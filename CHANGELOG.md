@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-17
+
 ### Removed
 
 - **Deprecated Advisor import aliases.** The `marim_harness.capabilities`
