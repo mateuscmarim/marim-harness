@@ -107,6 +107,12 @@ retries; dict: one corrective round), and exhaustion surfaces as the
 before trusting `structured_output`. Every `run_turn` returns a
 `TurnOutcome`; plain harnesses get the text in `.result`.
 
+The `codex-cli` provider forwards typed outputs through the app-server's native
+`outputSchema`. Codex still owns investigation and tool execution. Marim buffers
+its final message until the turn completes, validates that JSON, and keeps progress
+and tool activity separate from the result. Streaming and non-streaming calls use
+the same contract; invalid output follows the ordinary bounded validation retries.
+
 ### Session claims
 
 A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))
