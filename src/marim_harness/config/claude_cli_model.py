@@ -55,6 +55,7 @@ notification that settles a spawn card can arrive turns after the spawn.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator, Iterator
 from contextlib import aclosing, asynccontextmanager
@@ -335,6 +336,9 @@ class DoneChunk:
     context_window: int | None = None
     context_windows: dict[str, int] = field(default_factory=dict)
     backend_details: dict = field(default_factory=dict)
+    # Only the terminal result belongs in a structured response. Progress
+    # deltas and tool activity are still delivered through their UI seams.
+    output_text: str = ""
 
 
 def _flatten_result_content(content) -> str:
@@ -441,6 +445,11 @@ def _result_chunk(obj: dict, *, produced_text: bool) -> DoneChunk:
     lifecycle = ClaudeLifecycle()
     lifecycle.result(obj)
     facts = {
+        "output_text": (
+            json.dumps(obj["structured_output"], ensure_ascii=False)
+            if "structured_output" in obj
+            else str(obj.get("result") or "")
+        ),
         "backend_details": lifecycle.result_details,
         "session_id": obj.get("session_id"),
         "usage": usage,
@@ -816,12 +825,18 @@ class ClaudeCliModel(ExternalCliModel):
     provider_id = "claude-cli"
 
     def __init__(self, model_id: str | None, *, ephemeral: bool = False) -> None:
-        super().__init__()
+        super().__init__(
+            profile={
+                "supports_json_schema_output": True,
+                "default_structured_output_mode": "native",
+            }
+        )
         self._model_id = model_id
         # See ExternalCliModel.ephemeral / ``ephemeral_clone``: aux agents never
         # resume or store a session, so they can't hijack the user's live one.
         self.ephemeral = ephemeral
         self._process: ClaudeProcess | None = None
+        self._json_schema: dict | None = None
         # Clones made by ephemeral_clone(); closed with their parent, because
         # nothing else holds them (Harness.aclose knows only the session's
         # current model, and the aux titler/summarizer/advisor keep theirs
@@ -913,7 +928,25 @@ class ClaudeCliModel(ExternalCliModel):
             resume_id=resume_id,
             append_system=system,
             persist=not self.ephemeral,
+            json_schema=self._json_schema,
         )
+
+    async def _configure_output(self, parameters: ModelRequestParameters) -> None:
+        """The CLI schema is a launch option, not a mutable turn control.
+
+        Resume the same session after a schema change so the CLI cannot retain
+        a stale schema (including when returning to plain text). Pydantic AI
+        owns schema preparation and validation; this is just transport wiring.
+        """
+        _, parameters = self.prepare_request(None, parameters)
+        schema = parameters.output_object.json_schema if parameters.output_object else None
+        if schema != self._json_schema:
+            if self._process is not None:
+                logger.debug("claude output schema changed; restarting the CLI process")
+                await self._process.aclose()
+            # Snapshot: caller mutation must not silently change the comparison
+            # while the process keeps the schema it received at launch.
+            self._json_schema = json.loads(json.dumps(schema))
 
     # --- process lifecycle --------------------------------------------------------
     async def _spawn(self, *, resume_id: str | None, system: str | None) -> ClaudeProcess:
@@ -1105,6 +1138,7 @@ class ClaudeCliModel(ExternalCliModel):
         self.lifecycle, previous.lifecycle = previous.lifecycle, ClaudeLifecycle()
         self.context_invalidated = previous.context_invalidated
         self._process, previous._process = previous._process, None
+        self._json_schema, previous._json_schema = previous._json_schema, None
         self._process.on_closed = lambda status, state=self.lifecycle: self._lifecycle_closed(
             state, status
         )
@@ -1295,6 +1329,20 @@ class ClaudeCliModel(ExternalCliModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
     ) -> ModelResponse:
+        _, parameters = self.prepare_request(None, model_request_parameters)
+        if parameters.output_object is not None:
+            # Share the stream's activity routing and final-payload handling,
+            # so request() has the same structured-output contract as streaming.
+            async with self.request_stream(messages, model_settings, parameters) as stream:
+                async for _ in stream:
+                    pass
+                return stream.get()
+        await self._configure_output(parameters)
+        return await self._request_text(messages, model_settings)
+
+    async def _request_text(
+        self, messages: list, model_settings: ModelSettings | None
+    ) -> ModelResponse:
         process, handle, first = await self._start_turn(messages, model_settings)
         await self._begin_lifecycle_turn()
         done: DoneChunk | None = None
@@ -1352,6 +1400,7 @@ class ClaudeCliModel(ExternalCliModel):
         model_request_parameters: ModelRequestParameters,
         run_context=None,
     ) -> AsyncGenerator[StreamedResponse]:
+        await self._configure_output(model_request_parameters)
         process, handle, first = await self._start_turn(messages, model_settings)
         await self._begin_lifecycle_turn()
         objs = _turn_stream(process, handle, first)
@@ -1373,6 +1422,7 @@ class ClaudeCliModel(ExternalCliModel):
             _on_subagent=self.on_subagent,
             _on_subagent_model=self.on_subagent_model,
             _demux=self._demux,
+            _structured=self._json_schema is not None,
         )
         try:
             yield stream
@@ -1463,6 +1513,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     no UI is bound."""
 
     _objs: AsyncIterator[dict] | None = None
+    _structured: bool = False
     _model_id: str = "default"
     _ts: datetime | None = None
     # The model's own bookkeeping seams: init/prompt-usage chunks as they
@@ -1581,6 +1632,8 @@ class ClaudeCliStreamedResponse(StreamedResponse):
 
     async def _events_for(self, chunk, folder: TextFolder, thinking: _ThinkingParts):
         """The pydantic-ai events for one non-terminal chunk."""
+        if self._structured and isinstance(chunk, (TextChunk, ThinkingChunk)):
+            return
         if isinstance(chunk, TextChunk):
             thinking.close()
             async for ev in folder.emit_text(chunk.delta):
@@ -1616,7 +1669,9 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             self._parts_manager,
             activity,
             activity_events=cli_activity_events,
-            fold_text=lambda chunk, leading: fold_chunk_text(chunk, leading=leading),
+            fold_text=lambda chunk, leading: (
+                "" if self._structured else fold_chunk_text(chunk, leading=leading)
+            ),
             is_call=lambda chunk: isinstance(chunk, ToolUseChunk),
         )
         objs = self._demuxed_objs(activity, folder)
@@ -1640,6 +1695,9 @@ class ClaudeCliStreamedResponse(StreamedResponse):
                     ledger.note_event(ev)
                     yield ev
         self._finalize_done(done)
+        async for ev in self._structured_events(done, folder):
+            ledger.note_event(ev)
+            yield ev
         # After the settle: a cancellation landing in this await must not
         # cost the turn its usage (same ordering as CodexStreamedResponse).
         if self._after is not None:
@@ -1650,6 +1708,15 @@ class ClaudeCliStreamedResponse(StreamedResponse):
         details = self._details() if self._details is not None else None
         if details:
             self.provider_details = {**(self.provider_details or {}), **details}
+
+    async def _structured_events(self, done: DoneChunk | None, folder: TextFolder):
+        if not self._structured:
+            return
+        assert done is not None  # _finalize_done already rejected a missing result.
+        if done.error_detail or done.aborted:
+            raise CliModelError(done.error_detail or "Claude structured output was interrupted")
+        async for ev in folder.emit_text(done.output_text):
+            yield ev
 
     async def _emit_lifecycle(self, chunk, ledger, folder, thinking) -> None:
         events = (

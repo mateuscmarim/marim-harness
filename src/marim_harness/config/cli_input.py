@@ -16,6 +16,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     UserContent,
     UserPromptPart,
 )
@@ -34,12 +35,16 @@ def _part_text(content) -> str:
 
 
 def latest_user_text(messages: list[ModelMessage]) -> str:
-    """Text of the newest user prompt (what we send to ``claude -p`` each turn)."""
+    """Text of the newest user prompt or corrective validation request."""
     from pydantic_ai.messages import ModelRequest, UserPromptPart
 
     for msg in reversed(messages):
         if isinstance(msg, ModelRequest):
-            texts = [_part_text(p.content) for p in msg.parts if isinstance(p, UserPromptPart)]
+            texts = [
+                p.model_response() if isinstance(p, RetryPromptPart) else _part_text(p.content)
+                for p in msg.parts
+                if isinstance(p, (UserPromptPart, RetryPromptPart))
+            ]
             if texts:
                 return "\n".join(t for t in texts if t)
     return ""
@@ -88,6 +93,8 @@ def _request_lines(msg: ModelRequest) -> list[str]:
                 lines.append(f"User: {text}")
         elif isinstance(p, ToolReturnPart):
             lines.append(f"Tool {p.tool_name} returned: {_part_text(p.content)}")
+        elif isinstance(p, RetryPromptPart):
+            lines.append(f"User: {p.model_response()}")
     return lines
 
 
@@ -129,7 +136,7 @@ def flatten_history(messages: list[ModelMessage]) -> str:
 def _latest_request(messages: list[ModelMessage]) -> list[ModelMessage]:
     for msg in reversed(messages):
         if isinstance(msg, ModelRequest) and any(
-            isinstance(part, UserPromptPart) for part in msg.parts
+            isinstance(part, (UserPromptPart, RetryPromptPart)) for part in msg.parts
         ):
             return [msg]
     return []
@@ -141,8 +148,14 @@ def _user_content(messages: list[ModelMessage]) -> list[UserContent]:
         for msg in messages
         if isinstance(msg, ModelRequest)
         for part in msg.parts
-        if isinstance(part, UserPromptPart)
-        for item in ([part.content] if isinstance(part.content, str) else part.content)
+        if isinstance(part, (UserPromptPart, RetryPromptPart))
+        for item in (
+            [part.model_response()]
+            if isinstance(part, RetryPromptPart)
+            else [part.content]
+            if isinstance(part.content, str)
+            else part.content
+        )
     ]
 
 
