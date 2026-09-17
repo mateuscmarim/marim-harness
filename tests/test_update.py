@@ -95,19 +95,97 @@ def test_do_upgrade_uv_tool_succeeds():
         assert "marim-harness" in args
 
 
-def test_do_upgrade_falls_back_to_pip():
+def test_do_upgrade_falls_back_to_pip_when_not_a_uv_tool():
     from marim_harness.interfaces.cli.update import _do_upgrade
 
-    uv_result = type("Result", (), {"returncode": 1})()
+    uv_upgrade_result = type("Result", (), {"returncode": 1})()
+    uv_list_result = type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
     pip_result = type("Result", (), {"returncode": 0})()
-    with patch("subprocess.run", side_effect=[uv_result, pip_result]) as mock_run:
+    with patch(
+        "subprocess.run", side_effect=[uv_upgrade_result, uv_list_result, pip_result]
+    ) as mock_run:
         result = _do_upgrade()
         assert result == 0
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
         first_args = mock_run.call_args_list[0][0][0]
         second_args = mock_run.call_args_list[1][0][0]
+        third_args = mock_run.call_args_list[2][0][0]
         assert first_args[0] == "uv"
-        assert "pip" in second_args
+        assert second_args[:3] == ["uv", "tool", "list"]
+        assert "pip" in third_args
+
+
+def test_do_upgrade_reinstalls_stale_uv_tool_source():
+    """`uv tool upgrade` reuses the receipt's source, which can be a local
+    wheel path (dev build, release scratchpad artifact) that no longer
+    exists on disk. When marim-harness is a known uv tool, retry with a
+    forced reinstall by name so uv re-resolves from PyPI instead."""
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    uv_upgrade_result = type("Result", (), {"returncode": 1})()
+    uv_list_result = type(
+        "Result",
+        (),
+        {
+            "returncode": 0,
+            "stdout": "marim-harness v0.10.0 [extras: serve, tui, workflows, lsp-python]\n",
+            "stderr": "",
+        },
+    )()
+    reinstall_result = type("Result", (), {"returncode": 0})()
+    with patch(
+        "subprocess.run",
+        side_effect=[uv_upgrade_result, uv_list_result, reinstall_result],
+    ) as mock_run:
+        result = _do_upgrade()
+        assert result == 0
+        assert mock_run.call_count == 3
+        reinstall_args = mock_run.call_args_list[2][0][0]
+        assert reinstall_args[:4] == ["uv", "tool", "install", "--force"]
+        assert "--reinstall" in reinstall_args
+        assert "marim-harness[serve,tui,workflows,lsp-python]" in reinstall_args
+
+
+def test_do_upgrade_reinstall_without_extras():
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    uv_upgrade_result = type("Result", (), {"returncode": 1})()
+    uv_list_result = type(
+        "Result",
+        (),
+        {"returncode": 0, "stdout": "marim-harness v0.10.0\n", "stderr": ""},
+    )()
+    reinstall_result = type("Result", (), {"returncode": 0})()
+    with patch(
+        "subprocess.run",
+        side_effect=[uv_upgrade_result, uv_list_result, reinstall_result],
+    ) as mock_run:
+        result = _do_upgrade()
+        assert result == 0
+        reinstall_args = mock_run.call_args_list[2][0][0]
+        assert "marim-harness" in reinstall_args
+        assert not any("[" in arg for arg in reinstall_args)
+
+
+def test_do_upgrade_reinstall_fails_falls_back_to_pip():
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    uv_upgrade_result = type("Result", (), {"returncode": 1})()
+    uv_list_result = type(
+        "Result",
+        (),
+        {"returncode": 0, "stdout": "marim-harness v0.10.0 [extras: tui]\n", "stderr": ""},
+    )()
+    reinstall_result = type("Result", (), {"returncode": 1})()
+    pip_result = type("Result", (), {"returncode": 0})()
+    with patch(
+        "subprocess.run",
+        side_effect=[uv_upgrade_result, uv_list_result, reinstall_result, pip_result],
+    ) as mock_run:
+        result = _do_upgrade()
+        assert result == 0
+        assert mock_run.call_count == 4
+        assert "pip" in mock_run.call_args_list[3][0][0]
 
 
 def test_do_upgrade_pip_fails():

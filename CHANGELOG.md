@@ -24,6 +24,16 @@ pre-1.0, minor versions may contain breaking changes.
   but no longer emits a compatibility warning or appears in configuration docs.
   Saved-session readers and `MARIM_MAX_CONTEXT_TOKENS` support are unchanged.
 
+### Fixed
+
+- **`marim update` recovers from a stale uv tool install source.** When
+  marim-harness was installed from a local wheel path that no longer exists
+  on disk (a dev build, a release scratchpad artifact), `uv tool upgrade`
+  kept failing by reusing that stale path instead of resolving from PyPI.
+  `marim update` now retries with a forced reinstall by package name — for a
+  known uv tool install only, preserving its extras — before falling back to
+  `pip`.
+
 ## [0.12.0] - 2026-09-17
 
 ### Changed

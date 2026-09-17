@@ -1,6 +1,7 @@
 """`marim update` — upgrade the installed marim-harness package."""
 
 import argparse
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -38,8 +39,43 @@ def _check_latest() -> UpdateInfo:
     return UpdateInfo(current=current, latest=latest, release_url=url)
 
 
+def _uv_tool_extras(name: str) -> list[str] | None:
+    """Return the extras `name` is currently installed with as a uv tool.
+
+    Returns None when `name` isn't a known uv tool at all (as distinct from
+    a known uv tool installed with no extras, which returns []).
+    """
+    result = subprocess.run(
+        ["uv", "tool", "list", "--show-extras"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    match = re.search(
+        rf"^{re.escape(name)} v\S+(?: \[extras: ([^\]]+)\])?$",
+        result.stdout,
+        re.MULTILINE,
+    )
+    if match is None:
+        return None
+    extras = match.group(1)
+    return [extra.strip() for extra in extras.split(",")] if extras else []
+
+
 def _do_upgrade() -> int:
-    """Upgrade marim-harness: try uv tool first, then pip as fallback."""
+    """Upgrade marim-harness: try `uv tool upgrade`, then — if it's a known uv
+    tool — a forced reinstall from PyPI, then pip as a last resort.
+
+    `uv tool upgrade` reuses the source recorded in the tool's install
+    receipt. When marim-harness was installed from a local wheel path (a dev
+    build, a release scratchpad artifact) that path can go stale once the
+    file is cleaned up, and `uv tool upgrade` fails trying to reuse it even
+    though the package is readily available on PyPI. Reinstalling by name
+    forces uv to re-resolve from PyPI instead, preserving whatever extras
+    were originally installed.
+    """
     try:
         result = subprocess.run(
             ["uv", "tool", "upgrade", "marim-harness"],
@@ -47,11 +83,25 @@ def _do_upgrade() -> int:
         )
     except FileNotFoundError:
         result = None
-    if result is None or result.returncode != 0:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "marim-harness"],
-            check=False,
-        )
+
+    if result is not None and result.returncode == 0:
+        return 0
+
+    if result is not None:
+        extras = _uv_tool_extras("marim-harness")
+        if extras is not None:
+            spec = f"marim-harness[{','.join(extras)}]" if extras else "marim-harness"
+            result = subprocess.run(
+                ["uv", "tool", "install", "--force", "--reinstall", spec],
+                check=False,
+            )
+            if result.returncode == 0:
+                return 0
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "marim-harness"],
+        check=False,
+    )
     return result.returncode
 
 
