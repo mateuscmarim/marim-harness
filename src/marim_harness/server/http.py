@@ -35,6 +35,7 @@ from ..config import MultiModelSource, detect_active_providers
 from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
 from ..images import image_cache_root, media_type_for_path
+from ..interfaces.branding import package_version
 from ..jobs import history_rows
 from ..runtime.backend_jobs import drain_task
 from ..runtime.permissions import Mode
@@ -297,7 +298,7 @@ def _surface_dict(surface: ProjectSurface) -> dict:
 
 
 async def health(request: Request) -> Response:
-    return _cached_json({"status": "ok"}, "no-cache")
+    return _cached_json({"status": "ok", "version": request.app.state.version}, "no-cache")
 
 
 async def list_workspaces(request: Request) -> Response:
@@ -1182,6 +1183,9 @@ def create_app(
         if isinstance(route, Route) and route.methods and route.methods <= {"POST", "DELETE"}
     ]
     app = _CapabilityApp(routes=[*routes, *aliases], lifespan=lifespan)
+    # Freeze metadata before serving: an on-disk upgrade needs a daemon restart.
+    version = package_version()
+    app.state.version = None if version == "unknown" else version
     app.state.registry = registry
     app.state.supervisor = supervisor
     app.state.token = token
