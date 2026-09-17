@@ -22,6 +22,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 from pydantic_ai.usage import RunUsage
+from pydantic_ai_harness.compaction import estimate_token_count
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
@@ -30,7 +31,6 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from ..compaction import estimate_tokens
 from ..config import MultiModelSource, detect_active_providers
 from ..config.backend_state import backend_snapshot
 from ..config.context_report import current_context_report
@@ -1042,7 +1042,7 @@ async def get_history(request: Request) -> Response:
             "message_count": len(messages),
             "offset": offset,
             "history_seq": history_seq,
-            "context_tokens": estimate_tokens(context),
+            "context_tokens": estimate_token_count(context),
             "messages": messages[offset : offset + limit],
         },
         "max-age=10",

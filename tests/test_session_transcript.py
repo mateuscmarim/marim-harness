@@ -468,8 +468,7 @@ def _history_app(controller, tmp_path, monkeypatch):
 @pytest.mark.anyio
 async def test_http_transcript_pages(tmp_path, monkeypatch):
     from pydantic_ai.messages import ModelMessagesTypeAdapter
-
-    from marim_harness.compaction import estimate_tokens
+    from pydantic_ai_harness.compaction import estimate_token_count
 
     controller = _controller(tmp_path)
     original = _conversation()
@@ -489,7 +488,7 @@ async def test_http_transcript_pages(tmp_path, monkeypatch):
             payload = response.json()
             assert payload["message_count"] == len(original)
             assert payload["history_seq"] == 0
-            assert payload["context_tokens"] == estimate_tokens(controller.history)
+            assert payload["context_tokens"] == estimate_token_count(controller.history)
             pages.extend(payload["messages"])
         assert ModelMessagesTypeAdapter.validate_python(pages) == original
         assert (await client.get(base + "/history")).status_code == 401
@@ -523,7 +522,8 @@ async def test_malformed_transcript(tmp_path, monkeypatch, damaged):
 
 @pytest.mark.anyio
 async def test_tui_transcript(tmp_path, monkeypatch):
-    from marim_harness.compaction import estimate_tokens
+    from pydantic_ai_harness.compaction import estimate_token_count
+
     from marim_harness.interfaces.tui.app import HarnessApp
     from marim_harness.interfaces.tui.link import LocalSessionLink
     from marim_harness.runtime.harness import Harness
@@ -561,7 +561,7 @@ async def test_tui_transcript(tmp_path, monkeypatch):
         local_history = await local.history()
         remote_history = await remote.history()
         assert local_history.messages == remote_history.messages == original
-        assert remote.info.history_tokens == estimate_tokens(controller.history)
+        assert remote.info.history_tokens == estimate_token_count(controller.history)
         local_app = SimpleNamespace(harness=harness)
         remote_app = SimpleNamespace(harness=None, _remote_history=remote_history.messages)
         assert HarnessApp.history_messages.fget(local_app) == original
@@ -573,8 +573,8 @@ async def test_tui_transcript(tmp_path, monkeypatch):
 @pytest.mark.parametrize("reported", [None, 0, 123])
 async def test_remote_context_tokens(tmp_path, reported):
     from pydantic_ai.messages import ModelMessagesTypeAdapter
+    from pydantic_ai_harness.compaction import estimate_token_count
 
-    from marim_harness.compaction import estimate_tokens
     from marim_harness.server.attach import RemoteTarget
     from marim_harness.server.client import RemoteSessionHost
 
@@ -595,7 +595,7 @@ async def test_remote_context_tokens(tmp_path, reported):
         )
         assert (await remote.history()).messages == messages
         assert remote.info.history_tokens == (
-            estimate_tokens(messages) if reported is None else reported
+            estimate_token_count(messages) if reported is None else reported
         )
 
 

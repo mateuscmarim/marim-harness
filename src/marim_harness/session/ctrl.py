@@ -18,14 +18,13 @@ if TYPE_CHECKING:
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.usage import RunUsage, UsageLimits
-from pydantic_ai_harness.compaction import CompactionStrategy
+from pydantic_ai_harness.compaction import CompactionStrategy, estimate_token_count
 
 from ..compaction import (
     BREAKER_NOTICE,
     CompactionBreaker,
     Titler,
     _measured_or_estimated,
-    estimate_tokens,
     make_titler,
     revalidate_elided_pointers,
     summary_text,
@@ -890,7 +889,10 @@ class SessionController:
                 None,
             )
         self.last_compaction_details = dict(
-            changed=True, summary=summary, post_tokens=estimate_tokens(self.history), stage=stage
+            changed=True,
+            summary=summary,
+            post_tokens=estimate_token_count(self.history),
+            stage=stage,
         )
         return stage
 
@@ -926,7 +928,9 @@ class SessionController:
         if reduction.messages == self.history:
             return False
         stage = self._commit_reduction(reduction)
-        await self._dispatch_post_compact(trigger, pre_tokens, estimate_tokens(self.history), stage)
+        await self._dispatch_post_compact(
+            trigger, pre_tokens, estimate_token_count(self.history), stage
+        )
         return True
 
     async def maybe_compact(
@@ -940,7 +944,7 @@ class SessionController:
     ) -> bool:
         """Apply upstream reduction within Marim's gates, hooks and commit boundary."""
         self.last_compaction_details = dict(
-            changed=False, summary=None, post_tokens=estimate_tokens(self.history), stage=None
+            changed=False, summary=None, post_tokens=estimate_token_count(self.history), stage=None
         )
         manual = trigger == "manual"
         await self._prepare_compact(manual=manual)
@@ -969,7 +973,7 @@ class SessionController:
                     or manual
                     or (
                         pre_tokens > self.compact_threshold
-                        and estimate_tokens(self.history) <= self.compact_threshold
+                        and estimate_token_count(self.history) <= self.compact_threshold
                     ),
                     focus=instructions,
                 ),
@@ -992,7 +996,7 @@ class SessionController:
                 type(self.compaction_strategy).__name__,
                 self.last_compaction_details["stage"],
                 pre_tokens,
-                estimate_tokens(self.history),
+                estimate_token_count(self.history),
                 time.monotonic() - started,
                 outcome,
             )

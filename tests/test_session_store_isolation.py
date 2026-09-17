@@ -7,7 +7,7 @@ this test proves the guard is in force for the whole suite."""
 
 from pathlib import Path
 
-from marim_harness.session.store import SessionManager, _default_base_dir
+from marim_harness.session.store import SessionManager, default_sessions_base
 
 
 def test_default_session_store_stays_out_of_real_home(tmp_path):
@@ -18,4 +18,4 @@ def test_default_session_store_stays_out_of_real_home(tmp_path):
 
     real = Path.home() / ".local" / "share" / "marim-harness" / "sessions"
     assert real not in store.path.parents
-    assert _default_base_dir() in store.path.parents
+    assert default_sessions_base() in store.path.parents

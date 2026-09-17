@@ -8,13 +8,13 @@ def test_trust_grant_then_status(tmp_path, capsys, monkeypatch):
     (tmp_path / ".marim" / "skills" / "s" / "SKILL.md").write_text(
         "---\nname: s\ndescription: x\n---\n"
     )
-    from marim_harness.interfaces.cli.trust_cmd import run
+    from marim_harness.interfaces.cli.trust_cmd import main
 
-    run(["grant", str(tmp_path)])
+    main(["grant", str(tmp_path)])
     from marim_harness.trust import stored_decision
 
     assert stored_decision(tmp_path).trusted is True
-    run(["status", str(tmp_path)])
+    main(["status", str(tmp_path)])
     out = capsys.readouterr().out
     assert "trusted" in out and "skills: 1" in out
 
@@ -22,10 +22,10 @@ def test_trust_grant_then_status(tmp_path, capsys, monkeypatch):
 def test_trust_revoke(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("MARIM_TRUST_PROJECT_HOOKS", raising=False)
-    from marim_harness.interfaces.cli.trust_cmd import run
+    from marim_harness.interfaces.cli.trust_cmd import main
 
-    run(["grant", str(tmp_path)])
-    run(["revoke", str(tmp_path)])
+    main(["grant", str(tmp_path)])
+    main(["revoke", str(tmp_path)])
     from marim_harness.trust import stored_decision
 
     assert stored_decision(tmp_path).trusted is False

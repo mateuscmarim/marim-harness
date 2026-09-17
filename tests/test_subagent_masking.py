@@ -166,6 +166,6 @@ async def test_spawn_trigger_follows_its_loaded_model_window(tmp_path):
         return {"small": 10_000, "large": 100_000}
 
     runner = _make_harness(_text_model(), _make_deps(tmp_path)).subagents
-    runner._masking = MaskingPolicy(limits=ContextLimits(budget=180_000, fetch_local=fake_local))
+    runner._masking = MaskingPolicy(limits=ContextLimits(budget=180_000, fetchers=[fake_local]))
     assert await runner._mask_trigger_for("small") == 8_000
     assert await runner._mask_trigger_for("large") == 80_000

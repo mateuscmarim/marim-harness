@@ -241,19 +241,6 @@ class ModelConfig:
 # times per process (e.g. every Settings-screen open), and the nag is only
 # useful the first time.
 _budget_deprecation_warned = False
-_mask_min_chars_deprecation_warned = False
-
-
-def _warn_deprecated_mask_min_chars() -> None:
-    """Accept the retired variable for one release and explain that it is ignored."""
-    global _mask_min_chars_deprecation_warned
-    if os.getenv("MARIM_MASK_MIN_CHARS") is None or _mask_min_chars_deprecation_warned:
-        return
-    _mask_min_chars_deprecation_warned = True
-    logger.warning(
-        "MARIM_MASK_MIN_CHARS is deprecated and ignored; upstream clearing uses a "
-        "whole-pass token-savings threshold instead of a per-result character floor."
-    )
 
 
 def _context_budget_env() -> int:
@@ -304,7 +291,6 @@ def _common_kwargs() -> dict[str, Any]:
     # clamps non-positive back to the default, which would swallow the sentinel
     # now that the default is a positive cap rather than 0. Unparseable garbage
     # falls back to the safe cap, not to unbounded.
-    _warn_deprecated_mask_min_chars()
     _concurrency = _parse_concurrency(
         os.getenv("MARIM_SUBAGENT_CONCURRENCY"), DEFAULT_SUBAGENT_CONCURRENCY
     )

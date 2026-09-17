@@ -38,19 +38,7 @@ from . import (
     spawn_tools,
     workflow_tools,
 )
-
-# Re-exported for backward compatibility; defined in the leaf module ``names``
-# so importers (e.g. workspace.agents) don't pull in all of ``provider`` and
-# form an import cycle.
-from .names import (  # noqa: F401
-    GATED_TOOLS,
-    LSP_TOOLS,
-    NET_TOOLS,
-    READ_TOOLS,
-    SUBAGENT_MAX_DEPTH,
-    SUBAGENT_TOOLS,
-    TOOL_GROUPS,
-)
+from .names import LSP_TOOLS, TOOL_GROUPS
 
 
 @dataclass(frozen=True)

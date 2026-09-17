@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 
     from ..session.ctrl import SessionController
 
-from ..compaction import estimate_tokens, last_request_input_tokens
+from ..compaction import last_request_input_tokens
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import (
     is_context_overflow_error,
@@ -253,7 +253,7 @@ class SpawnRunDriver:
                 contention = overflow and overflow_is_contention(
                     max(
                         last_request_input_tokens(list(captured)) or 0,
-                        estimate_tokens(list(captured)),
+                        estimate_token_count(list(captured)),
                     ),
                     self._known_window(),
                 )
