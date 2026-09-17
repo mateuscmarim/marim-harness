@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-17
+
 ### Changed
 
 - **Advisor uses Pydantic AI Harness.** Calls now require `advisor(prompt=...)`;
@@ -18,6 +20,18 @@ pre-1.0, minor versions may contain breaking changes.
   directly alias upstream Advisor for one release, with upstream defaults and
   options. Historical advisor messages remain readable. Advisor uses the existing
   base Harness dependency; workflows/Monty remain optional.
+
+### Fixed
+
+- **Compaction preserves the displayed conversation.** Local, attached, and
+  mobile history replay uses a persisted transcript separate from reduced model
+  context. Existing sessions retain their available messages; content discarded
+  by older releases cannot be recovered.
+- **Claude cancellation works before streaming starts.** Stopping a turn while
+  waiting for its first response interrupts the CLI so the next request does not
+  inherit an abandoned turn.
+- **Advisor costs remain cumulative after session resume.** Mixed-model cost
+  estimates retain pre-resume usage; unknown costs remain unknown.
 
 ## [0.11.1] - 2026-09-17
 
