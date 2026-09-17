@@ -136,20 +136,16 @@ def test_mask_keep_recent_from_env(monkeypatch):
     assert load_config().mask_keep_recent == 4
 
 
-def test_mask_min_chars_is_accepted_but_ignored_with_one_warning(monkeypatch, caplog):
-    from marim_harness.config import model as model_mod
-
+def test_removed_mask_min_chars_is_ignored_without_warning(monkeypatch, caplog):
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     monkeypatch.setenv("MARIM_MASK_MIN_CHARS", "500")
-    monkeypatch.setattr(model_mod, "_mask_min_chars_deprecation_warned", False)
     with caplog.at_level("WARNING"):
         first = load_config()
         second = load_config()
     assert not hasattr(first, "mask_min_chars")
     assert not hasattr(second, "mask_min_chars")
     warnings = [r for r in caplog.records if "MARIM_MASK_MIN_CHARS" in r.message]
-    assert len(warnings) == 1
-    assert "ignored" in warnings[0].message
+    assert not warnings
 
 
 def test_detach_fanout_defaults_on(monkeypatch):

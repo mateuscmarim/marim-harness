@@ -65,7 +65,7 @@ class StatusBar(Static):
 
     def _context_tokens(self) -> int:
         """The context-size estimate for the status bar. The link's read
-        model memoizes it (the local one on history length — estimate_tokens
+        model memoizes it (the local one on history length — estimate_token_count
         re-stringifies the whole transcript, and the bar repaints ~12.5x/s
         while a turn streams; the remote one is a field of ``GET session``)."""
         app: HarnessApp = self.app  # type: ignore[assignment]

@@ -28,18 +28,9 @@ from .config.context_report import last_context_report
 from .tools.impl.offload import OFFLOAD_GONE_NOTE, find_offload_paths
 
 
-def estimate_tokens(history: list[ModelMessage]) -> int:
-    """Approximate message tokens through Harness's public estimator.
-
-    The wrapper preserves marim's long-standing import for UI and server readers
-    while keeping estimator behavior aligned with the active upstream strategies.
-    """
-    return estimate_token_count(history)
-
-
 def _measured_or_estimated(history: list[ModelMessage], measured_tokens: int | None) -> int:
     """Use provider measurement as a floor over the public upstream estimate."""
-    estimated = estimate_tokens(history)
+    estimated = estimate_token_count(history)
     return estimated if measured_tokens is None else max(estimated, measured_tokens)
 
 

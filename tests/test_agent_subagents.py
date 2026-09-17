@@ -150,7 +150,7 @@ async def test_run_subagent_counts_usage_in_session_total(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_subagent_restricts_tools_by_mode(tmp_path: Path):
-    from marim_harness.tools.provider import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+    from marim_harness.tools.names import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
     captured: dict = {}
 
@@ -382,7 +382,7 @@ async def test_run_background_subagent_unknown_type(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_run_background_subagent_respects_mode(tmp_path: Path):
-    from marim_harness.tools.provider import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
+    from marim_harness.tools.names import NET_TOOLS, READ_TOOLS, SUBAGENT_TOOLS
 
     captured: dict = {}
 

@@ -42,10 +42,6 @@ def default_sessions_base() -> Path:
     return Path(base) / "marim-harness" / "sessions"
 
 
-# Old private name, kept as an alias for internal call sites.
-_default_base_dir = default_sessions_base
-
-
 def workspace_slug(workspace_root: Path | str) -> str:
     """Stable per-workspace directory name: ``{name}-{sha256[:12]}``."""
     root = Path(workspace_root).resolve()
@@ -428,7 +424,7 @@ class SessionManager:
 
     def __init__(self, workspace_root, base_dir: Path | None = None) -> None:
         self.workspace_root = Path(workspace_root).resolve()
-        base = Path(base_dir) if base_dir is not None else _default_base_dir()
+        base = Path(base_dir) if base_dir is not None else default_sessions_base()
         self.dir = _workspace_dir(base, self.workspace_root)
         # Ids handed out this process but not yet written to disk, so two
         # create() calls in a row can't collide before the first save.

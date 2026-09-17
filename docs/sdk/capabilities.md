@@ -1,4 +1,4 @@
-# Exported capabilities
+# Upstream capabilities
 
 ## Advisor
 
@@ -50,9 +50,10 @@ a separate ephemeral read-only conversation.
 
 ### Migration from Marim's custom Advisor
 
-For one release, `marim_harness.capabilities.Advisor` and
-`marim_harness.capabilities.advisor.Advisor` are deprecated direct aliases to
-the upstream class. They have no wrapper or separate consultation engine.
+The deprecated `marim_harness.capabilities.Advisor` and
+`marim_harness.capabilities.advisor.Advisor` aliases shipped in 0.12.0 and
+have now been removed. Import `Advisor` directly from `pydantic_ai_harness`;
+Marim no longer ships a `capabilities` package.
 Retired `id`, `description`, and `defer_loading` constructor arguments now
 raise TypeError. Calls require a prompt; per-turn caps, clipping retries,
 errors-as-advice strings, and usage trailers are removed. Existing saved

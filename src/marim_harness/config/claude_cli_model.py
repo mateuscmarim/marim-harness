@@ -1488,11 +1488,6 @@ class ClaudeCliModel(ExternalCliModel):
             await asyncio.gather(*self._lifecycle_notifications)
 
 
-# Moved to config/external_cli.py (shared with codex-cli); the old name stays
-# importable for tests that reach for it.
-_TextFolder = TextFolder
-
-
 class _ThinkingParts:
     """Vendor-part-id bookkeeping for thinking deltas: one thinking part per
     contiguous run, a fresh id once prose or a tool card intervened — the same

@@ -72,11 +72,3 @@ def main(argv: list[str], *, out=None, err=None) -> int:
     if args.action == "status":
         return _cmd_status(root, out=out)
     return _cmd_decide(root, args.action, out=out)
-
-
-# The tests (and any script driving this module directly) call `run` rather
-# than `main` — kept as a plain alias so both spellings work: `main` matches
-# the out=/err=-taking convention every other `interfaces/cli/*.py` command
-# group uses (see config.py/models.py) and is what router.py dispatches to;
-# `run` is the name this command's own brief/tests were written against.
-run = main

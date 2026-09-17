@@ -16,12 +16,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
-from pydantic_ai_harness.compaction import SummarizingCompaction
+from pydantic_ai_harness.compaction import SummarizingCompaction, estimate_token_count
 
 from marim_harness.compaction import (
     MASKED_OBSERVATION,
     _elided_pointer,
-    estimate_tokens,
 )
 from marim_harness.hooks import events as hook_events
 from marim_harness.hooks.runner import HookRunner, HookVerdict
@@ -762,7 +761,7 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
     (last_input_tokens) over the char/4 estimate. A history the estimate says fits
     but the provider says overflowed must still compact; with no measurement the
     estimate governs (legacy behavior)."""
-    from marim_harness.compaction import estimate_tokens
+    from pydantic_ai_harness.compaction import estimate_token_count
 
     deps = _make_deps(tmp_path, mode=Mode.ask)
 
@@ -783,7 +782,7 @@ async def test_maybe_compact_gates_on_measured_last_request_tokens(tmp_path):
         return c
 
     baseline = _fresh_ctrl()
-    assert estimate_tokens(baseline.history) <= 1000  # estimate says it fits
+    assert estimate_token_count(baseline.history) <= 1000  # estimate says it fits
     assert await baseline.maybe_compact() is False  # so with no measurement: no-op
 
     measured = _fresh_ctrl()
@@ -825,9 +824,9 @@ async def test_maybe_compact_resets_last_input_tokens_after_firing(tmp_path):
         ctrl.history.append(ModelRequest(parts=[UserPromptPart(content=f"turn{i}" * 8)]))
     assert len(ctrl.history) == 7
 
-    from marim_harness.compaction import estimate_tokens
+    from pydantic_ai_harness.compaction import estimate_token_count
 
-    assert estimate_tokens(ctrl.history) <= 1000  # still comfortably under budget
+    assert estimate_token_count(ctrl.history) <= 1000  # still comfortably under budget
 
     # If last_input_tokens had NOT been reset, this call would gate on
     # max(small_estimate, 5000) = 5000 > 1000 and needlessly re-compact down to
@@ -1290,7 +1289,7 @@ async def test_stage1_masking_alone_skips_the_summarizer(tmp_path):
     ctrl.history = _bulky_tool_history()
     assert await ctrl.maybe_compact() is True
     assert called == []  # stage 1 sufficed
-    assert estimate_tokens(ctrl.history) <= 8000
+    assert estimate_token_count(ctrl.history) <= 8000
 
 
 @pytest.mark.anyio
@@ -1545,7 +1544,7 @@ async def test_maybe_compact_gates_on_the_resolved_threshold(tmp_path):
     async def fake_local():
         return {"tiny": 100}  # threshold = 80 tokens — anything compacts
 
-    limits = ContextLimits(budget=1_000_000, fetch_local=fake_local)
+    limits = ContextLimits(budget=1_000_000, fetchers=[fake_local])
     deps = _make_deps(tmp_path, mode=Mode.ask)
     ctrl = SessionController(None, None, deps, 1_000_000, 1, auxiliary_model=TestModel())
     ctrl.limits = limits

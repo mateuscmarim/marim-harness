@@ -8,6 +8,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
     UserPromptPart,
 )
+from pydantic_ai_harness.compaction import estimate_token_count
 
 from marim_harness.compaction import (
     ELIDED_POINTER_PREFIX,
@@ -18,7 +19,6 @@ from marim_harness.compaction import (
     _elided_pointer,
     _measured_or_estimated,
     elided_pointer_path,
-    estimate_tokens,
     render_transcript,
     repair_masked_narrowed_returns,
     revalidate_elided_pointers,
@@ -33,23 +33,15 @@ def _tool_return(call_id: str, content: object) -> ModelRequest:
     )
 
 
-def test_estimate_tokens_wraps_upstream_estimator():
-    from pydantic_ai_harness.compaction import estimate_token_count
-
-    history = [ModelRequest(parts=[UserPromptPart(content="hello " * 100)])]
-    assert estimate_tokens(history) == estimate_token_count(history)
-    assert estimate_tokens([]) == 0
-
-
-def test_estimate_tokens_uses_upstream_binary_behavior():
+def test_upstream_estimator_uses_binary_behavior():
     image = BinaryContent(data=b"x" * 500_000, media_type="image/png")
     history = [ModelRequest(parts=[UserPromptPart(content=["look", image])])]
-    assert estimate_tokens(history) < 100
+    assert estimate_token_count(history) < 100
 
 
 def test_measured_tokens_remain_a_floor_over_upstream_estimate():
     history = [ModelRequest(parts=[UserPromptPart(content="x" * 400)])]
-    estimated = estimate_tokens(history)
+    estimated = estimate_token_count(history)
     assert _measured_or_estimated(history, None) == estimated
     assert _measured_or_estimated(history, estimated - 1) == estimated
     assert _measured_or_estimated(history, estimated + 1) == estimated + 1

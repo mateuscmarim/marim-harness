@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from marim_harness.tools.provider import (
+from marim_harness.tools.names import (
     GATED_TOOLS,
     NET_TOOLS,
     READ_TOOLS,

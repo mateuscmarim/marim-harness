@@ -215,9 +215,3 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         file=out,
     )
     return 1 if result.failed else 0
-
-
-# `run` is the spelling this command's tests were written against; `main` is
-# what router.py dispatches to and what every other cli/* module exposes. Same
-# alias arrangement as trust_cmd.
-run = main

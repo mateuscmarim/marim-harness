@@ -30,8 +30,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic_ai.usage import RunUsage
+from pydantic_ai_harness.compaction import estimate_token_count
 
-from ...compaction import estimate_tokens
 from ...config.backend_state import backend_snapshot
 from ...jobs import Job
 from ...runtime.permissions import Mode
@@ -188,7 +188,7 @@ class LocalLinkInfo:
 
     @property
     def history_tokens(self) -> int:
-        """Memoized on (length, version): estimate_tokens serializes every
+        """Memoized on (length, version): estimate_token_count serializes every
         part of every message, and the status bar reads this ~12.5×/s while
         a turn streams for a number that only moves on commit."""
         session = self._harness.session
@@ -196,7 +196,7 @@ class LocalLinkInfo:
         key = (len(history), session.history_version)
         if key != self._tokens_key:
             self._tokens_key = key
-            self._tokens = estimate_tokens(history)
+            self._tokens = estimate_token_count(history)
         return self._tokens
 
     @property

@@ -8,6 +8,22 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Removed
+
+- **Deprecated Advisor import aliases.** The `marim_harness.capabilities`
+  package has been removed after its 0.12.0 compatibility release. Import
+  `Advisor` directly with `from pydantic_ai_harness import Advisor` instead.
+  Runtime advisor selection and `HarnessBuilder.with_capability` are unchanged.
+- **Superseded compatibility shims.** Token-estimation callers now import
+  `estimate_token_count` from `pydantic_ai_harness.compaction`; tool constants
+  come from `marim_harness.tools.names`. Context discovery accepts `fetchers=`
+  instead of `fetch_catalog=` or `fetch_local=`. Internal `_TextFolder`,
+  `_default_base_dir`, and CLI `run` aliases are removed in favor of `TextFolder`,
+  `default_sessions_base`, and `main` in their owning modules.
+- **Expired masking-setting warning.** `MARIM_MASK_MIN_CHARS` remains ignored,
+  but no longer emits a compatibility warning or appears in configuration docs.
+  Saved-session readers and `MARIM_MAX_CONTEXT_TOKENS` support are unchanged.
+
 ## [0.12.0] - 2026-09-17
 
 ### Changed

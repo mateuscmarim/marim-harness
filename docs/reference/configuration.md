@@ -265,7 +265,6 @@ show (a `model/list` against the app-server) and reports
 | `MARIM_CONTEXT_BUDGETS` | empty | Per-model budget overrides: comma-separated `pattern=tokens` pairs. |
 | `MARIM_MASK_OBSERVATIONS` | `1` (on) | Boolean. At compaction, let the upstream strategy clear older non-mutating tool results. |
 | `MARIM_MASK_KEEP_RECENT` | `4` | Positive int. Approximate number of recent tool-call/result pairs clearing retains. |
-| `MARIM_MASK_MIN_CHARS` | — | **Deprecated and ignored.** Accepted for one compatibility release with a warning; upstream clearing uses a whole-pass token-savings threshold. |
 
 Compaction and masking trigger at `min(budget, 0.8 × window)`, where the 0.8
 safety ratio applies only when the window is *known* (discovered from the

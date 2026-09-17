@@ -79,6 +79,12 @@ def test_threshold_unknown_window_is_budget_alone():
     assert ContextLimits(budget=100_000).threshold(None) == 100_000
 
 
+@pytest.mark.parametrize("keyword", ["fetch_catalog", "fetch_local"])
+def test_removed_discovery_keywords_are_rejected(keyword):
+    with pytest.raises(TypeError, match=keyword):
+        ContextLimits(**{keyword: None})
+
+
 def test_threshold_known_window_applies_safety_ratio():
     limits = ContextLimits(budget=None, window_override=200_000)
     assert limits.threshold("m") == 160_000  # 0.8 * window
@@ -99,14 +105,14 @@ def test_backend_reported_window_updates_threshold_and_respects_override():
 
 
 @pytest.mark.anyio
-async def test_resolve_discovers_windows_from_catalog_once():
+async def test_resolve_discovers_windows_from_fetcher_once():
     calls = {"n": 0}
 
-    async def fake_catalog():
+    async def fake_windows():
         calls["n"] += 1
-        return [ModelEntry(id="anthropic/claude-opus-4-8", name="Opus", context_window=200_000)]
+        return {"anthropic/claude-opus-4-8": 200_000}
 
-    limits = ContextLimits(budget=None, fetch_catalog=fake_catalog)
+    limits = ContextLimits(budget=None, fetchers=[fake_windows])
     assert await limits.resolve("anthropic/claude-opus-4-8") == 160_000
     assert limits.threshold("anthropic/claude-opus-4-8") == 160_000  # cached, sync
     await limits.resolve("anthropic/claude-opus-4-8")
@@ -121,7 +127,7 @@ async def test_resolve_lmstudio_loaded_window_beats_large_budget():
     async def fake_local():
         return {"qwen/qwen3.5-9b": 101_039}
 
-    limits = ContextLimits(budget=180_000, fetch_local=fake_local)
+    limits = ContextLimits(budget=180_000, fetchers=[fake_local])
     assert await limits.resolve("qwen/qwen3.5-9b") == int(0.8 * 101_039)
 
 
@@ -134,7 +140,7 @@ async def test_invalidate_forces_a_fresh_probe():
         calls["n"] += 1
         return dict(windows)
 
-    limits = ContextLimits(budget=None, fetch_local=fake_local)
+    limits = ContextLimits(budget=None, fetchers=[fake_local])
     assert await limits.resolve("m") == int(0.8 * 8_192)
     windows["m"] = 32_768  # user reloads the model
     limits.invalidate()
@@ -147,7 +153,7 @@ async def test_env_window_override_beats_discovery():
     async def fake_local():
         return {"m": 500_000}
 
-    limits = ContextLimits(budget=None, window_override=10_000, fetch_local=fake_local)
+    limits = ContextLimits(budget=None, window_override=10_000, fetchers=[fake_local])
     assert await limits.resolve("m") == 8_000  # 0.8 * override, discovery ignored
 
 
@@ -156,7 +162,7 @@ async def test_discovery_failure_falls_back_silently():
     async def broken():
         raise RuntimeError("boom")
 
-    limits = ContextLimits(budget=100_000, fetch_local=broken)
+    limits = ContextLimits(budget=100_000, fetchers=[broken])
     assert await limits.resolve("m") == 100_000  # budget alone; never raises
 
 
@@ -287,7 +293,7 @@ async def test_window_for_returns_the_discovered_window_or_none():
     async def fake_local():
         return {"ornith-1.0-9b": 102_206}
 
-    limits = ContextLimits(budget=100_000, fetch_local=fake_local)
+    limits = ContextLimits(budget=100_000, fetchers=[fake_local])
     assert limits.window_for("ornith-1.0-9b") is None  # not discovered yet
     await limits.resolve("ornith-1.0-9b")
     assert limits.window_for("ornith-1.0-9b") == 102_206  # raw, not 0.8x

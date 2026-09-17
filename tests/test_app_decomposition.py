@@ -34,7 +34,7 @@ async def test_status_presenter_owns_busy_and_drives_title(tmp_path: Path):
 
 def test_context_tokens_memoized_until_history_changes(monkeypatch):
     """The status bar repaints every second while idle and ~12.5x/s while a turn
-    streams. estimate_tokens() serializes the *whole* history (O(total bytes)), so
+    streams. estimate_token_count() serializes the *whole* history (O(total bytes)), so
     it must be cached and recomputed only when the history actually changes —
     re-stringifying the transcript on every repaint is pure waste that grows with
     session length. The memo lives on the local link's read model (phase 4a),
@@ -50,7 +50,7 @@ def test_context_tokens_memoized_until_history_changes(monkeypatch):
         calls["n"] += 1
         return len(history) * 10
 
-    monkeypatch.setattr(link_mod, "estimate_tokens", fake_estimate)
+    monkeypatch.setattr(link_mod, "estimate_token_count", fake_estimate)
 
     history = [object(), object()]
 

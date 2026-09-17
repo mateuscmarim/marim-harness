@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from marim_harness.config import claude_cli_model as ccm
 from marim_harness.config.claude_cli_model import ClaudeCliModel
-from marim_harness.config.external_cli import CliModelError, ExternalCliModel, TextFolder
+from marim_harness.config.external_cli import ExternalCliModel, TextFolder
 from marim_harness.session.ctrl import aux_model_for
 from tests.conftest import _make_deps, _make_harness, _text_model
 
@@ -68,9 +67,6 @@ def test_claude_cli_model_is_an_external_cli_model():
     assert issubclass(ClaudeCliModel, ExternalCliModel)
     assert ClaudeCliModel.provider_id == "claude-cli"
     assert ClaudeCliModel("x").system == "claude-cli"
-    # Backwards-compatible names still resolve from the old module.
-    assert ccm.CliModelError is CliModelError
-    assert ccm._TextFolder is TextFolder
 
 
 def test_base_defaults_are_inert():

@@ -43,12 +43,8 @@ WINDOW_SAFETY_RATIO = 0.8
 # max_context_tokens default, preserved exactly.
 DEFAULT_THRESHOLD = 100_000
 
-# Injected discovery callables (built by build_context_limits per provider):
-# a catalog fetch yielding ModelEntry-likes with .id/.context_window, a local
-# probe yielding {model_id: window}, and the normalized form every source is
-# reduced to — a window fetch yielding {model_id: window}.
-CatalogFetch = Callable[[], Awaitable[list]]
-LocalFetch = Callable[[], Awaitable[dict[str, int]]]
+# Injected discovery callables (built by build_context_limits per provider)
+# all return the same normalized {model_id: window} mapping.
 WindowFetch = Callable[[], Awaitable[dict[str, int]]]
 
 
@@ -106,21 +102,14 @@ class ContextLimits:
         budget: int | None = DEFAULT_THRESHOLD,
         budget_overrides_raw: str = "",
         window_override: int | None = None,
-        fetch_catalog: CatalogFetch | None = None,
-        fetch_local: LocalFetch | None = None,
         fetchers: list[WindowFetch] | None = None,
     ) -> None:
         self._budget = budget
         self._overrides = parse_budget_overrides(budget_overrides_raw)
         self._window_override = window_override
         # Every discovery source is normalized to a WindowFetch and merged at
-        # resolve time. The legacy single-source kwargs are folded in so older
-        # call sites and tests keep working unchanged.
+        # resolve time.
         self._fetchers: list[WindowFetch] = list(fetchers or [])
-        if fetch_local is not None:
-            self._fetchers.append(fetch_local)
-        if fetch_catalog is not None:
-            self._fetchers.append(_catalog_windows(fetch_catalog))
         self._windows: dict[str, int] = {}
         # Single-flight discovery: the first resolve() creates this task and
         # concurrent callers await the SAME task. That guarantee is what lets
@@ -243,20 +232,6 @@ class ContextLimits:
         self._windows.clear()
         self._discovery = None
         self._generation += 1
-
-
-def _catalog_windows(fetch_catalog: CatalogFetch) -> WindowFetch:
-    """Normalize a catalog fetch (ModelEntry-likes) into a window fetch."""
-
-    async def _windows() -> dict[str, int]:
-        windows: dict[str, int] = {}
-        for entry in await fetch_catalog():
-            window = getattr(entry, "context_window", None)
-            if isinstance(window, int) and window > 0:
-                windows[entry.id] = window
-        return windows
-
-    return _windows
 
 
 def _qualified(provider: str, windows: dict[str, int]) -> dict[str, int]:

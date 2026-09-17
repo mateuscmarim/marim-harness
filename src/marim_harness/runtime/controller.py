@@ -21,6 +21,7 @@ from pydantic_ai.messages import BinaryContent, ModelMessage
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness import Advisor
+from pydantic_ai_harness.compaction import estimate_token_count
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from .deps import Deps, HarnessAgent
 
 from ..advisor import ADVISOR_GUIDANCE
-from ..compaction import estimate_tokens, last_request_input_tokens
+from ..compaction import last_request_input_tokens
 from ..config.context_report import current_context_report
 from ..config.external_cli import ExternalCliModel
 from ..thinking import settings_for
@@ -1045,7 +1046,7 @@ class TurnController:
         contention = overflow and overflow_is_contention(
             max(
                 self.session.last_input_tokens or 0,
-                estimate_tokens(list(captured) or list(self.session.history)),
+                estimate_token_count(list(captured) or list(self.session.history)),
             ),
             self.session.known_window,
         )

@@ -35,8 +35,9 @@ from typing import Any
 import httpx
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.usage import RunUsage
+from pydantic_ai_harness.compaction import estimate_token_count
 
-from ..compaction import estimate_tokens, repair_masked_narrowed_returns
+from ..compaction import repair_masked_narrowed_returns
 from ..config.context_report import ContextReport
 from ..images import rehydrate_images
 from ..jobs import Job
@@ -413,7 +414,7 @@ class RemoteSessionHost:
         self.info.history_tokens = (
             self._history_context_tokens
             if self._history_context_tokens is not None
-            else estimate_tokens(messages)
+            else estimate_token_count(messages)
         )
         self.info.message_count = len(messages)
         self._counted_messages = len(messages)
@@ -433,7 +434,7 @@ class RemoteSessionHost:
             if self._history_context_tokens is not None:
                 self.info.history_tokens = self._history_context_tokens
             else:
-                self.info.history_tokens += estimate_tokens(
+                self.info.history_tokens += estimate_token_count(
                     _deserialise(raw, self.target.session_id)
                 )
             self._counted_messages += len(raw)
