@@ -68,8 +68,8 @@ plain tool path, not marim's approval gating or `CommandPolicy`. Prefer
 marim's own groups (`with_bash`, `with_defaults`) where they overlap, and
 reserve capabilities for what marim doesn't provide.
 
-For upstream Advisor composition and the legacy import aliases, see
-[Exported capabilities](sdk/capabilities.md).
+For upstream Advisor composition and migration from the removed import aliases, see
+[Upstream capabilities](sdk/capabilities.md).
 
 Persistent sessions compact through Pydantic AI Harness strategies. Advanced
 embedders can pass `compaction_strategy=` through `with_config_overrides`; use a

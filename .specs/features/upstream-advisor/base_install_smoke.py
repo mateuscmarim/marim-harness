@@ -11,7 +11,6 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai_harness import Advisor
 
-from marim_harness.capabilities import Advisor as LegacyAdvisor
 from marim_harness.runtime.builder import HarnessBuilder
 
 
@@ -24,7 +23,6 @@ def executor(messages, info):
 
 
 async def main():
-    assert LegacyAdvisor is Advisor
     try:
         version("pydantic-monty")
     except PackageNotFoundError:

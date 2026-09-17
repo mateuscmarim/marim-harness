@@ -1,5 +1,6 @@
 """Executable contracts for the upstream Advisor migration (offline models only)."""
 
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -43,17 +44,18 @@ async def test_runtime_uses_upstream_advisor(tmp_path):
     assert seen[-1].content == "Check the rollback."
 
 
-def test_legacy_imports_are_upstream_aliases():
-    from marim_harness.capabilities import Advisor as package_alias
-    from marim_harness.capabilities.advisor import Advisor as module_alias
+def test_legacy_advisor_module_is_removed():
+    with pytest.raises(ModuleNotFoundError, match=r"marim_harness\.capabilities"):
+        import_module("marim_harness.capabilities.advisor")
 
-    assert package_alias is module_alias is Advisor
-    defaults = package_alias("test")
+
+def test_direct_upstream_advisor_defaults():
+    defaults = Advisor("test")
     assert defaults.mode == "auto" and defaults.forward_history is False
     assert defaults.max_uses is defaults.max_tokens is defaults.caching is None
     for option in ("id", "description", "defer_loading"):
         with pytest.raises(TypeError):
-            package_alias("test", **{option: True})
+            Advisor("test", **{option: True})
 
 
 def returns(messages):

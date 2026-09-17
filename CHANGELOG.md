@@ -8,6 +8,13 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Removed
+
+- **Deprecated Advisor import aliases.** The `marim_harness.capabilities`
+  package has been removed after its 0.12.0 compatibility release. Import
+  `Advisor` directly with `from pydantic_ai_harness import Advisor` instead.
+  Runtime advisor selection and `HarnessBuilder.with_capability` are unchanged.
+
 ## [0.12.0] - 2026-09-17
 
 ### Changed
