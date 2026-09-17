@@ -9,6 +9,7 @@ file, and (when it's the model's to fix) the next turn.
 """
 
 import json
+import os
 
 import httpx
 import pytest
@@ -181,6 +182,83 @@ def test_dump_writes_full_raw_body_to_marim_file(tmp_path):
 def test_dump_returns_none_for_plain_exception(tmp_path):
     assert dump_provider_error(tmp_path, ValueError("boom")) is None
     assert not (tmp_path / ".marim" / "last-provider-error.json").exists()
+
+
+def test_dump_does_not_follow_marim_directory_symlink(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace / ".marim").symlink_to(outside, target_is_directory=True)
+
+    assert dump_provider_error(workspace, _api_error(_OPENROUTER_502)) is None
+    assert list(outside.iterdir()) == []
+
+
+def test_dump_replaces_leaf_symlink_without_touching_target(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text("keep me")
+    directory = tmp_path / ".marim"
+    directory.mkdir()
+    leaf = directory / "last-provider-error.json"
+    leaf.symlink_to(outside)
+
+    assert dump_provider_error(tmp_path, _api_error(_OPENROUTER_502)) == leaf
+    assert outside.read_text() == "keep me"
+    assert not leaf.is_symlink()
+    assert json.loads(leaf.read_text())["body"] == _OPENROUTER_502
+
+
+def test_dump_failure_is_best_effort_and_preserves_previous_dump(tmp_path, monkeypatch):
+    directory = tmp_path / ".marim"
+    directory.mkdir()
+    leaf = directory / "last-provider-error.json"
+    leaf.write_text("previous dump")
+
+    def fail_replace(*args, **kwargs):
+        raise PermissionError("cannot replace")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    assert dump_provider_error(tmp_path, _api_error(_OPENROUTER_502)) is None
+    assert leaf.read_text() == "previous dump"
+    assert list(directory.iterdir()) == [leaf]
+
+
+def test_dump_stays_anchored_when_directory_is_replaced(tmp_path, monkeypatch):
+    directory = tmp_path / ".marim"
+    directory.mkdir()
+    pinned = tmp_path / "original-marim"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    replace = os.replace
+
+    def swap_directory_then_replace(*args, **kwargs):
+        directory.rename(pinned)
+        directory.symlink_to(outside, target_is_directory=True)
+        return replace(*args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", swap_directory_then_replace)
+    dump_provider_error(tmp_path, _api_error(_OPENROUTER_502))
+    assert list(outside.iterdir()) == []
+    assert json.loads((pinned / "last-provider-error.json").read_text())["body"] == _OPENROUTER_502
+    assert len(list(pinned.iterdir())) == 1
+
+
+def test_dump_refuses_symlinked_workspace_ancestor(tmp_path):
+    outside = tmp_path / "outside"
+    workspace = outside / "workspace"
+    workspace.mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(outside, target_is_directory=True)
+
+    assert dump_provider_error(alias / "workspace", _api_error(_OPENROUTER_502)) is None
+    assert list(workspace.iterdir()) == []
+
+
+def test_dump_fails_closed_without_no_follow_support(tmp_path, monkeypatch):
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+    assert dump_provider_error(tmp_path, _api_error(_OPENROUTER_502)) is None
+    assert not (tmp_path / ".marim").exists()
 
 
 def test_actionable_note_for_provider_client_error():
@@ -531,6 +609,33 @@ async def test_run_turn_dumps_provider_error_and_stashes_note(tmp_path):
     assert "invalid request" in dump.read_text()
     assert harness.turn_controller._pending_error_note is not None
     assert "400" in harness.turn_controller._pending_error_note
+
+
+@pytest.mark.anyio
+async def test_run_turn_preserves_provider_error_when_dump_directory_is_symlinked(tmp_path):
+    original = _api_error({"error": {"message": "invalid request", "code": 400}})
+
+    def fn(messages, info):
+        raise original
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    harness = Harness(
+        model=FunctionModel(fn),
+        provider=BuiltinToolProvider(),
+        deps=_make_deps(workspace),
+        instructions="x",
+    )
+    (workspace / ".marim").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(APIError) as caught:
+        await harness.run_turn("hi")
+
+    assert caught.value is original
+    assert list(outside.iterdir()) == []
+    assert harness.turn_controller._pending_error_note is not None
 
 
 def test_is_context_overflow_detects_model_http_error_body():
