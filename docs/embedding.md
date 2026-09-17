@@ -107,6 +107,25 @@ retries; dict: one corrective round), and exhaustion surfaces as the
 before trusting `structured_output`. Every `run_turn` returns a
 `TurnOutcome`; plain harnesses get the text in `.result`.
 
+The `codex-cli` provider forwards typed outputs through the app-server's native
+`outputSchema`. Codex still owns investigation and tool execution. Marim buffers
+its final message until the turn completes, validates that JSON, and keeps progress
+and tool activity separate from the result. Streaming and non-streaming calls use
+the same contract; invalid output follows the ordinary bounded validation retries.
+
+Embedders that own a private `CodexServer` can pass `env` and `config_overrides`
+(a tuple of Codex `key=TOML-value` overrides). Use this for trusted host policy,
+such as `project_doc_max_bytes=0` for an untrusted repository or the sandbox
+implementation required by a container. Marim's extension-isolation overrides
+remain applied afterward. Never derive these overrides from model or PR content.
+
+`CodexCliModel.observed_usage` is a cumulative provider ledger, including tokens
+reported before failure or cancellation. A request that raises before returning
+a model response cannot contribute those tokens to Pydantic AI's normal response
+ledger. An embedder that owns a fresh Codex model per attempt can use
+`observed_usage` for attempt accounting; do not add it to response usage, which
+would count successful turns twice. Unreported provider usage cannot be recovered.
+
 ### Session claims
 
 A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))

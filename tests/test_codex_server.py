@@ -68,6 +68,27 @@ async def test_start_initializes_and_checks_version(tmp_path):
         await server.aclose()
 
 
+async def test_embedding_config_overrides_keep_extension_isolation(tmp_path):
+    server = CodexServer(
+        binary=fake_codex_bin(tmp_path, {}),
+        config_overrides=("project_doc_max_bytes=0", "features.use_legacy_landlock=true"),
+    )
+    try:
+        await server.start()
+        argv = read_argv(tmp_path)
+        assert argv[:4] == [
+            "-c",
+            "project_doc_max_bytes=0",
+            "-c",
+            "features.use_legacy_landlock=true",
+        ]
+        assert "features.plugins=false" in argv
+        assert "features.apps=false" in argv
+        assert argv[-1] == "app-server"
+    finally:
+        await server.aclose()
+
+
 def test_handle_remembers_the_completed_turn():
     """The bookkeeping `start_turn` relies on when the completion beat it."""
     handle = ThreadHandle(thread_id="t", events=asyncio.Queue(), request_handler=_decline)
