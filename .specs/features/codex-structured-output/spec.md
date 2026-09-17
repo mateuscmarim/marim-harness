@@ -36,6 +36,7 @@ Open questions: none; live deployment is a separate integration gate.
 3. WHEN a typed turn succeeds or fails validation THEN Marim SHALL preserve observed usage and the existing bounded validation retry behavior. (STRUCT-03)
 4. WHEN a caller requests plain text THEN Marim SHALL retain its existing text, tool rendering, lifecycle and cancellation behavior. (STRUCT-04)
 5. WHEN HarnessBuilder.with_output_type is used with Codex THEN run_turn SHALL return the validated structured_output. (STRUCT-05)
+6. WHEN an embedder supplies trusted Codex configuration overrides THEN the private server SHALL forward them while retaining Marim's extension-isolation overrides. (STRUCT-06)
 
 ## Edge Cases
 
@@ -49,8 +50,9 @@ Cancellation must not turn partial progress into a successful structured result.
    its profile constructor seam in external_cli.py, and regression tests.
    Gate: adapter, builder and lifecycle tests; lint and type checks.
    Commit: fix(codex): honor structured output in embedded turns.
-2. Document the SDK contract in docs/embedding.md; run the full Marim gate and
-   independent TLC verification before publishing the fix.
+2. Expose trusted server configuration overrides in codex/server.py and cover
+   their argv and isolation ordering in test_codex_server.py. Document the SDK
+   contract; run independent TLC verification before publishing the fix.
 
 Assumption: the existing server transport already forwards outputSchema.
 Success: real adapter/fake server round trips and a live review return a typed
@@ -65,6 +67,7 @@ object without changing the provider or stopping Codex's investigation early.
 | STRUCT-03 | test_codex_invalid_output_is_retried_with_schema and usage assertions | Implemented |
 | STRUCT-04 | Existing test_codex_cli_model and test_codex_lifecycle suites | Implemented |
 | STRUCT-05 | test_builder_validates_codex_structured_output | Implemented |
+| STRUCT-06 | test_embedding_config_overrides_keep_extension_isolation | Implemented |
 
 ## Execution Evidence
 
@@ -75,3 +78,8 @@ The full suite passed 5075 tests (9 existing opt-in skips, 1 existing xfail),
 with the focused adapter/lifecycle/builder suite. Ruff and pyright pass.
 All new assertions map to STRUCT-01 through STRUCT-05; no unrelated contracts
 or implementation-shape assertions were added. Independent verification pending.
+
+Step 1 committed as 37920a16. Step 2 adds the private-server configuration seam
+needed to retain the review service's read-only container sandbox and exclusion
+of PR instructions; extension isolation still takes precedence. The server
+regression suite is the gate for this additive configuration field.

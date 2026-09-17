@@ -113,6 +113,12 @@ its final message until the turn completes, validates that JSON, and keeps progr
 and tool activity separate from the result. Streaming and non-streaming calls use
 the same contract; invalid output follows the ordinary bounded validation retries.
 
+Embedders that own a private `CodexServer` can pass `env` and `config_overrides`
+(a tuple of Codex `key=TOML-value` overrides). Use this for trusted host policy,
+such as `project_doc_max_bytes=0` for an untrusted repository or the sandbox
+implementation required by a container. Marim's extension-isolation overrides
+remain applied afterward. Never derive these overrides from model or PR content.
+
 ### Session claims
 
 A `Harness` with a `manager` (see [Sessions & state](sdk/sessions-and-state.md))
