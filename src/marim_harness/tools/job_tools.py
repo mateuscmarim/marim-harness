@@ -72,22 +72,29 @@ _WAIT_TIMEOUT_NUDGE = (
     "harness wakes you when it finishes and delivers its report. Wait again "
     "only if you must block on it now."
 )
+_WAIT_RELEASED_NUDGE = (
+    "The job did NOT finish. The user's new message is included in this "
+    "request — read it and act on it first. The job keeps running: wait on it "
+    "again when you need its result, or end your turn and its report is "
+    "delivered when it finishes."
+)
 
 
-async def _job_wait(ctx: RunContext[Deps], id: str, timeout: float) -> str:
-    """The shared body of wait_for_job() and job("wait"). A timed-out wait is
-    detected by the job still being in "running" state after the wait returns
-    (the registry's message stays opaque here); interactive sessions get an
-    end-your-turn nudge appended because the wake loop makes that the cheaper
-    move, while headless — which has no wake loop and re-waiting IS the right
-    call — keeps the bare note. Softer than the poll guard on purpose: a
-    timed-out wait sometimes precedes a legitimate re-wait mid-task."""
-    body = await ctx.deps.jobs.wait(id, timeout)
-    target = ctx.deps.jobs.get(id)
-    timed_out = target is not None and target.status == "running"
-    if timed_out and ctx.deps.ui.interactive:
-        return f"{body}\n\n{_WAIT_TIMEOUT_NUDGE}"
-    return body
+async def _job_wait(ctx: RunContext[Deps], id: str, timeout: float | None) -> str:
+    """The shared body of wait_for_job() and job("wait"). The registry says how
+    the wait ended: a steer-released wait gets a read-the-guidance note in
+    every mode (the guidance is what ended it), while an explicit timeout gets
+    the end-your-turn nudge only in interactive sessions — the wake loop makes
+    that the cheaper move there, whereas headless has no wake loop and
+    re-waiting IS the right call, so it keeps the bare note. Softer than the
+    poll guard on purpose: a timed-out wait sometimes precedes a legitimate
+    re-wait mid-task."""
+    outcome = await ctx.deps.jobs.wait_outcome(id, timeout)
+    if outcome.kind == "released":
+        return f"{outcome.text}\n\n{_WAIT_RELEASED_NUDGE}"
+    if outcome.kind == "timeout" and ctx.deps.ui.interactive:
+        return f"{outcome.text}\n\n{_WAIT_TIMEOUT_NUDGE}"
+    return outcome.text
 
 
 def jobs(ctx: RunContext[Deps]) -> str:
@@ -107,16 +114,20 @@ def job_output(ctx: RunContext[Deps], id: str) -> str:
     return _job_output_read(ctx, id)
 
 
-async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float = 60) -> str:
-    """Block until a background job finishes (up to `timeout` seconds — note this
-    one is seconds, unlike bash's millisecond timeout), then
-    return its result. If it's still running when the timeout elapses, the job
-    keeps going and you get a "still running" note — if you don't need the
-    result to continue this turn, end your turn instead of re-waiting; the
-    report is delivered when it finishes. Use this only when you must block on
-    a job's result before continuing. To make progress meanwhile, emit
-    independent read_file/grep calls in the SAME response as this wait — they
-    run concurrently while the job finishes."""
+async def wait_for_job(ctx: RunContext[Deps], id: str, timeout: float | None = None) -> str:
+    """Block until a background job finishes, then return its result. By default
+    there is no timeout: one call waits through completion, however long the
+    job takes — never re-wait in a loop. Pass `timeout` (seconds — unlike
+    bash's millisecond timeout) only if you need a bounded block; on expiry the
+    job keeps going and you get a "still running" note. If the user sends new
+    guidance while you wait, the wait is released early with a note saying so:
+    the job is still running, the user's message is in that same request —
+    act on it, then wait again or end your turn (the report is delivered when
+    the job finishes). Use this only when you must block on a job's result
+    before continuing; otherwise end your turn and the harness wakes you with
+    the report. To make progress meanwhile, emit independent read_file/grep
+    calls in the SAME response as this wait — they run concurrently while the
+    job finishes."""
     return await _job_wait(ctx, id, timeout)
 
 
@@ -130,16 +141,20 @@ async def job(
     ctx: RunContext[Deps],
     action: Literal["list", "output", "wait", "cancel"],
     id: str = "",
-    timeout: float = 60,
+    timeout: float | None = None,
 ) -> str:
     """Manage background jobs you've launched this session. `action`:
     - "list": show every job with its id, kind (bash/agent), label, and status.
     - "output": read job `id`'s output without blocking — final result if done,
       live output so far for a running bash job.
-    - "wait": block until job `id` finishes (up to `timeout` seconds) and return
-      its result; a still-running note if the timeout elapses (the job keeps
-      going — if you don't need the result this turn, end your turn instead of
-      re-waiting; the report is delivered when it finishes).
+    - "wait": block until job `id` finishes and return its result. No timeout
+      by default — one call waits through completion; never re-wait in a
+      loop. Pass `timeout` (seconds) only for a bounded block: on expiry the
+      job keeps going and you get a still-running note. If the user sends new
+      guidance while you wait, the wait is released early with a note saying
+      so — the job is still running and the user's message is in that same
+      request; act on it, then wait again or end your turn (the report is
+      delivered when it finishes).
     - "cancel": stop running job `id` (kills its process or cancels its run).
     `id` is required for every action except "list"; `timeout` applies only to
     "wait" and is in seconds (unlike bash's millisecond timeout). Never call
