@@ -15,6 +15,7 @@ from marim_harness.runtime.builder import HarnessBuilder
 from marim_harness.session import SessionStore, TranscriptStore
 from marim_harness.subagents.cli_backend import ClaudeCliRunner
 from marim_harness.workflows.catalog import WorkflowBinding
+from marim_harness.workflows.invocation import WorkflowInvocation, current_workflow
 from marim_harness.workspace.agents import AgentDef
 from tests.conftest import _make_deps
 from tests.fakes import fake_claude_bin, fake_codex_bin, read_claude_argvs, read_request_log
@@ -124,17 +125,70 @@ async def test_native_request_cancellation_does_not_start_queued_worker(tmp_path
     h.deps.ui.on_workflow_spawn = announce
     h.deps.ui.on_workflow_spawn_done = lambda *args: cards.append(args)
     running = asyncio.create_task(h.run_turn("run workflow"))
+
+    async def wait_for_admission():
+        while h.subagents._limiter.waiting_count != 1:
+            await asyncio.sleep(0)
+
     try:
         await asyncio.wait_for(entered.wait(), 3)
         await asyncio.wait_for(queued.wait(), 3)
+        await asyncio.wait_for(wait_for_admission(), 3)
+        # The request boundary does not promise FIFO across independent graphs.
+        # Whichever worker got capacity first is the only one allowed to start.
+        started_requests = list(requests)
+        assert len(started_requests) == 1
         await _cancel(running)
         assert cleaned.is_set()
-        assert len(requests) == 1 and "first" in requests[0]
+        assert requests == started_requests
         assert {card[0] for card in cards} == {"workflow::wf1", "workflow::wf2"}
         _assert_paired(h.session.store.load()[0])
     finally:
         if not running.done():
             await _cancel(running)
+        await h.aclose()
+
+
+async def test_aborted_workflow_cannot_admit_queued_request_before_graph_cancellation(tmp_path):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    requests = []
+
+    async def worker(task):
+        requests.append(task)
+        entered.set()
+        await release.wait()
+        return ModelResponse(parts=[TextPart("done")])
+
+    h = _harness(tmp_path, _model("", worker), subagent_concurrency=1)
+    tasks = [asyncio.create_task(h.subagents.run("worker-role", "holder", "holder"))]
+    state = WorkflowInvocation("aborted-workflow", h.deps)
+    token = current_workflow.set(state)
+
+    async def wait_for_admission():
+        while h.subagents._limiter.waiting_count != 1:
+            await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        tasks.append(asyncio.create_task(h.subagents.run("worker-role", "queued", "queued")))
+        await asyncio.wait_for(wait_for_admission(), 3)
+        # Reproduce the window before upstream propagates cancellation to the
+        # queued graph, without relying on a particular event-loop ordering.
+        state.aborted = True
+        release.set()
+        assert await asyncio.wait_for(tasks[0], 3) == "done"
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(tasks[1], 3)
+        assert requests == ["holder"]
+        assert h.subagents._limiter.running_count == 0
+        assert h.subagents._limiter.waiting_count == 0
+    finally:
+        current_workflow.reset(token)
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await h.aclose()
 
 
