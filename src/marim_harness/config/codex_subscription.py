@@ -2,6 +2,10 @@
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pydantic_ai.profiles import ModelProfile
 
 LOGIN_HELP = (
     "Codex subscription authentication failed. Run `codex login`, then restart Marim. "
@@ -27,6 +31,18 @@ def subscription_provider():
         raise UserError(LOGIN_HELP) from None
 
 
+def _subscription_profile(profile: "ModelProfile") -> "ModelProfile":
+    # Core 2.44/2.45 advertises native tool search without enabling its deferred
+    # schemas. That sends an orphan tool_search and Codex rejects it with HTTP 400.
+    # Fill only the missing mode; upstream still owns discovery and all other
+    # Codex dialect settings, including streaming and store=false.
+    if profile.get("tool_deferral_mode") is None and any(
+        tool.kind == "tool_search" for tool in profile.get("supported_native_tools", ())
+    ):
+        return {**profile, "tool_deferral_mode": "with_tool_search"}
+    return profile
+
+
 def subscription_model(model_id: str | None, provider=None):
     from pydantic_ai.models.openai_codex import OpenAICodexModel
 
@@ -35,4 +51,6 @@ def subscription_model(model_id: str | None, provider=None):
             "openai-codex requires MARIM_CODEX_SUBSCRIPTION_MODEL, MARIM_MODEL when it is the "
             "default provider, or a qualified openai-codex:<model> selection."
         )
-    return OpenAICodexModel(model_id, provider=provider or subscription_provider())
+    return OpenAICodexModel(
+        model_id, provider=provider or subscription_provider(), profile=_subscription_profile
+    )
