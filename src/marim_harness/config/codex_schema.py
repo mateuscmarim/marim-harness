@@ -8,6 +8,30 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer
 
 
+def _check_ref_union(schema: dict[str, Any]) -> None:
+    if "$ref" in schema and any(
+        not isinstance(branch, dict) or "$ref" in branch or "anyOf" in branch
+        for branch in schema.get("anyOf", [])
+    ):
+        raise UserError("Cannot preserve JSON Schema $ref with nested anyOf constraints")
+
+
+def _check_raw_ref_unions(schema: Any) -> None:
+    if not isinstance(schema, dict):
+        return
+    _check_ref_union(schema)
+    # Check before upstream collapses singleton unions, which can discard a
+    # branch's $ref. Visit only schema positions, never annotation/data values.
+    for key in ("properties", "patternProperties", "$defs", "definitions"):
+        for child in schema.get(key, {}).values():
+            _check_raw_ref_unions(child)
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+        for child in schema.get(key, []):
+            _check_raw_ref_unions(child)
+    for key in ("items", "additionalProperties"):
+        _check_raw_ref_unions(schema.get(key))
+
+
 def _pointer_target(root: dict[str, Any], ref: str) -> dict[str, Any]:
     target: Any = root
     try:
@@ -36,10 +60,10 @@ def _normalize_local_refs(root: dict[str, Any]) -> dict[str, Any]:
             ref = schema.get("$ref")
             if not isinstance(ref, str) or not ref.startswith("#/"):
                 return schema
+            target = _pointer_target(root, ref)
             if ref.startswith("#/$defs/") and len(ref.split("/")) == 3:
                 return schema
             if ref not in names:
-                target = _pointer_target(root, ref)
                 name = f"marim_local_ref_{len(reserved)}"
                 while name in reserved:
                     name += "_"
@@ -63,4 +87,18 @@ class CodexJsonSchemaTransformer(OpenAIJsonSchemaTransformer):
         # Upstream handles strict schemas but leaves arbitrary JSON Pointers intact;
         # its inline-defs mode only resolves #/$defs names. Hoisting preserves $ref
         # siblings and recursive schemas without a resolver or per-MCP exceptions.
+        _check_raw_ref_unions(schema)
         super().__init__(_normalize_local_refs(schema), strict=strict)
+
+    def transform(self, schema: dict[str, Any]) -> dict[str, Any]:
+        if "$ref" not in schema or "anyOf" not in schema:
+            return super().transform(schema)
+        # Upstream would overwrite this anyOf while wrapping the sibling $ref.
+        # Distribute R AND (B OR C) into (R AND B) OR (R AND C), letting upstream
+        # wrap each simple branch. Codex rejects both allOf and raw $ref+anyOf.
+        _check_ref_union(schema)
+        branches = schema.pop("anyOf")
+        ref = schema.pop("$ref")
+        upstream = super().transform
+        schema["anyOf"] = [upstream({**branch, "$ref": ref}) for branch in branches]
+        return upstream(schema)

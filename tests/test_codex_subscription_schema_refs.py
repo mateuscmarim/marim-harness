@@ -84,7 +84,8 @@ def test_schema_semantics(wire, value, valid):
     assert transform(schema) == normalized
 
 
-def test_reference_siblings(wire):
+@pytest.mark.parametrize("any_of", [False, True])
+def test_reference_siblings(wire, any_of):
     schema = {
         "type": "object",
         "properties": {
@@ -96,11 +97,24 @@ def test_reference_siblings(wire):
             },
         },
     }
+    cases = [("abcd1234", True), ("zbcd1234", False), ("a", False), (42, False)]
+    if any_of:
+        schema["properties"]["target"] = {"type": "string"}
+        schema["properties"]["value"] = {
+            "$ref": "#/properties/target",
+            "anyOf": [{"const": "allowed"}, {"const": "also-allowed"}],
+            "description": "Allowed alternatives",
+        }
+        cases = [("allowed", True), ("also-allowed", True), ("forbidden", False), (42, False)]
+    original = deepcopy(schema)
     normalized = transform(schema)
-    for value, valid in [("abcd1234", True), ("zbcd1234", False), ("a", False), (42, False)]:
+    for value, valid in cases:
         assert Draft202012Validator(schema).is_valid({"value": value}) is valid
         assert Draft202012Validator(normalized).is_valid({"value": value}) is valid
-    assert normalized["properties"]["value"]["description"] == "Starts with a"
+    assert normalized["properties"]["value"]["description"] == (
+        "Allowed alternatives" if any_of else "Starts with a"
+    )
+    assert schema == original
 
 
 def test_pointer_chains(wire):
@@ -158,7 +172,14 @@ def test_supported_recursion(wire, ref):
 
 
 @pytest.mark.parametrize(
-    "ref", ["#/missing", "#/properties/value/type", "#/properties/value/anyOf/99"]
+    "ref",
+    [
+        "#/missing",
+        "#/properties/value/type",
+        "#/properties/value/anyOf/99",
+        "#/$defs/Missing",
+        "#/$defs/Scalar",
+    ],
 )
 def test_invalid_pointer(wire, ref):
     schema = {
@@ -168,6 +189,8 @@ def test_invalid_pointer(wire, ref):
             "other": {"$ref": ref},
         },
     }
+    if ref == "#/$defs/Scalar":
+        schema["$defs"] = {"Scalar": 42}
     with pytest.raises(UserError, match="Cannot normalize local JSON Schema reference"):
         transform(schema)
     assert wire.requests == []
@@ -184,5 +207,35 @@ def test_reference_data(wire):
     }
     original = deepcopy(schema)
     assert transform(schema) == OpenAIJsonSchemaTransformer(schema, strict=False).walk()
+    assert schema == original
+    assert wire.requests == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("singleton", [False, True])
+@pytest.mark.parametrize(
+    "branch",
+    [
+        {"$ref": "#/$defs/Target"},
+        {"anyOf": [{"const": "a"}, {"const": "b"}]},
+        True,
+    ],
+)
+async def test_unsupported_reference_siblings(wire, branch, singleton):
+    schema = {
+        "type": "object",
+        "$defs": {"Target": {"type": "string"}},
+        "properties": {
+            "value": {
+                "$ref": "#/$defs/Target",
+                "anyOf": [branch] if singleton else [branch, {"const": "other"}],
+            },
+        },
+    }
+    original = deepcopy(schema)
+    tool = Tool.from_schema(lambda **kwargs: None, "guard", "Schema guard", schema)
+    agent = Agent(source().build("gpt-6-astra"), tools=[tool])
+    with pytest.raises(UserError, match="Cannot preserve JSON Schema.*nested anyOf"):
+        await agent.run("Do not execute tools")
     assert schema == original
     assert wire.requests == []
