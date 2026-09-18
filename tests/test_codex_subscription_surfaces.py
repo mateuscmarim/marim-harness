@@ -207,7 +207,7 @@ async def native_events(wire, tmp_path, consumer):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("consumer", ["headless", "server", "tui"])
-async def test_native_stream(wire, tmp_path, consumer):
+async def test_native_stream(wire, tmp_path, consumer, monkeypatch):
     from marim_harness.interfaces.cli.headless import run_headless
     from marim_harness.interfaces.tui.app import HarnessApp
     from tests.conftest import _turn_to_idle
@@ -232,8 +232,23 @@ async def test_native_stream(wire, tmp_path, consumer):
                 ThinkingWidget,
                 ToolCallWidget,
             )
+            from marim_harness.server.wire_events import ToolResult
 
             app = HarnessApp(h)
+            received = []
+            rendered_results = []
+            on_wire = app.stream.on_wire
+
+            async def observe_wire(event):
+                await on_wire(event)
+                received.append(event)
+                if isinstance(event, ToolResult):
+                    widget = app.stream.tool_widgets[event.id]
+                    # Snapshot after real rendering, before the next event:
+                    # later text or turn cleanup cannot satisfy this proof.
+                    rendered_results.append((widget.status, widget.result_text))
+
+            monkeypatch.setattr(app.stream, "on_wire", observe_wire)
             async with app.run_test(size=(120, 40)) as pilot:
                 initial = set(app.query("ThinkingWidget, ToolCallWidget, AssistantMessage"))
                 await _turn_to_idle(app, "inspect")
@@ -250,6 +265,19 @@ async def test_native_stream(wire, tmp_path, consumer):
                     < kinds.index(AssistantMessage)
                 )
                 assert app.query(AssistantMessage).last().text == "finished"
+                types = [event.type for event in received]
+                assert (
+                    types.index("thinking.delta")
+                    < types.index("tool.call")
+                    < types.index("tool.result")
+                    < types.index("text.delta")
+                )
+                result = received[types.index("tool.result")]
+                assert isinstance(result, ToolResult)
+                assert "streamed native result" in str(result.content)
+                assert len(rendered_results) == 1
+                assert rendered_results[0][0] == "done"
+                assert "streamed native result" in rendered_results[0][1]
             return
         bus = EventBus()
         host = SessionHost(h, bus)

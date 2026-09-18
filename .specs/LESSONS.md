@@ -44,6 +44,12 @@ Seen once or not yet corroborated. Tracked, not trusted.
 - evidence: verification.md: Resolved CI finding and fix evidence, PR151 run4572/job10390 (quality-gate)
 - last seen: 2026-09-17T03:53:27Z
 
+### L-006 - Assert tool-result content and receipt order in the TUI consumer; a tool-call widget and final answer do not prove result delivery.
+- signal: `ac_gap` · recurrence: 1 feature(s) · scope: `tui-streaming` · harmful: 0
+- features: codex-subscription-provider
+- evidence: verification.md F1; tests/test_codex_subscription_surfaces.py:247 (tui-streaming)
+- last seen: 2026-09-18T18:52:46Z
+
 ## Quarantined (failed when applied - ignore)
 
 A confirmed lesson that recurred alongside failure. Kept for the maintainer to review.
