@@ -8,6 +8,7 @@ from marim_harness.plugins.discovery import (
     plugin_bundle_summary,
     plugin_hook_entries,
     plugin_instruction_texts,
+    plugin_lsp_providers,
     plugin_mcp_specs,
     plugin_skill_roots,
 )
@@ -175,6 +176,74 @@ def test_global_plugin_executables_ignore_project_trust(tmp_path, monkeypatch):
 
     assert "Stop" in plugin_hook_entries(ws, trust_project=False)
     assert "mine_web" in plugin_mcp_specs(ws, trust_project=False)
+
+
+def test_untrusted_project_plugin_cannot_shadow_global_contributions(tmp_path, monkeypatch):
+    """Project precedence applies only after the project trust gate.
+
+    The untrusted project record remains the discovery/status winner, but its
+    inert and executable payloads cannot suppress the explicitly installed
+    global plugin. Trusting the project restores its intentional override.
+    """
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(
+        gdir,
+        "shared",
+        manifest={"lsp": {"language": "go", "extensions": [".go"], "command": "global-gopls"}},
+        files={**_EXEC_FILES, "skills/g/SKILL.md": "global", "AGENTS.md": "global instructions"},
+    )
+    _install(gdir, "shared", enabled=True, trusted=True)
+    _make_plugin(
+        pdir,
+        "shared",
+        manifest={"lsp": {"language": "go", "extensions": [".go"], "command": "project-gopls"}},
+        files={**_EXEC_FILES, "skills/p/SKILL.md": "project", "AGENTS.md": "project instructions"},
+    )
+    _install(pdir, "shared", enabled=True, trusted=True)
+
+    # Discovery still exposes the project record for status and trust UX.
+    assert discover_plugins(ws)[0].scope == "project"
+    # But an untrusted checkout contributes the global installation instead.
+    assert (
+        dict(plugin_skill_roots(ws, trust_project=False))["shared"]
+        == (gdir / "shared" / "skills").resolve()
+    )
+    assert plugin_instruction_texts(ws, trust_project=False) == [("shared", "global instructions")]
+    assert (
+        plugin_hook_entries(ws, trust_project=False)["Stop"][0]["command"]
+        == str(gdir / "shared") + "/x.sh"
+    )
+    assert "shared_web" in plugin_mcp_specs(ws, trust_project=False)
+    assert plugin_lsp_providers(ws, trust_project=False)[0].command == "global-gopls"
+
+    # Explicit trust restores project precedence for every contribution type.
+    assert (
+        dict(plugin_skill_roots(ws, trust_project=True))["shared"]
+        == (pdir / "shared" / "skills").resolve()
+    )
+    assert plugin_instruction_texts(ws, trust_project=True) == [("shared", "project instructions")]
+    assert (
+        plugin_hook_entries(ws, trust_project=True)["Stop"][0]["command"]
+        == str(pdir / "shared") + "/x.sh"
+    )
+    assert "shared_web" in plugin_mcp_specs(ws, trust_project=True)
+    assert plugin_lsp_providers(ws, trust_project=True)[0].command == "project-gopls"
+
+
+def test_trusted_project_disable_remains_an_explicit_global_override(tmp_path, monkeypatch):
+    """A trusted project's disabled record intentionally suppresses its global peer."""
+    ws = _ws(tmp_path, monkeypatch)
+    gdir = tmp_path / "cfg" / "marim" / "plugins"
+    pdir = ws / ".marim" / "plugins"
+    _make_plugin(gdir, "shared", manifest={}, files={"AGENTS.md": "global"})
+    _install(gdir, "shared", enabled=True)
+    _make_plugin(pdir, "shared", manifest={}, files={"AGENTS.md": "project"})
+    _install(pdir, "shared", enabled=False)
+
+    assert plugin_instruction_texts(ws, trust_project=False) == [("shared", "global")]
+    assert plugin_instruction_texts(ws, trust_project=True) == []
 
 
 def test_project_plugin_inert_contributions_require_project_trust(tmp_path, monkeypatch):
