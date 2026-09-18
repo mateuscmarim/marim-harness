@@ -8,6 +8,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.models.openai_codex import OpenAICodexModel
 from pydantic_ai.toolsets import FunctionToolset
 
+from marim_harness.config.codex_schema import CodexJsonSchemaTransformer
 from marim_harness.runtime.builder import HarnessBuilder
 from tests._codex_subscription import source, sse
 from tests._codex_subscription import wire as wire  # noqa: F401
@@ -143,11 +144,12 @@ async def test_inline_tools_omit_search(wire, tmp_path, count):
 def test_subscription_profile(wire, model_name):
     model = source().build(model_name)
     upstream = OpenAICodexModel(model_name, provider=model.provider)
+    expected = {**upstream.profile, "json_schema_transformer": CodexJsonSchemaTransformer}
     if model_name == "gpt-5.3-codex":
-        assert model.profile == upstream.profile
+        assert model.profile == expected
         assert model.tool_deferral_mode is None
     else:
-        assert model.profile == {**upstream.profile, "tool_deferral_mode": "with_tool_search"}
+        assert model.profile == {**expected, "tool_deferral_mode": "with_tool_search"}
         assert model.tool_deferral_mode == "with_tool_search"
     assert model.profile["openai_responses_requires_streaming"] is True
     assert model.profile["openai_responses_requires_store_false"] is True

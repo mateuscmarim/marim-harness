@@ -32,6 +32,9 @@ def subscription_provider():
 
 
 def _subscription_profile(profile: "ModelProfile") -> "ModelProfile":
+    from .codex_schema import CodexJsonSchemaTransformer
+
+    profile = {**profile, "json_schema_transformer": CodexJsonSchemaTransformer}
     # Core 2.44/2.45 advertises native tool search without enabling its deferred
     # schemas. That sends an orphan tool_search and Codex rejects it with HTTP 400.
     # Fill only the missing mode; upstream still owns discovery and all other
