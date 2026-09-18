@@ -265,8 +265,15 @@ WebSocket and streaming read behavior are unchanged.
 No auth. Returns `200`:
 
 ```json
-{"status": "ok"}
+{"status": "ok", "version": "0.9.1"}
 ```
+
+`version` is the installed `marim-harness` package version captured when this
+server app starts, without a `v` prefix. It is `null` when package metadata is
+unavailable; older servers omit it. Upgrading the package requires a server
+restart before the reported version changes. The response retains
+`Cache-Control: no-cache`. Version is informational; use capabilities for feature
+availability.
 
 ## Workspaces
 

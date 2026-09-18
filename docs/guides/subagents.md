@@ -376,9 +376,12 @@ effort differs per model (`low` on Sol, `medium` on Terra and Luna).
 Operational knobs, briefly (full table in
 [reference/configuration.md](../reference/configuration.md)):
 
-- `MARIM_SUBAGENT_CONCURRENCY` (default 8) — how many spawns may run their
-  model loop at once; excess queues instead of slamming a rate-limited route.
-  `0`/negative means unbounded.
+- `MARIM_SUBAGENT_CONCURRENCY` (default 8) — shared capacity for native model
+  requests (including streamed responses) and external CLI runs; excess queues.
+  Native agents release capacity while running tools or waiting for children,
+  so nested foreground spawns can complete even with a limit of 1. Each CLI
+  run holds one slot until it exits; its internal requests are managed by the CLI.
+  `0`/negative means unbounded. SDK `subagent_concurrency=None` is also unbounded.
 - `MARIM_SUBAGENT_REQUEST_LIMIT` (default 50) — max model requests one spawn
   may make before it is aborted; bounds a runaway sub-agent.
 - `MARIM_SUBAGENT_TRANSCRIPT_CAP` (default 2000) — the persisted sidecar

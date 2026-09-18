@@ -12,7 +12,6 @@ immediately. The harness wires ``run``/``run_background`` onto ``Deps`` so the
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import re
@@ -23,6 +22,8 @@ from typing import TYPE_CHECKING
 
 from pydantic_ai import Agent, StructuredDict
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
+from pydantic_ai.concurrency import ConcurrencyLimiter, get_concurrency_context
+from pydantic_ai.models.concurrency import limit_model_concurrency
 from pydantic_ai.settings import ModelSettings
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..thinking import resolve_thinking, settings_for
 from ..tools.names import GATED_TOOLS
+from ..workflows.invocation import current_workflow
 from ..workspace import (
     cap_subagent_output,
     discover_agents,
@@ -98,6 +100,25 @@ def _resolve_spawn_model_id(
     # else: out-of-allowlist slug falls through to the tier default.
     name = resolve_tier(override_tier, spec_tier, read_only)
     return tiers.model_for(name)
+
+
+class _SpawnConcurrencyLimiter(ConcurrencyLimiter):
+    """Keep workflow aborts authoritative at the request admission boundary.
+
+    Upstream owns queueing and cancellation cleanup, but does not know Marim's
+    workflow abort flag. During graph teardown a cancelled request can release
+    capacity before a sibling graph receives cancellation. Recheck the shared
+    invocation after acquiring so that sibling cannot start a billed request
+    while the workflow owner is draining it. Uses only public limiter APIs.
+    """
+
+    async def acquire(self, source: str) -> None:
+        await super().acquire(source)
+        invocation = current_workflow.get()
+        if invocation is not None and invocation.aborted:
+            self.release()
+            logger.debug("Sub-agent admission cancelled for aborted workflow")
+            raise asyncio.CancelledError("workflow aborted")
 
 
 class _SpawnPreflightError(RuntimeError):
@@ -182,13 +203,18 @@ class SubagentRunner:
         # Monotonic counter for naming a background spawn's output-spill file —
         # a background run has no stream id to key the spill on.
         self._bg_seq = 0
-        # Optional cap on how many spawns may run their model loop at once. A
-        # fan-out fires every spawn's request concurrently, which is exactly what
-        # trips a shared provider route's upstream rate limit; the cap queues the
-        # excess instead. None ⇒ unbounded (the historical behavior). The semaphore
-        # is built lazily on first use so the runner can be constructed off-loop.
+        # Share the upstream request limiter across models AND CLI runs. Native
+        # parents must release capacity before running tools: holding a slot while
+        # awaiting a nested child deadlocks a saturated pool (including a cap of 1).
+        # CLI requests happen inside an external process, so that integration still
+        # reserves a slot for the whole CLI run. Upstream owns queueing, cancellation
+        # cleanup and wait tracing; no custom nested-spawn scheduler is needed.
         self._concurrency = concurrency if (concurrency and concurrency > 0) else None
-        self._sem: asyncio.Semaphore | None = None
+        self._limiter = (
+            _SpawnConcurrencyLimiter(self._concurrency, name="marim-subagents")
+            if self._concurrency is not None
+            else None
+        )
         # Session-bound persistence for a spawn's sidecar transcript + terminal
         # meta. Reads the store off `session` per call, so it follows a /switch.
         self._transcripts = SpawnTranscripts(session, transcript_cap)
@@ -524,7 +550,7 @@ class SubagentRunner:
         sub_settings = self._spawn_thinking_settings(thinking, defn)
 
         sub = Agent(
-            model_obj,
+            limit_model_concurrency(model_obj, self._limiter),
             deps_type=Deps,
             # Schema'd spawns enforce their output natively: StructuredDict
             # validates the final output against the schema and retries
@@ -691,12 +717,14 @@ class SubagentRunner:
         stream_id: str,
         timing: tuple[float, float, list[float]] | None = None,
         output_storage: OutputStorage | None = None,
+        limit_run: bool = True,
     ) -> str:
         """The one run+failure+finalize lifecycle every spawn shares — native or
         CLI, foreground or background, fresh or resumed. ``run_fn`` is the
-        backend-specific coroutine factory that runs the spawn under the
-        concurrency slot and returns a ``SpawnRun``; everything around it is
-        invariant:
+        backend-specific coroutine factory returning a ``SpawnRun``. CLI runs
+        reserve capacity here; native runs set ``limit_run=False`` because their
+        models already acquire capacity per request (including streams), releasing
+        it before tools can await nested children. Everything around it is invariant:
 
         - **Regular failure** (``Exception``): tear the worktree down — throwaway
           for a fresh spawn, checkout-only for a resumed one (keeps its committed
@@ -716,9 +744,9 @@ class SubagentRunner:
         ``timing`` is the native phase stats (``None`` for CLI, which keeps none)."""
         output_storage = output_storage or OutputStorage.capture(self.deps)
         try:
-            # Bound concurrent model runs (the part that hits the provider) so a
-            # wide fan-out queues instead of slamming a rate-limited route at once.
-            async with self._slot():
+            async with get_concurrency_context(
+                self._limiter if limit_run else None, "subagent:cli"
+            ):
                 run = await run_fn()
         except Exception as exc:  # noqa: BLE001
             logger.warning("sub-agent %r spawn failed: %s", name, exc, exc_info=True)
@@ -755,17 +783,6 @@ class SubagentRunner:
             output_storage=output_storage,
             timing=timing,
         )
-
-    def _slot(self):
-        """Acquire-context bounding concurrent spawn runs to ``_concurrency``; a
-        no-op ``nullcontext`` when unbounded. The semaphore is created on first use
-        (binds to the running loop), and the single-threaded event loop makes the
-        lazy ``is None`` check race-free."""
-        if self._concurrency is None:
-            return contextlib.nullcontext()
-        if self._sem is None:
-            self._sem = asyncio.Semaphore(self._concurrency)
-        return self._sem
 
     async def _execute_spawn(
         self,
@@ -1256,6 +1273,7 @@ class SubagentRunner:
             stream_id=stream_id,
             timing=(prep.t0, prep.t_built, prep.first_event_at),
             output_storage=prep.output_storage,
+            limit_run=False,
         )
 
     def _log_spawn_timing(

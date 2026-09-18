@@ -394,7 +394,7 @@ a cloned repo cannot self-trust; the store lives outside the repo entirely
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_SUBAGENT_CONCURRENCY` | `8` | Max spawns running their model loop at once. `0` (or negative) = unbounded. |
+| `MARIM_SUBAGENT_CONCURRENCY` | `8` | Shared cap on native model requests and external CLI runs. Native tool execution does not hold a slot. `0` (or negative) = unbounded. |
 | `MARIM_SUBAGENT_REQUEST_LIMIT` | `50` | Positive int. Max model requests one sub-agent run may make before it is aborted. |
 | `MARIM_SUBAGENT_TRANSCRIPT_CAP` | `2000` | Positive int. Per-part character cap on persisted spawn transcripts (tool results are truncated to this many characters). |
 | `MARIM_SUBAGENT_TIER_CHEAP` | unset (inherit main) | Model for the `cheap` tier, qualified `provider:model_id`. |

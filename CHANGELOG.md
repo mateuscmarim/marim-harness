@@ -8,6 +8,15 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-17
+
+### Added
+
+- **Server version in health responses.** `GET /v1/health` reports the running
+  Marim package version, captured when the daemon starts, so clients can display
+  which version each server is running. Unavailable package metadata is reported
+  as `null`; the endpoint remains unauthenticated and backward compatible.
+
 ## [0.13.0] - 2026-09-17
 
 ### Removed
