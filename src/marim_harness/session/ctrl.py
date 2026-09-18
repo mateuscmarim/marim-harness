@@ -32,6 +32,7 @@ from ..compaction import (
 from ..hooks import events as hook_events
 from ..hooks.runner import HookVerdict, base_payload
 from ..runtime.deps import Deps
+from ..usage import usage_model_ref
 from .compaction import Reduction, ReductionOptions, reduce_history
 from .history import slice_message_parts
 from .store import SessionInfo, SessionLoadError, SessionManager, SessionMessages, SessionStore
@@ -268,6 +269,10 @@ class SessionController:
         in the stats ledger. Every call site that used to do
         ``session.usage += x`` must go through here so spend cannot be
         double-counted or forgotten by the ledger."""
+        if model_id and model_id.startswith("openai-codex:"):
+            # Preserve subscription provenance in the persisted aggregate. A
+            # paid main model must not reprice these child/auxiliary tokens.
+            delta.details["subscription_cost_unknown"] = 1
         self.usage += delta
         rec = self.stats_recorder
         if rec is not None:
@@ -864,7 +869,7 @@ class SessionController:
             # spend is real, but guessing the main model would mislabel the ledger.
             return "unknown"
         model = getattr(self.compaction_strategy, "model", None) or self.auxiliary_model
-        return model if isinstance(model, str) else getattr(model, "model_name", None)
+        return model if isinstance(model, str) else usage_model_ref(model)
 
     def _commit_reduction(self, reduction: Reduction) -> str:
         self.restore_history(reduction.messages, self.transcript)

@@ -25,7 +25,48 @@ AD-004 (active, 2026-09-16): Display transcripts and reduced model context
 persist in one atomic session snapshot. History replay must not feed the model
 or substitute archived token estimates for current context measurements.
 
+AD-005 (active, 2026-09-18): User approved Pydantic AI's native Codex
+subscription provider as opt-in, reusing upstream read-only Codex login with
+documented refresh limitations. Retain CLI and defaults until a later decision.
+Raise core to >=2.44.0,<3; preserve master's Harness ==0.31.0 pin. No Codex SDK
+integration, API-key fallback, publication, or live subscription evaluation.
+
+AD-006 (active, 2026-09-18): User approved upstream authentication failure timing:
+missing/malformed/API-key-only credentials fail provider setup; rejected refresh
+fails the active request. Both require login guidance and prohibit provider fallback.
+This explicitly revises AC 9/C9's former requirement that all failures occur in a turn.
+
 ## Handoff
+
+### Codex subscription provider — complete, independently verified
+
+Branch `feat/codex-subscription-provider`, base `8c5fa218` (master v0.13.0).
+Plan approved 2026-09-18; 38 proof-backed checks, profile light. Implementation
+ecebd71f and proof-strengthening 16bd7300 are complete. Independent round 2 at
+16bd73009c5cafbe22f7c3117d8b0160e3fd0109 passed all 38 checks, reran 53 cases,
+and resolved the round-one TUI result-evidence gap. Completion validator exits 0.
+Plan/checks/evaluation live in `.specs/features/codex-subscription-provider/`;
+new specs remain local under repository policy. C2/C9 honor approved AD-006.
+No implementation decision remains outstanding. All 53 subscription cases and
+85 relevant regressions pass (138 total); the TUI follow-up passed 172 cases.
+The final auth and TUI additions change tests only. No fault injection claimed.
+Full isolated suites on Python 3.10/3.14 (core 2.45) and Python 3.12 (core 2.44)
+each passed 5257 tests, 7 skipped, 1 xfailed. Main Python 3.12/core 2.45 also passed
+5257 tests, 7 skipped, 1 xfailed, with 95.55% coverage (90% gate).
+Ruff lint/format, Pyright, and sdist/wheel build pass. Earlier concurrent suites
+overloaded the host; isolated reruns pass without weakening tests.
+Live evaluation is NOT RUN; current CLI/default selection remains unchanged.
+The original checkout's unrelated edits are untouched. No push/deploy authorized.
+This acceptance-record commit changes only STATE metadata after verified code.
+
+PR preparation, 2026-09-18: user requested publication and babysitting, not PR
+merge. Incorporated current master 416e9726 (release 0.14, dependency security
+fix, server version response, and nested-subagent concurrency fix). C18's test
+now observes upstream request-limiter admission in place of the removed _slot;
+the concurrency and tool-grant obligations are unchanged. All 53 subscription
+cases plus 42 affected concurrency/model/cancellation cases pass. The earlier
+acceptance above is historical; current integration evidence lives in the
+feature verification report and the PR's current-head CI/review.
 
 ### Upstream advisor — port verified, PR authorized
 

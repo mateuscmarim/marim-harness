@@ -79,7 +79,7 @@ def parse_budget_overrides(raw: str) -> list[tuple[str, int | None]]:
 # config/model.py (not imported: that module pulls in catalog/notification
 # machinery and this one must stay light).
 _PROVIDER_PREFIXES = frozenset(
-    {"openrouter", "local", "google", "claude-cli", "codex-cli", "zen", "zen-go"}
+    {"openrouter", "local", "google", "claude-cli", "codex-cli", "openai-codex", "zen", "zen-go"}
 )
 
 

@@ -23,6 +23,14 @@ backend, and the operational knobs. Keyboard/TUI details live in
 
 ## How the model spawns them
 
+With `openai-codex:<model>`, this entire native runner applies: children inherit
+the subscription model or select an explicit qualified subscription model,
+subject to the same tool grants, tier allowlist, and concurrency cap. This is
+distinct from `backend: codex-cli`, which runs a separate Codex agent. The
+native children and advisor share the source's upstream OAuth refresh state;
+Marim never saves refreshed credentials to the CLI auth file. See
+[subscription setup](../reference/configuration.md#native-codex-subscription-access).
+
 The main agent calls the `spawn_agent` tool with a `type` (an agent name) and
 a `task`. The sub-agent runs to completion and its final message becomes the
 tool's result. Several spawns issued in one response run in parallel — that is

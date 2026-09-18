@@ -49,6 +49,7 @@ from ..subagents import MaskingPolicy, RetryPolicy, SubagentRunner
 from ..tools.impl.suggest import suggest_unknown_tool_retry
 from ..tools.names import SUBAGENT_MAX_DEPTH
 from ..tools.provider import ToolGroups, ToolProvider
+from ..usage import usage_model_ref
 from ..workspace.catalog import make_supports_images
 from ..workspace.scratchpad import ensure_scratchpad
 from ..workspace.snapshot import GitSnapshotter
@@ -446,7 +447,7 @@ def build_collaborators(
         stats_recorder = LedgerStatsRecorder(
             cfg.stats_ledger,
             session_id=cfg.store.session_id,
-            get_model_id=get_model_id,
+            get_model_id=lambda: usage_model_ref(get_model()),
             get_backend_result=lambda: getattr(
                 getattr(get_model(), "lifecycle", None), "result_details", None
             ),

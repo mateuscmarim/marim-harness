@@ -1,5 +1,5 @@
-"""The settings screen's Providers section: stacked cards for the seven built-in
-providers (openrouter / google / zen / zen-go / local / claude-cli / codex-cli), a
+"""The settings screen's Providers section: stacked cards for the built-in
+providers, a
 default-provider radio, live apply, implicit verification, and key removal.
 
 Credentials save to the GLOBAL .env only (a project .env may not set these keys
@@ -113,6 +113,7 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     # codex-cli stores nothing either: `codex login` owns auth; status is
     # binary + login detection.
     ProviderSpec("codex-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
+    ProviderSpec("openai-codex", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
 
@@ -260,6 +261,11 @@ class ProvidersPane(Vertical):
                     "Same key as zen — removing it deconfigures both.",
                     classes="prov-note",
                 )
+            elif name == "openai-codex":
+                yield Static(
+                    "Subscription access · run `codex login`; select an explicit model.",
+                    classes="prov-note",
+                )
 
     def on_mount(self) -> None:
         for spec in PROVIDER_SPECS:
@@ -293,6 +299,10 @@ class ProvidersPane(Vertical):
     # -- painting ----------------------------------------------------------
 
     def _configured(self, spec: ProviderSpec) -> bool:
+        if spec.name == "openai-codex":
+            from ...config.codex_subscription import credentials_present
+
+            return credentials_present()
         if spec.name in ("claude-cli", "codex-cli"):
             return self._cli_detection.for_(spec.name)
         return spec_configured(spec)
@@ -324,6 +334,8 @@ class ProvidersPane(Vertical):
             base = "detected on PATH" if configured else "not found"
         elif spec.name == "codex-cli":
             base = "detected + logged in" if configured else "not found or not logged in"
+        elif spec.name == "openai-codex":
+            base = "configured · unverified" if configured else "login required · codex login"
         else:
             base = "configured" if configured else "not configured"
         if spec.name == current_default_provider():

@@ -49,7 +49,7 @@ _OPENCODE_SESSION_ID = uuid.uuid4().hex
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
 KNOWN_PROVIDERS = frozenset(
-    {"openrouter", "local", "google", "claude-cli", "codex-cli", "zen", "zen-go"}
+    {"openrouter", "local", "google", "claude-cli", "codex-cli", "openai-codex", "zen", "zen-go"}
 )
 
 
@@ -420,6 +420,10 @@ def _openrouter_provider_config(common: dict[str, Any]) -> ModelConfig:
     )
 
 
+def _codex_subscription_config(common: dict[str, Any]) -> ModelConfig:
+    return ModelConfig(provider="openai-codex", model=os.getenv("MARIM_MODEL"), **common)
+
+
 # Dispatch table for `_provider_config`, keyed by provider name — a dict beats
 # an if/elif/return chain past ruff's PLR0911 (too many returns) ceiling.
 # Openrouter doubles as both a named entry and the fallback for an unknown
@@ -432,6 +436,7 @@ _PROVIDER_CONFIG_BUILDERS: dict[str, Callable[[dict[str, Any]], ModelConfig]] = 
     "google": _google_provider_config,
     "claude-cli": _claude_cli_provider_config,
     "codex-cli": _codex_cli_provider_config,
+    "openai-codex": _codex_subscription_config,
     "openrouter": _openrouter_provider_config,
 }
 
@@ -467,6 +472,12 @@ def _zen_has_creds() -> bool:
     return bool(os.getenv("OPENCODE_API_KEY"))
 
 
+def _codex_subscription_available() -> bool:
+    from .codex_subscription import credentials_present
+
+    return credentials_present()
+
+
 # Dispatch table for `_provider_has_creds`, keyed by provider name — same
 # rationale as `_PROVIDER_CONFIG_BUILDERS`: a dict beats an if/elif/return
 # chain past ruff's PLR0911 ceiling. An unknown provider has no entry, so
@@ -483,6 +494,7 @@ _CRED_CHECKS: dict[str, Callable[[], bool]] = {
     # dict-construction time would freeze the pre-patch function forever.
     "claude-cli": lambda: _claude_cli_available(),
     "codex-cli": lambda: _codex_cli_available(),
+    "openai-codex": _codex_subscription_available,
 }
 
 
@@ -593,6 +605,11 @@ def build_model(cfg: ModelConfig):
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
+    if cfg.provider == "openai-codex":
+        from .codex_subscription import subscription_model
+
+        return subscription_model(cfg.model)
+
     if cfg.provider in ("local", "zen", "zen-go"):
         assert cfg.model is not None  # these providers always have a model id
         http_client = _opencode_http_client() if cfg.provider != "local" else None
@@ -637,6 +654,7 @@ class ModelSource:
 
     def __init__(self, cfg: ModelConfig) -> None:
         self.cfg = cfg
+        self._subscription_provider = None
 
     @property
     def is_local(self) -> bool:
@@ -647,6 +665,14 @@ class ModelSource:
 
     def build(self, model_id: str):
         """Construct a Pydantic AI model for ``model_id`` on this provider."""
+        if self.cfg.provider == "openai-codex":
+            from .codex_subscription import subscription_model
+
+            model = subscription_model(model_id, self._subscription_provider)
+            # One upstream credential revision/refresh lock for every model in
+            # this source, including children and auxiliary requests.
+            self._subscription_provider = model.provider
+            return model
         return build_model(replace(self.cfg, model=model_id))
 
     async def list_models(self, *, strict: bool = False) -> list[ModelEntry]:
@@ -688,6 +714,10 @@ class ModelSource:
 
         return await codex_catalog.list_codex_models(strict=strict)
 
+    async def _list_codex_subscription(self, *, strict: bool) -> list[ModelEntry]:
+        model = self.cfg.model
+        return [ModelEntry(model, model)] if model and model.strip() else []
+
 
 # Dispatch table for `ModelSource.list_models`, keyed by provider name — same
 # rationale as codex/translate.py's `_METHODS`: handlers are unbound methods,
@@ -701,6 +731,7 @@ _LIST_MODELS_BY_PROVIDER: dict[str, Callable[..., Awaitable[list[ModelEntry]]]] 
     "zen-go": ModelSource._list_zen_go,
     "claude-cli": ModelSource._list_claude_cli,
     "codex-cli": ModelSource._list_codex_cli,
+    "openai-codex": ModelSource._list_codex_subscription,
 }
 
 
@@ -744,11 +775,17 @@ class MultiModelSource:
         return True
 
     def _route(self, qualified: str) -> tuple[ModelSource, str]:
+        if qualified.startswith("openai-codex:") and "openai-codex" not in self.sources:
+            # Explicit subscription selection must never become an OpenRouter
+            # model slug merely because local credentials are absent.
+            self.sources["openai-codex"] = ModelSource(_codex_subscription_config({}))
         provider, bare = parse_qualified(qualified, set(self.sources), self.default)
         return self.sources.get(provider, self.sources[self.default]), bare
 
     def label(self, model_id: str) -> str:
-        provider, bare = parse_qualified(model_id, set(self.sources), self.default)
+        provider, bare = parse_qualified(
+            model_id, set(self.sources) | {"openai-codex"}, self.default
+        )
         return f"{provider}:{bare}"
 
     def build(self, model_id: str):

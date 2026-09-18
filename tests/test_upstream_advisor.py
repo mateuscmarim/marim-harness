@@ -323,7 +323,7 @@ def test_base_dependency_contract():
 
     requirements = requires("marim-harness")
     assert any("pydantic-ai-harness==0.31.0" in r and "extra" not in r for r in requirements)
-    assert any("pydantic-ai-slim" in r and "<3,>=2.43" in r for r in requirements)
+    assert any("pydantic-ai-slim" in r and "<3,>=2.44" in r for r in requirements)
 
 
 def test_no_legacy_advisor_engine():

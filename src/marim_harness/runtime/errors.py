@@ -86,6 +86,31 @@ def _find_api_error(exc: BaseException):
     return _find_in_chain(exc, APIError)
 
 
+def subscription_auth_error(exc: BaseException) -> str | None:
+    """Discard OAuth response bodies: an auth server can echo credential data.
+
+    The OpenAI client may wrap a refresh rejection in a connection error, so
+    classify the public upstream exception through the complete cause chain.
+    A final Codex 401/403 after refresh needs the same login guidance.
+    """
+    from pydantic_ai.providers.openai_codex import CredentialsRefreshError
+
+    from ..config.codex_subscription import LOGIN_HELP
+
+    if _find_in_chain(exc, CredentialsRefreshError) is not None:
+        return LOGIN_HELP
+    api = _find_api_error(exc)
+    request = getattr(api, "request", None)
+    url = getattr(request, "url", None)
+    if (
+        getattr(api, "status_code", None) in (401, 403)
+        and getattr(url, "host", None) == "chatgpt.com"
+        and str(getattr(url, "path", "")).startswith("/backend-api/codex/")
+    ):
+        return LOGIN_HELP
+    return None
+
+
 def _error_dict(api) -> dict | None:
     """The ``error`` sub-dict OpenRouter nests in the parsed body, or None."""
     body = getattr(api, "body", None)
@@ -366,6 +391,8 @@ def format_provider_error(exc: BaseException) -> str | None:
     # message is already screen-safe and actionable, and the chained APIError
     # (which _find_api_error would otherwise surface) is the terse text we are
     # deliberately replacing.
+    if auth_help := subscription_auth_error(exc):
+        return auth_help
     if isinstance(exc, ContextWindowExceededError):
         return str(exc)
     api = _find_api_error(exc)
@@ -394,6 +421,8 @@ def provider_error_payload(exc: BaseException) -> dict | None:
     """The full, untruncated provider error as a JSON-serializable dict for
     logging — type, message, and the raw parsed body. None when ``exc`` isn't a
     provider error."""
+    if auth_help := subscription_auth_error(exc):
+        return {"type": "SubscriptionAuthError", "message": auth_help}
     api = _find_api_error(exc)
     if api is None:
         return None
