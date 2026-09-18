@@ -17,7 +17,7 @@ from ..themes import ERROR
 from .diff import _DIFF_CAP, _reverse_edits, render_edit_diff, render_file_diff
 from .format import _SPINNER, _SPINNER_TICK_INTERVAL, format_duration
 from .highlight import _LEXERS, _highlight_lines, strip_line_numbers
-from .tool_summary import humanize_tool, summarize
+from .tool_summary import humanize_tool, is_wait_call, summarize
 
 # The bash tool prefixes its result with "exit N" (inline) or carries it as the
 # first preview line of an offloaded result — a non-zero N is a failed command.
@@ -67,6 +67,17 @@ class ToolCallWidget(Collapsible):
         self.status = "pending"
         self._spin = 0
         self.result_text = ""
+        # When the call started / finished, for the wait row's elapsed time. A
+        # completion-based wait has no requested duration to show, and the
+        # ``timeout`` arg (when given) is a ceiling, not progress — so the title
+        # shows how long the wait has *actually* blocked, re-rendered by the
+        # spinner tick, and freezes the total at finish.
+        self._t0 = time.monotonic()
+        self._t_end: float | None = None
+        # False for a row replayed from persisted history: it is constructed and
+        # finished in the same replay pass, so any duration it measured would be
+        # a fake "0.0s" — the finished title omits the total instead.
+        self._timed = True
         # Show edit diffs uncapped (Ctrl+O / "reveal all" flips this on).
         self.reveal = False
         # Post-edit file text + reconstructed pre-edit text, loaded at finish() so
@@ -115,6 +126,11 @@ class ToolCallWidget(Collapsible):
         if self._breadcrumb:
             self._title.can_focus = False
 
+    def mark_replayed(self) -> None:
+        """Flag a row rebuilt from persisted history: its start/finish stamps are
+        replay-time, not call-time, so no duration is shown for it."""
+        self._timed = False
+
     def _on_collapsible_title_toggle(self, event) -> None:
         """Handle the title's Toggle: swallow it for the breadcrumb (a status line,
         not a fold — a click/Enter must not expand it onto its empty body), and for
@@ -158,7 +174,7 @@ class ToolCallWidget(Collapsible):
         if self.tool_name == "edit_file":
             added, removed = self._diff_stat()
             target = f"{target} +{added} -{removed}" if target else f"+{added} -{removed}"
-        head = f"{s.label} · {target}" if target else s.label
+        head = self._wait_head(s.label, target) or (f"{s.label} · {target}" if target else s.label)
         # Glyph carries the status colour; the (untrusted) head is a literal span so
         # markup in a path/command is never parsed; badges trail dim. The breadcrumb
         # mutes its whole head so it recedes next to real tool actions.
@@ -167,6 +183,21 @@ class ToolCallWidget(Collapsible):
         for b in s.badges:
             parts.extend(("   ", (b, "dim")))
         return Content.assemble(*parts)
+
+    def _wait_head(self, label: str, target: str) -> str:
+        """The head for a job wait (either tool variant): ``Waiting for <job> ·
+        <elapsed>`` while pending — the elapsed being the real blocked time, not
+        the requested timeout — and ``Wait · <job> · <total>`` once finished.
+        ``""`` for any other tool, so the generic head applies."""
+        if not is_wait_call(self.tool_name, self.args):
+            return ""
+        what = target or "job"
+        if self.status == "pending":
+            return f"Waiting for {what} · {format_duration(time.monotonic() - self._t0)}"
+        if self._t_end is None or not self._timed:
+            return ""
+        # precise=True keeps a decimal under a minute so a short wait reads "0.3s".
+        return f"{label} · {what} · {format_duration(self._t_end - self._t0, precise=True)}"
 
     def _ask_user_summary(self) -> Content:
         """The ask_user title: a state-driven glyph + 'Ask User · {Q→A | count |
@@ -428,6 +459,7 @@ class ToolCallWidget(Collapsible):
     def finish(self, result_text: str, status: str = "done") -> None:
         self.status = status
         self.result_text = result_text
+        self._t_end = time.monotonic()
         if self.tool_name == "edit_file" and status == "done":
             if self.is_mounted:
                 # Read + reverse off the UI thread; the simple diff rendered below

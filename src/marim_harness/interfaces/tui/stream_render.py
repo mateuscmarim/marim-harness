@@ -43,6 +43,7 @@ from .widgets import (
 )
 from .widgets import format_cost as _format_cost
 from .widgets import format_token_split as _format_token_split
+from .widgets.tool_summary import is_wait_call
 
 
 def wire_from_event(event) -> WireEvent | None:
@@ -843,11 +844,12 @@ class StreamRenderer:
         return group, None
 
     def _with_wait_label(self, tool_name: str, args: dict) -> dict:
-        """For a ``wait_for_job`` blocking on a sub-agent, return ``args`` with the
-        sub-agent's label injected as ``_wait_label`` so the row reads
-        "Wait · <task>" instead of a bare job id. ``args`` is returned unchanged for
-        any other tool, or a wait on a non-sub-agent job."""
-        if tool_name != "wait_for_job":
+        """For a job wait (``wait_for_job`` or ``job(action="wait")``) blocking on
+        a sub-agent, return ``args`` with the sub-agent's label injected as
+        ``_wait_label`` so the row reads "Wait · <task>" instead of a bare job id.
+        ``args`` is returned unchanged for any other tool, or a wait on a
+        non-sub-agent job."""
+        if not is_wait_call(tool_name, args):
             return args
         label = _wait_subagent_label(args, self.app.jobs)
         return {**args, "_wait_label": label} if label else args

@@ -1605,6 +1605,47 @@ async def test_wait_for_job_row_names_the_subagent(tmp_path: Path):
         gate.set()
 
 
+@pytest.mark.anyio
+async def test_job_tool_wait_action_row_names_the_subagent(tmp_path: Path):
+    """The combined ``job(action="wait")`` variant gets the same sub-agent label
+    as ``wait_for_job``, so both read "Wait · <task>" in the transcript."""
+    import asyncio
+
+    from pydantic_ai.messages import FunctionToolCallEvent, ToolCallPart
+
+    from marim_harness.interfaces.tui.widgets import ToolCallWidget
+    from marim_harness.interfaces.tui.widgets.tool_summary import summarize
+
+    app = _app(tmp_path)
+    reg = app.harness.deps.jobs
+    gate = asyncio.Event()
+
+    async def _work():
+        await gate.wait()
+        return "r"
+
+    jid = reg.register("agent", "explore: review TUI subsystem", _work())  # running
+
+    call = FunctionToolCallEvent(
+        part=ToolCallPart(tool_name="job", args={"action": "wait", "id": jid}, tool_call_id="w2")
+    )
+
+    async def gen():
+        yield call
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.stream.on_events(None, gen())
+        await pilot.pause()
+        widget = app.stream.tool_widgets.get("w2")
+        assert isinstance(widget, ToolCallWidget)
+        s = summarize("job", widget.args)
+        assert s.label == "Wait"
+        assert "review TUI subsystem" in s.target
+        assert "Waiting for" in str(widget.title)
+        gate.set()
+
+
 def test_subagent_failed_detects_runner_error_text():
     from marim_harness.interfaces.tui.stream_render import subagent_failed
 
