@@ -38,18 +38,18 @@ This explicitly revises AC 9/C9's former requirement that all failures occur in 
 
 ## Handoff
 
-### Codex subscription provider — author proofs pass, independent verification pending
+### Codex subscription provider — complete, independently verified
 
 Branch `feat/codex-subscription-provider`, base `8c5fa218` (master v0.13.0).
-Plan approved 2026-09-18; 38 proof-backed checks, profile light. One builder has
-implemented the opt-in source and native integration in this worktree; the
-orchestrator owns artifacts and will dispatch a fresh independent verifier after
-the remaining authentication checks close.
+Plan approved 2026-09-18; 38 proof-backed checks, profile light. Implementation
+ecebd71f and proof-strengthening 16bd7300 are complete. Independent round 2 at
+16bd73009c5cafbe22f7c3117d8b0160e3fd0109 passed all 38 checks, reran 53 cases,
+and resolved the round-one TUI result-evidence gap. Completion validator exits 0.
 Plan/checks/evaluation live in `.specs/features/codex-subscription-provider/`;
-new specs remain local under repository policy. Author proofs pass for all 38
-checks, including C2/C9 under approved AD-006. No user decision remains outstanding.
-Independent verification is pending. All 53 subscription cases and 85 relevant
-regressions pass (138 total). The final auth addition changes tests only.
+new specs remain local under repository policy. C2/C9 honor approved AD-006.
+No implementation decision remains outstanding. All 53 subscription cases and
+85 relevant regressions pass (138 total); the TUI follow-up passed 172 cases.
+The final auth and TUI additions change tests only. No fault injection claimed.
 Full isolated suites on Python 3.10/3.14 (core 2.45) and Python 3.12 (core 2.44)
 each passed 5257 tests, 7 skipped, 1 xfailed. Main Python 3.12/core 2.45 also passed
 5257 tests, 7 skipped, 1 xfailed, with 95.55% coverage (90% gate).
@@ -57,6 +57,7 @@ Ruff lint/format, Pyright, and sdist/wheel build pass. Earlier concurrent suites
 overloaded the host; isolated reruns pass without weakening tests.
 Live evaluation is NOT RUN; current CLI/default selection remains unchanged.
 The original checkout's unrelated edits are untouched. No push/deploy authorized.
+This acceptance-record commit changes only STATE metadata after verified code.
 
 ### Upstream advisor — port verified, PR authorized
 
