@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.concurrency import ConcurrencyLimitedModel
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.config.model import SubagentTiers
@@ -37,23 +38,29 @@ def _spawn_with_model_model() -> FunctionModel:
     return FunctionModel(fn)
 
 
-def test_build_uses_current_model_by_default(tmp_path: Path):
+@pytest.mark.parametrize("concurrency", [None, 2])
+def test_build_uses_current_model_by_default(tmp_path: Path, concurrency):
     """With no override, build() uses the harness's current model and never calls
     the per-spawn resolver."""
     deps = _make_deps(tmp_path)
-    h = _make_harness(_text_model(), deps)
+    h = _make_harness(_text_model(), deps, subagent_concurrency=concurrency)
     h.subagents._build_model = lambda mid: pytest.fail("resolver must not run")
 
     sub, err = h.subagents.build("explore")
     assert err is None
-    assert sub.model is h.current_model
+    model = sub.model
+    if concurrency is not None:
+        assert isinstance(model, ConcurrencyLimitedModel)
+        model = model.wrapped
+    assert model is h.current_model
 
 
-def test_build_resolves_model_override(tmp_path: Path):
+@pytest.mark.parametrize("concurrency", [None, 2])
+def test_build_resolves_model_override(tmp_path: Path, concurrency):
     """With an override, build() resolves it through the injected resolver and the
     sub-agent runs on the resolved model, not the current one."""
     deps = _make_deps(tmp_path)
-    h = _make_harness(_text_model(), deps)
+    h = _make_harness(_text_model(), deps, subagent_concurrency=concurrency)
     other = _text_model()
     seen: dict = {}
 
@@ -65,8 +72,12 @@ def test_build_resolves_model_override(tmp_path: Path):
     sub, err = h.subagents.build("explore", model="cheap")
     assert err is None
     assert seen["id"] == "cheap"
-    assert sub.model is other
-    assert sub.model is not h.current_model
+    model = sub.model
+    if concurrency is not None:
+        assert isinstance(model, ConcurrencyLimitedModel)
+        model = model.wrapped
+    assert model is other
+    assert model is not h.current_model
 
 
 def test_build_model_override_unavailable_without_resolver(tmp_path: Path):
