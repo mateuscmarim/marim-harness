@@ -32,6 +32,7 @@ def subscription_model(model_id: str | None, provider=None):
 
     if not model_id or not model_id.strip():
         raise ValueError(
-            "openai-codex requires MARIM_MODEL or a qualified openai-codex:<model> selection."
+            "openai-codex requires MARIM_CODEX_SUBSCRIPTION_MODEL, MARIM_MODEL when it is the "
+            "default provider, or a qualified openai-codex:<model> selection."
         )
     return OpenAICodexModel(model_id, provider=provider or subscription_provider())

@@ -421,7 +421,12 @@ def _openrouter_provider_config(common: dict[str, Any]) -> ModelConfig:
 
 
 def _codex_subscription_config(common: dict[str, Any]) -> ModelConfig:
-    return ModelConfig(provider="openai-codex", model=os.getenv("MARIM_MODEL"), **common)
+    model = os.getenv("MARIM_CODEX_SUBSCRIPTION_MODEL") or None
+    if model is None and os.getenv("MARIM_PROVIDER", "openrouter").lower() == "openai-codex":
+        # The generic model belongs to the default provider. Advertising its
+        # slug as a Codex model when another provider is selected is misleading.
+        model = os.getenv("MARIM_MODEL")
+    return ModelConfig(provider="openai-codex", model=model, **common)
 
 
 # Dispatch table for `_provider_config`, keyed by provider name — a dict beats
