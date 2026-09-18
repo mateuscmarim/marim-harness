@@ -19,14 +19,14 @@ def credentials_present() -> bool:
     return (home / "auth.json").is_file()
 
 
-def subscription_provider():
+def subscription_provider(*, http_client=None):
     from pydantic_ai.exceptions import UserError
     from pydantic_ai.providers.openai_codex import OpenAICodexProvider
 
     try:
         # The public default loader is read-only. Never supply an API key,
         # endpoint override, credential store, or persistence callback here.
-        return OpenAICodexProvider()
+        return OpenAICodexProvider(http_client=http_client)
     except (UserError, OSError, ValueError):
         raise UserError(LOGIN_HELP) from None
 

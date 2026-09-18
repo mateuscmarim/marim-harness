@@ -720,8 +720,9 @@ class ModelSource:
         return await codex_catalog.list_codex_models(strict=strict)
 
     async def _list_codex_subscription(self, *, strict: bool) -> list[ModelEntry]:
-        model = self.cfg.model
-        return [ModelEntry(model, model)] if model and model.strip() else []
+        from .codex_subscription_catalog import list_subscription_models
+
+        return await list_subscription_models(self.cfg.model, strict=strict)
 
 
 # Dispatch table for `ModelSource.list_models`, keyed by provider name — same

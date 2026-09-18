@@ -63,7 +63,7 @@ non-positive values and fall back to the default (exceptions are noted).
 | --- | --- | --- |
 | `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, `codex-cli`, or `openai-codex`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
-| `MARIM_CODEX_SUBSCRIPTION_MODEL` | unset | Explicit native Codex subscription model, including its mobile/server catalog entry. Takes precedence over `MARIM_MODEL` for `openai-codex`; the latter is used only when `openai-codex` is the default provider. Other providers' defaults are unchanged. |
+| `MARIM_CODEX_SUBSCRIPTION_MODEL` | unset | Explicit native Codex subscription model and catalog fallback. Takes precedence over `MARIM_MODEL` for `openai-codex`; the latter is used only when `openai-codex` is the default provider. Other providers' defaults are unchanged. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
 | `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
 | `OPENROUTER_API_KEY` | unset | OpenRouter API key (preferred over `MARIM_API_KEY`). |
@@ -271,8 +271,9 @@ Choose a model your subscription can access; `gpt-6-astra` is an example, not
 an entitlement guarantee. There is no default model for this provider. You can
 also select `/model openai-codex:gpt-6-astra` through the TUI's free-text
 picker. The mobile picker only filters server catalog entries; typing a model
-that is absent from the catalog cannot select it. To list a native subscription
-model while keeping another default provider, such as `zen-go`, add this to the
+that is absent from the catalog cannot select it. Native Codex discovers visible
+models from the subscription catalog, including when another provider is the
+default. To configure a preferred native model and an offline fallback, add this to the
 server's global config (`~/.config/marim/.env`, or `$XDG_CONFIG_HOME/marim/.env`):
 
 ```dotenv
@@ -284,10 +285,19 @@ Restart the Marim service and reopen the mobile model picker. Keep the existing
 provider-specific setting takes precedence for native Codex; if it is unset or
 empty, `MARIM_MODEL` is used only when `MARIM_PROVIDER=openai-codex`. Another
 provider's generic model is never advertised as a Codex subscription model.
-Without an applicable explicit model, the native catalog is empty.
+The configured model does not restrict the live catalog. If discovery fails or
+returns no visible models, the picker falls back to that configured model (or
+an empty list when none is configured). A successful live catalog keeps upstream
+order, omits hidden entries, and reports image/reasoning/context capabilities
+when supplied. Listing performs an authenticated metadata GET, never a model
+generation or a Codex CLI call; appearing in the catalog is not a guarantee of
+remaining quota or successful execution. Existing server catalog caching applies.
 
-The catalog contains only the configured model and makes no network probe or
-Codex CLI call. It does not verify account access. Settings shows
+Pydantic AI 2.45 does not expose model discovery. Marim uses its public HTTP-client
+injection for OAuth and a small adapter for the subscription `/models` endpoint,
+with the required `client_version=0.154.0` compatibility parameter. This backend
+contract is regression-tested and may need updating until upstream owns discovery.
+No API billing endpoint or direct SDK catalog client is used. Settings still shows
 **configured · unverified** when a local auth file exists,
 or **login required** when absent. It has no API-key field or connection test.
 

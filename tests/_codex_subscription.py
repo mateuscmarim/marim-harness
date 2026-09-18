@@ -87,11 +87,23 @@ class Wire:
         self.requests = []
         self.replies = []
         self.refreshes = []
+        self.catalog_requests = []
+        self.catalog_payload = {"models": []}
+        self.catalog_handler = None
         self.handler = None
 
     async def handle(self, request):
         body = await request.aread()
         record = {"url": str(request.url), "headers": dict(request.headers), "body": body.decode()}
+        if request.url.path == "/backend-api/codex/models":
+            self.catalog_requests.append(record)
+            if self.catalog_handler:
+                return await self.catalog_handler(request)
+            return httpx2.Response(
+                200,
+                content=json.dumps(self.catalog_payload),
+                headers={"content-type": "application/json"},
+            )
         if str(request.url) == "https://auth.openai.com/oauth/token":
             self.refreshes.append(record)
         else:
@@ -140,6 +152,15 @@ def wire(monkeypatch, tmp_path):
         openai_codex,
         "create_async_httpx2_client",
         lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(transport.handle)),
+    )
+    from marim_harness.config import codex_subscription_catalog
+
+    monkeypatch.setattr(
+        codex_subscription_catalog,
+        "AsyncClient",
+        lambda **kwargs: httpx2.AsyncClient(
+            transport=httpx2.MockTransport(transport.handle), **kwargs
+        ),
     )
 
     async def no_network(*args, **kwargs):
