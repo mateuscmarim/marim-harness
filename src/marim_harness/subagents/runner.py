@@ -44,6 +44,7 @@ from ..runtime.permissions import Mode
 from ..tasks import TaskList
 from ..thinking import resolve_thinking, settings_for
 from ..tools.names import GATED_TOOLS
+from ..usage import usage_model_ref
 from ..workflows.invocation import current_workflow
 from ..workspace import (
     cap_subagent_output,
@@ -652,7 +653,7 @@ class SubagentRunner:
         # after a resume. Empty for native spawns — a no-op there.
         for child_id, msgs in run.child_transcripts.items():
             self._transcripts.save(child_id, msgs)
-        self.session.add_usage(run.usage)
+        self.session.add_usage(run.usage, model_id=run.model_id)
         if persist_bg:
             # A background spawn finishes off-turn, so no run_turn folds its spend;
             # persist right away. force=True: the persist cache keys off
@@ -1252,6 +1253,7 @@ class SubagentRunner:
                 output=out if isinstance(out, str) else json.dumps(out),
                 transcript=result.all_messages(),
                 usage=result.usage,
+                model_id=usage_model_ref(getattr(prep.sub, "model", None)),
                 final_meta=self._transcripts.final_meta(
                     prep.meta, "finished", result.usage, prep.t0, result.all_messages()
                 ),

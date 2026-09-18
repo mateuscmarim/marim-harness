@@ -29,6 +29,7 @@ from ..runtime.errors import (
     overflow_is_contention,
 )
 from ..session.compaction import safe_tool_result_clearer
+from ..usage import usage_model_ref
 from .policies import RetryPolicy
 
 logger = logging.getLogger(__name__)
@@ -283,7 +284,9 @@ class SpawnRunDriver:
                     # tokens regardless, so bank the accumulator before the
                     # re-raise. (The success path needs no counterpart — the
                     # callers fold result.usage, which IS this accumulator.)
-                    self.session.add_usage(run_usage)
+                    self.session.add_usage(
+                        run_usage, model_id=usage_model_ref(getattr(sub, "model", None))
+                    )
                     raise
                 attempt += 1
                 resume_history = _resumable_history(list(captured))

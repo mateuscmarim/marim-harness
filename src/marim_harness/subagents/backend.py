@@ -47,6 +47,8 @@ class SpawnRun:
     - ``child_transcripts`` — CLI-only: the demuxed Claude-side Agent/Task
       sub-agents, each keyed by the stream id its live card streamed under, so
       the sub-agents screen can replay them. Empty for native spawns.
+    - ``model_id`` — native accounting identity of the model that actually ran;
+      ``None`` retains the existing CLI accounting path.
     """
 
     output: str
@@ -54,6 +56,7 @@ class SpawnRun:
     usage: RunUsage
     final_meta: dict | None = None
     child_transcripts: dict[str, list[Any]] = field(default_factory=dict)
+    model_id: str | None = None
 
 
 class SpawnLifecycle(Protocol):

@@ -77,7 +77,9 @@ def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, 
     """The best available cost as ``(usd, is_exact)``. Prefers the provider's
     billed amount (``is_exact=True``) and falls back to the genai-prices estimate
     (``is_exact=False``); ``(None, False)`` when neither is available."""
-    if model_ref and model_ref.startswith("openai-codex:"):
+    if usage.details.get("subscription_cost_unknown") or (
+        model_ref and model_ref.startswith("openai-codex:")
+    ):
         # API list prices (including upstream estimates) are not subscription
         # charges. Token accounting remains useful; money is unknown.
         return None, False

@@ -269,6 +269,10 @@ class SessionController:
         in the stats ledger. Every call site that used to do
         ``session.usage += x`` must go through here so spend cannot be
         double-counted or forgotten by the ledger."""
+        if model_id and model_id.startswith("openai-codex:"):
+            # Preserve subscription provenance in the persisted aggregate. A
+            # paid main model must not reprice these child/auxiliary tokens.
+            delta.details["subscription_cost_unknown"] = 1
         self.usage += delta
         rec = self.stats_recorder
         if rec is not None:
