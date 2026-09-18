@@ -129,9 +129,7 @@ async def test_mcp_tool(wire, tmp_path):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("explicit", [False, True])
-async def test_native_subagent(wire, tmp_path, explicit, monkeypatch):
-    from contextlib import asynccontextmanager
-
+async def test_native_subagent(wire, tmp_path, explicit):
     from marim_harness.workspace.agents import AgentDef
 
     h = (
@@ -147,20 +145,17 @@ async def test_native_subagent(wire, tmp_path, explicit, monkeypatch):
         )
         .build()
     )
-    release, attempted, started = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    waiting = 0
+    release, started = asyncio.Event(), asyncio.Event()
     active = 0
     peak = 0
-    original_slot = h.subagents._slot
+    limiter = h.subagents._limiter
+    assert limiter is not None
 
-    @asynccontextmanager
-    async def observed_slot():
-        nonlocal waiting
-        waiting += 1
-        if waiting == 2:
-            attempted.set()
-        async with original_slot():
-            yield
+    async def wait_for_admission():
+        # Observe upstream's queue before releasing the active request so
+        # slow child startup cannot masquerade as an enforced concurrency cap.
+        while limiter.waiting_count != 1:
+            await asyncio.sleep(0)
 
     async def reply(request):
         nonlocal active, peak
@@ -173,7 +168,6 @@ async def test_native_subagent(wire, tmp_path, explicit, monkeypatch):
             200, headers={"Content-Type": "text/event-stream"}, content=sse(text="child done")
         )
 
-    monkeypatch.setattr(h.subagents, "_slot", observed_slot)
     wire.handler = reply
     override = f"openai-codex:{MODEL}" if explicit else None
     tasks = [
@@ -181,12 +175,16 @@ async def test_native_subagent(wire, tmp_path, explicit, monkeypatch):
         for i in range(2)
     ]
     try:
-        await asyncio.wait_for(asyncio.gather(attempted.wait(), started.wait()), 10)
+        await asyncio.wait_for(asyncio.gather(wait_for_admission(), started.wait()), 10)
+        assert limiter.running_count == 1
+        assert limiter.waiting_count == 1
         assert active == 1
         release.set()
         results = await asyncio.gather(*tasks)
         assert all("child done" in result for result in results)
         assert peak == 1
+        assert limiter.running_count == 0
+        assert limiter.waiting_count == 0
         for request in wire.requests:
             names = {tool["name"] for tool in request["json"]["tools"]}
             assert "read_file" in names

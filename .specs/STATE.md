@@ -59,6 +59,15 @@ Live evaluation is NOT RUN; current CLI/default selection remains unchanged.
 The original checkout's unrelated edits are untouched. No push/deploy authorized.
 This acceptance-record commit changes only STATE metadata after verified code.
 
+PR preparation, 2026-09-18: user requested publication and babysitting, not PR
+merge. Incorporated current master 416e9726 (release 0.14, dependency security
+fix, server version response, and nested-subagent concurrency fix). C18's test
+now observes upstream request-limiter admission in place of the removed _slot;
+the concurrency and tool-grant obligations are unchanged. All 53 subscription
+cases plus 42 affected concurrency/model/cancellation cases pass. The earlier
+acceptance above is historical; current integration evidence lives in the
+feature verification report and the PR's current-head CI/review.
+
 ### Upstream advisor — port verified, PR authorized
 
 Branch `refactor/upstream-advisor` ports advisor-only commits from the original
