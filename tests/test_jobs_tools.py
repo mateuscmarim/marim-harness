@@ -212,3 +212,36 @@ async def test_cancel_job_tool(tmp_path):
         await agent.run("go", deps=deps)
     assert captured["ret"] == f"cancelled {job_id}"
     assert deps.jobs.get(job_id).status == "cancelled"
+
+
+@pytest.mark.anyio
+async def test_wait_for_job_tool_without_timeout_waits_through_completion(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+
+    async def slowish() -> str:
+        await asyncio.sleep(0.1)
+        return "waited through"
+
+    job_id = deps.jobs.register("agent", "slowish", slowish())
+    agent = _main_agent()
+    model, captured = _call_once("wait_for_job", {"id": job_id})  # no timeout arg
+    with agent.override(model=model):
+        await agent.run("go", deps=deps)
+    assert captured["ret"] == "waited through"
+
+
+@pytest.mark.anyio
+async def test_combined_job_tool_wait_action_waits_through_completion(tmp_path):
+    deps = _make_deps(tmp_path, mode=Mode.ask)
+
+    async def slowish() -> str:
+        await asyncio.sleep(0.1)
+        return "combined waited"
+
+    job_id = deps.jobs.register("agent", "slowish", slowish())
+    agent = Agent(TestModel(), deps_type=Deps)
+    BuiltinToolProvider(combined_job_tool=True).register(agent)
+    model, captured = _call_once("job", {"action": "wait", "id": job_id})
+    with agent.override(model=model):
+        await agent.run("go", deps=deps)
+    assert captured["ret"] == "combined waited"

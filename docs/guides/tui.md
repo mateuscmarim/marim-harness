@@ -109,8 +109,13 @@ items first.
 **Steering** (`ctrl+g` or `alt+enter`) is different from queueing: it injects
 the box's text (and any attached images) *into the turn that is already
 running*. The message reaches the model at its next request boundary — use it
-to redirect the agent without waiting for the turn to end. The transcript
-echoes `↪ steering: …`. A steer that lands in the gap just as the turn
+to redirect the agent without waiting for the turn to end. If the agent is
+blocked in a job wait (`wait_for_job` / `job(action="wait")`, which hold
+through completion by default), the steer releases that wait: the job keeps
+running, the tool returns a "still running — wait released" note, and the
+model reads your message in that same request. The pending row shows
+`Waiting for <job or sub-agent task> · <elapsed>` with the real blocked time.
+The transcript echoes `↪ steering: …`. A steer that lands in the gap just as the turn
 finishes is not lost: it falls back to the front of the queue and runs next.
 When no turn is running, the steer keys simply submit, exactly like `enter`.
 

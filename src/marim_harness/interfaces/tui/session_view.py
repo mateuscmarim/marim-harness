@@ -222,6 +222,7 @@ class SessionView:
                 args,
                 workspace_root=self.app.link.info.workspace_root,
             )
+            widget.mark_replayed()
             tool_widgets[part.tool_call_id] = widget
             group, solo = await self.app.stream.add_tool_to_run(
                 widget,
@@ -338,6 +339,7 @@ class SessionView:
             args,
             workspace_root=self.app.link.info.workspace_root,
         )
+        widget.mark_replayed()
         tool_widgets[part.tool_call_id] = widget
         await log.mount(widget)
 

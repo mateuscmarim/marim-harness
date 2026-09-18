@@ -83,8 +83,12 @@ An inline spawn's report is simply the tool result. A detached spawn's report
 flows through the **job registry**:
 
 - The agent can pull it with the jobs tools — `jobs` (list), `job_output`
-  (non-blocking read), `wait_for_job` (block with a timeout), `cancel_job`
-  (or the combined `job` tool). Polling is actively discouraged: repeated
+  (non-blocking read), `wait_for_job` (block until it finishes), `cancel_job`
+  (or the combined `job` tool). A wait has no timeout by default — one call
+  holds through completion — and an explicit `timeout` still bounds it. A
+  steer sent while the agent waits releases the wait early with a truthful
+  "still running" note, so the guidance reaches the model at its next request
+  rather than after the job. Polling is actively discouraged: repeated
   no-change checks get escalating nudges to end the turn instead.
 - When a job finishes between turns, a **finished-job digest** is prepended to
   the next user turn's context, so the agent sees outcomes without asking.

@@ -460,3 +460,189 @@ async def test_ctrl_g_posts_steer_message(tmp_path):
         await pilot.press("ctrl+g")
         await pilot.pause()
     assert posted == ["steer via ctrl-g"]
+
+
+# --- steering releases a pending job wait ---------------------------------------
+
+
+def _parked_wait(h, tmp_result: str = "r"):
+    """A running job on the harness's registry plus a no-timeout wait parked on
+    it (as wait_for_job would leave it). Returns (event, job_id, waiter_task)."""
+    ev = asyncio.Event()
+
+    async def _work() -> str:
+        await ev.wait()
+        return tmp_result
+
+    jid = h.deps.jobs.register("agent", "explore: x", _work())
+    waiter = asyncio.ensure_future(h.deps.jobs.wait_outcome(jid))
+    return ev, jid, waiter
+
+
+@pytest.mark.anyio
+async def test_steer_onto_live_ctx_releases_a_parked_job_wait(tmp_path):
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    ctx = _FakeCtx()
+    tc._active_run_ctx = ctx
+    ev, jid, waiter = _parked_wait(h)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    h.steer("look at this instead")
+    outcome = await asyncio.wait_for(waiter, 2)
+    assert outcome.kind == "released"
+    assert h.deps.jobs.get(jid).status == "running"  # the job is untouched
+    assert tc.has_undelivered_steer() is True  # queued, not yet drained
+    # pydantic-ai drains the queue into the next request ⇒ the level signal
+    # drops, and a re-wait blocks normally until the job finishes.
+    ctx.pending_messages.clear()
+    assert tc.has_undelivered_steer() is False
+    rewait = asyncio.ensure_future(h.deps.jobs.wait_outcome(jid))
+    await asyncio.sleep(0)
+    ev.set()
+    assert (await asyncio.wait_for(rewait, 2)).kind == "settled"
+
+
+@pytest.mark.anyio
+async def test_steer_scheduled_before_the_wait_starts_releases_it_at_once(tmp_path):
+    """The controller binds the registry's guidance_pending predicate, so a wait
+    that starts after a steer was scheduled (but before the model's next request
+    drained it) returns immediately instead of holding the guidance back."""
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    ctx = _FakeCtx()
+    tc._active_run_ctx = ctx
+    h.steer("first")
+    assert h.deps.jobs.guidance_pending() is True
+    ev, jid, waiter = _parked_wait(h)
+    outcome = await asyncio.wait_for(waiter, 2)
+    assert outcome.kind == "released"
+    assert outcome.elapsed == 0.0
+    # Until the request that carries the steer goes out, every new wait keeps
+    # returning at once — the guidance must not be held back by a re-wait.
+    assert (await h.deps.jobs.wait_outcome(jid)).kind == "released"
+    ctx.pending_messages.clear()  # drained into a request
+    assert h.deps.jobs.guidance_pending() is False
+    ev.set()
+    assert (await h.deps.jobs.wait_outcome(jid)).kind == "settled"
+
+
+@pytest.mark.anyio
+async def test_steer_without_live_ctx_does_not_release_waits(tmp_path):
+    """No live ctx (a run with no streaming handler) ⇒ the steer is buffered
+    for the next turn and cannot reach the model mid-turn, so releasing the
+    wait would promise guidance that isn't coming: the wait keeps blocking."""
+    h = _harness(tmp_path)
+    assert h.turn_controller._active_run_ctx is None
+    ev, jid, waiter = _parked_wait(h)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    h.steer("buffered")
+    assert h.turn_controller.has_undelivered_steer() is False
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(waiter), 0.05)
+    ev.set()
+    assert (await asyncio.wait_for(waiter, 2)).kind == "settled"
+
+
+@pytest.mark.anyio
+async def test_consecutive_steers_release_consecutive_waits(tmp_path):
+    h = _harness(tmp_path)
+    tc = h.turn_controller
+    ctx = _FakeCtx()
+    tc._active_run_ctx = ctx
+    ev, jid, waiter = _parked_wait(h)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    h.steer("one")
+    assert (await asyncio.wait_for(waiter, 2)).kind == "released"
+    ctx.pending_messages.clear()  # drained into a request
+    rewait = asyncio.ensure_future(h.deps.jobs.wait_outcome(jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    h.steer("two")
+    assert (await asyncio.wait_for(rewait, 2)).kind == "released"
+    ctx.pending_messages.clear()
+    ev.set()
+    assert (await h.deps.jobs.wait_outcome(jid)).kind == "settled"
+
+
+def _wait_then_done_harness(tmp_path, calls, job_id: str):
+    """A streaming harness whose model calls wait_for_job on ``job_id`` once,
+    then answers 'done'. ``calls`` records each request's parts (text, tool
+    names and tool-return content), so the test can see what the model saw."""
+    from collections.abc import AsyncIterator
+
+    from pydantic_ai.messages import ModelMessage
+    from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
+
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    async def stream_fn(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator:
+        seen = []
+        for m in messages:
+            for p in getattr(m, "parts", []):
+                seen.append(str(getattr(p, "content", getattr(p, "tool_name", None))))
+        calls.append(seen)
+        if len(calls) == 1:
+            args = f'{{"id": "{job_id}"}}'
+            yield {0: DeltaToolCall(name="wait_for_job", json_args=args, tool_call_id="c1")}
+        else:
+            yield "done"
+
+    return Harness(
+        FunctionModel(stream_function=stream_fn),
+        BuiltinToolProvider(),
+        _make_deps(tmp_path),
+        instructions="test",
+    )
+
+
+@pytest.mark.anyio
+async def test_steer_during_wait_for_job_releases_it_and_lands_next_request(tmp_path):
+    """End to end through the real tool: the model blocks in wait_for_job (no
+    timeout) on a job that never finishes on its own; a steer arrives; the wait
+    returns a truthful released note and the steer text reaches the model in
+    the very next request, while the job keeps running."""
+    calls: list[list[str]] = []
+    deps_holder: dict = {}
+    ev = asyncio.Event()
+
+    async def _work() -> str:
+        await ev.wait()
+        return "late report"
+
+    # Register the job on the harness's registry once the harness exists.
+    h = _wait_then_done_harness(tmp_path, calls, "job-1")
+    deps_holder["jobs"] = h.deps.jobs
+    jid = h.deps.jobs.register("agent", "explore: slow", _work())
+    assert jid == "job-1"
+
+    async def steerer():
+        for _ in range(500):
+            if h.deps.jobs._parked_waits > 0:  # the tool is really blocked
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("wait_for_job never parked")
+        h.steer("STEER NOW")
+
+    async def handler(ctx, events):
+        async for _ in events:
+            pass
+
+    out, _ = await asyncio.gather(
+        h.run_turn("hello", event_stream_handler=handler),
+        steerer(),
+    )
+    assert out.result == "done"
+    assert len(calls) == 2
+    second = " | ".join(calls[1])
+    assert "STEER NOW" in second, f"steer not injected: {calls}"
+    assert "still running" in second and "new user guidance" in second
+    assert "late report" not in second  # the job did not finish
+    assert h.deps.jobs.get(jid).status == "running"
+    assert h.turn_controller.has_undelivered_steer() is False  # drained
+    ev.set()
+    assert await h.deps.jobs.wait(jid) == "late report"

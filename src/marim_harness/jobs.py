@@ -19,7 +19,18 @@ repaint a live panel. Live jobs belong to the running process and are cancelled
 on exit; settled summaries, though, are exported (:meth:`JobRegistry.export_settled`)
 into the session payload and re-imported as read-only ``history`` on resume, so
 the jobs panel and sub-agent cards survive a restart. The agent reaches results
-by *pulling* (``job_output`` / ``wait_for_job``); nothing wakes a turn on its own.
+by *pulling* (``job_output`` / ``wait_for_job``) or, between turns, through the
+finished-job digest and the interfaces' autonomous wake.
+
+A pull that blocks (:meth:`JobRegistry.wait`) is completion-based by default: it
+returns when the job settles, with no periodic timeout round-trips through the
+model. Two things end it early. An explicit ``timeout`` (kept for callers that
+want a bounded block) returns a still-running note. And user steering: the turn
+controller calls :meth:`JobRegistry.release_waits` the moment a steer is scheduled
+for the model, so a wait that would otherwise hold the next model request back
+indefinitely returns a truthful *released* outcome — the job keeps running, its
+completion stays un-consumed (a later digest/wake still surfaces it), and the
+model reads the guidance in the very request that carries the tool result.
 """
 
 from __future__ import annotations
@@ -27,6 +38,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -109,6 +121,28 @@ class Job:
     output_fn: Callable[[], str] | None = field(default=None, repr=False)
 
 
+WaitKind = Literal["settled", "timeout", "released", "missing", "backend"]
+
+
+@dataclass(frozen=True)
+class WaitOutcome:
+    """How a :meth:`JobRegistry.wait_outcome` call ended, and the text the
+    model-facing wait tools return for it.
+
+    ``settled`` — the job reached a terminal state and ``text`` is its result
+    (or ``(<status>)`` for a result-less cancel); this is the only kind that
+    marks the job wake-consumed. ``timeout`` — an explicit timeout elapsed.
+    ``released`` — user steering arrived and released the wait so the model can
+    read the guidance; the job keeps running. ``missing`` / ``backend`` — no
+    such job, or a CLI-owned job whose waiting the backend manages. ``elapsed``
+    is how long the call actually blocked, in seconds — what a UI should show,
+    rather than any requested timeout."""
+
+    kind: WaitKind
+    text: str
+    elapsed: float = 0.0
+
+
 def history_rows(entries: list[dict]) -> list[Job]:
     """Persisted settled summaries (the ``jobs`` list a session file carries,
     see :meth:`JobRegistry.export_settled`) as read-only :class:`Job` rows —
@@ -173,6 +207,22 @@ class JobRegistry:
         # NOT reset at turn boundaries — the ledger keys off job state, not
         # turns (spec 2026-07-02-job-poll-guard-design).
         self._poll_ledger: dict[str, tuple[str, int]] = {}
+        # Wait release. Every pending wait() parks on the current release future
+        # alongside its job's task; release_waits() resolves it — waking all of
+        # them at once — and the next waiter creates a fresh one. Lazily built
+        # because a Future needs a running loop; the count is what
+        # release_waits() reports.
+        self._wait_release: asyncio.Future[None] | None = None
+        self._parked_waits = 0
+        # Level-triggered companion to release_waits(): whether user guidance is
+        # scheduled for the model but not yet delivered. release_waits() only
+        # wakes waits that already exist; a wait that STARTS after the steer
+        # was scheduled (the steer landed while the model was still composing
+        # the response that calls wait_for_job) must not block either, or the
+        # guidance would sit behind it until the job finishes. The turn
+        # controller binds this to its delivery-receipt check; the default
+        # never releases, so embedders without steering see a plain wait.
+        self.guidance_pending: Callable[[], bool] = lambda: False
         # Settled-job summaries imported from the persisted session (spec
         # 2026-07-03-subagent-resume, §2). Read-only display state: never in
         # ``_jobs``, never killable/pollable, never in the digest — a prior
@@ -358,58 +408,141 @@ class JobRegistry:
             self._wake_consumed.add(job_id)
         return job.result or ""
 
-    async def wait(self, job_id: str, timeout: float = 60) -> str:
-        """Block until the job finishes or ``timeout`` elapses, then return its
-        result. A timeout leaves the job running (it isn't cancelled).
+    async def wait(self, job_id: str, timeout: float | None = None) -> str:
+        """Block until the job finishes, then return its result — the text of
+        :meth:`wait_outcome`, for callers that only need the message."""
+        return (await self.wait_outcome(job_id, timeout)).text
+
+    async def wait_outcome(self, job_id: str, timeout: float | None = None) -> WaitOutcome:
+        """Block until the job finishes and return a :class:`WaitOutcome`.
+
+        Completion-based by default (``timeout=None``): the call returns when
+        the job settles, however long that takes. An explicit ``timeout`` is
+        honoured for callers that want a bounded block; on expiry the job is
+        left running (it isn't cancelled) and the outcome is ``timeout``.
+
+        User steering ends a wait early: :meth:`release_waits` (called by the
+        turn controller when a steer is scheduled for the model) wakes every
+        parked wait with a ``released`` outcome, and a wait that starts while
+        :attr:`guidance_pending` reads true returns ``released`` at once. Both
+        leave the job running and un-consumed. A job that settles in the same
+        loop step as a release is reported ``settled`` — the result exists, so
+        it is delivered rather than withheld.
 
         Cancellation is two-sided and must not be conflated: the job's own task
         being cancelled settles it and is returned like any terminal state (the
         caller decides what a cancelled job means), while the *waiter* being
         cancelled re-raises so the caller's own task settles cancelled. The
-        shield makes the waiter's cancellation leave the job running.
+        shield in :meth:`_park` makes the waiter's cancellation leave the job
+        running.
 
-        When the job completes during the wait its id is marked as
-        wake-consumed so the autonomous wake scheduler won't fire a redundant
-        turn — the caller already has the result. The digest entry is preserved
-        so the model still sees it at the start of its next turn."""
+        Only a ``settled`` outcome marks the job wake-consumed: the caller then
+        holds the result, so the autonomous wake scheduler must not fire a
+        redundant turn for it. A released, timed-out, or cancelled wait never
+        delivered anything, so the completion stays pending for a later
+        digest/wake. The digest entry is preserved either way, so the model
+        still sees it at the start of its next turn."""
         job = self._jobs.get(job_id)
         if job is None:
-            return f"No job {job_id!r}."
+            return WaitOutcome("missing", f"No job {job_id!r}.")
         if job.backend_owned and job.status == "running":
-            return f"job {job_id} still running; waiting is managed by the CLI backend"
+            return WaitOutcome(
+                "backend", f"job {job_id} still running; waiting is managed by the CLI backend"
+            )
         if job.status != "running" or job.task is None:
             # Already finished — mark as wake-consumed.
             self._wake_consumed.add(job_id)
-            return job.result if job.result is not None else f"({job.status})"
-        try:
-            await asyncio.wait_for(asyncio.shield(job.task), timeout)
-        except asyncio.TimeoutError:
-            return f"job {job_id} still running after {timeout:g}s"
-        except asyncio.CancelledError:
-            # Ambiguous by construction (same as await_settled): shield raises
-            # CancelledError both when the job's own task was cancelled and when
-            # *we* (the waiter) were — e.g. a user abort (Esc/Ctrl-C) while the
-            # model sits in wait_for_job. The job's task state disambiguates.
-            # Re-raising on the waiter's own cancellation matters because
-            # cancellation delivery is one-shot: swallowing it here would let
-            # the turn keep running with the abort silently lost. If we
-            # propagate, skip the wake-consumption bookkeeping below — the
-            # caller never got the result, so a later digest/wake must still
-            # be able to surface it.
-            if not job.task.cancelled():
-                raise  # the waiter itself was cancelled — propagate
-        except Exception as exc:
-            logger.debug("wait for job %s: %s (already settled)", job_id, exc, exc_info=True)
-        # The done-callback that settles the job runs *after* the await returns
-        # — and on 3.12+ ``asyncio.wait_for`` on an already-done task doesn't
-        # yield to the event loop at all, so the callback may still be queued.
-        # Yield until the status is terminal before reading it, mirroring the
-        # recheck loop in :meth:`await_settled`.
-        while job.status == "running" and job.task.done():
+            return WaitOutcome("settled", self._settled_text(job))
+        if self.guidance_pending():
+            return WaitOutcome("released", self._released_text(job_id, 0.0))
+        t0 = time.monotonic()
+        released = await self._park(job, timeout)
+        elapsed = time.monotonic() - t0
+        if not job.task.done():
+            return self._unfinished_outcome(job_id, released, timeout, elapsed)
+        # The done-callback that settles the job runs *after* the task completes
+        # — the wake from asyncio.wait may land before it. Yield until the
+        # status is terminal before reading it, mirroring the recheck loop in
+        # :meth:`await_settled`.
+        while job.status == "running":
             await asyncio.sleep(0)
-        # Job finished (or was already settled) — mark as wake-consumed.
+        # Job finished — the caller gets the result, so mark it wake-consumed.
         self._wake_consumed.add(job_id)
+        return WaitOutcome("settled", self._settled_text(job), elapsed)
+
+    async def _park(self, job: Job, timeout: float | None) -> bool:
+        """Block on ``job``'s task or a wait release, whichever comes first (or
+        ``timeout``). Returns whether a release fired; the caller reads the
+        task's state to tell completion from a timeout.
+
+        The task is shielded so the waiter's own cancellation (a user abort
+        while the model sits in wait_for_job) propagates out of here as a plain
+        CancelledError without touching the job — ``asyncio.wait`` never
+        cancels what it waits on, and cancelling the shield's outer future on
+        the way out only detaches us. The job's OWN cancellation raises
+        nothing: it just shows up as a settled task in the done set, which is
+        the disambiguation the old ``wait_for(shield(...))`` form had to infer
+        from the task state inside an ``except``."""
+        assert job.task is not None
+        shielded = asyncio.shield(job.task)
+        release = self._release_future()
+        self._parked_waits += 1
+        try:
+            await asyncio.wait(
+                {shielded, release}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            self._parked_waits -= 1
+            if not shielded.done():
+                shielded.cancel()  # detach from the still-running task
+            elif not shielded.cancelled():
+                # A failed job settles via its done-callback; retrieve the
+                # exception here so asyncio doesn't log it as never retrieved.
+                shielded.exception()
+        return release.done()
+
+    def _release_future(self) -> asyncio.Future[None]:
+        if self._wait_release is None or self._wait_release.done():
+            self._wait_release = asyncio.get_running_loop().create_future()
+        return self._wait_release
+
+    def release_waits(self) -> int:
+        """Wake every parked :meth:`wait` now with a ``released`` outcome and
+        return how many there were. Called by the turn controller the moment a
+        user steer is scheduled for the model: a completion-based wait would
+        otherwise hold the next model request — and the guidance riding on it —
+        back until the job finished. Jobs keep running; nothing is consumed. A
+        no-op (0) when nothing is parked, so callers need not check first."""
+        fut, self._wait_release = self._wait_release, None
+        if fut is None or fut.done():
+            return 0
+        released = self._parked_waits
+        fut.set_result(None)
+        return released
+
+    @staticmethod
+    def _settled_text(job: Job) -> str:
         return job.result if job.result is not None else f"({job.status})"
+
+    @staticmethod
+    def _released_text(job_id: str, elapsed: float) -> str:
+        return (
+            f"job {job_id} still running — wait released after {elapsed:.0f}s "
+            "because new user guidance arrived"
+        )
+
+    @classmethod
+    def _unfinished_outcome(
+        cls, job_id: str, released: bool, timeout: float | None, elapsed: float
+    ) -> WaitOutcome:
+        """The outcome for a wait that ended with the job still running: a
+        release wins over a timeout (both can be true when the release lands
+        as the deadline expires — the guidance is the more useful thing to
+        report, and the job is still running either way)."""
+        if released:
+            return WaitOutcome("released", cls._released_text(job_id, elapsed), elapsed)
+        limit = f"{timeout:g}s" if timeout is not None else "the wait"
+        return WaitOutcome("timeout", f"job {job_id} still running after {limit}", elapsed)
 
     async def await_settled(self, ids: list[str]) -> list[Job]:
         """Block until every job in ``ids`` reaches a terminal state, then return

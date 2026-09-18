@@ -49,6 +49,20 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Changed
 
+- **Job waits hold through completion and yield to steering.** `wait_for_job`
+  and `job(action="wait")` no longer default to a 60-second timeout: one call
+  blocks until the job finishes (an explicit `timeout` still bounds it). A
+  steer sent while the model is waiting releases the wait — the job keeps
+  running, the tool returns a truthful "still running — wait released" note,
+  and the steer reaches the model in that same request. Only a wait that
+  delivered the result marks the job wake-consumed, so a released or timed-out
+  wait still gets the autonomous wake; cancelling the turn still cancels only
+  the waiter. `JobRegistry.wait_outcome`/`release_waits` and
+  `TurnController.has_undelivered_steer` are the seams. The TUI renders a
+  pending wait as `Waiting for <job> · <elapsed>` (actual blocked time, not
+  the requested timeout) for both tool variants; the combined `job` tool's
+  rows are labelled by action.
+
 - **Advisor uses Pydantic AI Harness.** Calls now require `advisor(prompt=...)`;
   completed history is forwarded and nested usage shares turn limits. The use
   cap is per model request, output limits require at least 1024 tokens, model

@@ -475,6 +475,11 @@ class TurnController:
         self._inflight_steers: list[
             tuple[str, list[tuple[bytes, str]] | None, object, Sequence[object]]
         ] = []
+        # Let a job wait that starts after a steer was scheduled see it (see
+        # has_undelivered_steer). ``deps.jobs`` is never reassigned (the
+        # registry is mutated in place), so binding once here holds for the
+        # controller's lifetime; a rebuilt controller simply rebinds.
+        deps.jobs.guidance_pending = self.has_undelivered_steer
 
     def _turn_model(self) -> Model:
         """The model for this run round: the live current model, wrapped for
@@ -826,6 +831,16 @@ class TurnController:
         self._flush_steers()
 
     def _flush_steers(self) -> None:
+        """Schedule every buffered steer onto the live ctx, then release any
+        parked job waits. The release is what lets a steer land *promptly*: a
+        completion-based ``wait_for_job`` blocking in this round would
+        otherwise hold the next model request — and the guidance riding on it —
+        back until the job finished. Released waits return a truthful
+        "released" note (the job keeps running, nothing is consumed), and the
+        model reads the steer in the very request that carries that note. Only
+        scheduled steers release: with no live ctx (a run without a streaming
+        handler) the steer stays buffered for the next turn, so a wait keeps
+        blocking rather than promise guidance that can't arrive this turn."""
         ctx = self._active_run_ctx
         if ctx is None or not self._steer_buffer:
             return
@@ -848,6 +863,22 @@ class TurnController:
             if queue is not None and len(queue) > before:
                 self._inflight_steers.append((text, atts, queue[-1], queue))
         self._steer_buffer = []
+        if self.has_undelivered_steer():
+            self.deps.jobs.release_waits()
+
+    def has_undelivered_steer(self) -> bool:
+        """Whether a steer is scheduled for the model but not yet drained into
+        a request — the same delivery-receipt identity check reclaim uses.
+        Bound to ``deps.jobs.guidance_pending`` so a ``wait_for_job`` that
+        *starts* after the steer was scheduled (the steer landed while the
+        model was still composing the response that calls it) returns at once
+        instead of blocking the guidance behind the job. Reads false again the
+        moment pydantic-ai drains the steer into a request, so a re-wait after
+        the model has read the guidance blocks normally."""
+        return any(
+            any(entry is pending for entry in queue)
+            for _text, _atts, pending, queue in self._inflight_steers
+        )
 
     def _reclaim_undelivered_steers(self) -> None:
         """Re-buffer any flushed steer that never reached the model.
