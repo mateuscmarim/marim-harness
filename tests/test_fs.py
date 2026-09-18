@@ -1,5 +1,6 @@
 import locale
 import os
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -114,6 +115,53 @@ def test_read_file_always_returns_at_least_one_line(tmp_path: Path, monkeypatch)
     assert out.startswith("1\t" + "x" * 5 + "…")
     assert "2\t" not in out  # the second line was budgeted out
     assert "showing lines 1-1 of 2" in out
+
+
+def test_read_file_streams_giant_line_inside_and_outside_requested_window(
+    tmp_path: Path, monkeypatch
+):
+    """A giant physical line must not defeat the read tool's output memory caps."""
+    monkeypatch.setattr(fs, "_READ_CHUNK_BYTES", 1_024)
+    giant = "x" * (2 * 1024 * 1024)
+    (tmp_path / "a.txt").write_text(f"{giant}\nsecond")
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        inside = fs.read_file(tmp_path, "a.txt", limit=1)
+        inside_peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.reset_peak()
+        outside = fs.read_file(tmp_path, "a.txt", offset=2, limit=1)
+        outside_peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert inside.startswith("1\t" + "x" * fs._MAX_LINE_CHARS)
+    assert "(+2095152 more chars on this line)" in inside
+    assert outside.startswith("2\tsecond")
+    assert "lines 2-2 of 2]" in outside
+    # The former TextIOWrapper.readline() path retained the complete 2 MB
+    # physical line in both reads. Fixed byte chunks keep each run well below it.
+    assert inside_peak < 512 * 1024
+    assert outside_peak < 512 * 1024
+
+
+def test_read_file_bounds_explicitly_large_window_before_rendering(tmp_path: Path):
+    """An explicit line limit cannot retain rows that the output budget omits."""
+    (tmp_path / "a.txt").write_text("\n".join("x" * 100 for _ in range(20_000)))
+
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        out = fs.read_file(tmp_path, "a.txt", limit=20_000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    body = out.split("\n\n[")[0]
+    assert 1 < body.count("\n") + 1 < 20_000
+    assert "of 20000]" in out
+    assert peak < 512 * 1024
 
 
 def test_read_file_offset_past_eof_raises(tmp_path: Path):
