@@ -785,3 +785,204 @@ def test_export_settled_includes_prompt():
     ]
     entry = reg.export_settled()[0]
     assert entry["prompt"] == "the task prompt"
+
+
+# --- completion-based waiting + steering release -------------------------------
+
+
+@pytest.mark.anyio
+async def test_wait_without_timeout_blocks_through_completion():
+    """No timeout ⇒ one wait returns the result when the job finishes, with no
+    periodic 'still running' round-trips in between."""
+    reg = JobRegistry()
+    jid = reg.register("agent", "a", _sleep_then("slow", 0.15))
+    outcome = await reg.wait_outcome(jid)
+    assert outcome.kind == "settled"
+    assert outcome.text == "slow"
+    assert outcome.elapsed >= 0.1  # it really blocked for the job's duration
+    assert reg.get(jid).status == "done"
+    assert reg.has_finished_pending() is False  # delivered ⇒ wake consumed
+
+
+@pytest.mark.anyio
+async def test_wait_explicit_timeout_still_bounds_the_block():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    outcome = await reg.wait_outcome(jid, timeout=0.05)
+    assert outcome.kind == "timeout"
+    assert "still running after 0.05s" in outcome.text
+    assert outcome.elapsed >= 0.04
+    assert reg.get(jid).status == "running"
+    ev.set()
+    await _settled(reg)
+    assert reg.has_finished_pending() is True  # a timed-out wait delivered nothing
+
+
+@pytest.mark.anyio
+async def test_release_waits_returns_parked_waiter_without_finishing_job():
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.wait_outcome(jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert reg.release_waits() == 1
+    outcome = await asyncio.wait_for(waiter, 2)
+    assert outcome.kind == "released"
+    assert "still running" in outcome.text
+    assert "new user guidance" in outcome.text
+    assert reg.get(jid).status == "running"  # released, not cancelled
+    ev.set()
+    await _settled(reg)
+    # Nothing was delivered, so the completion still wakes an autonomous turn.
+    assert reg.has_finished_pending() is True
+    assert jid in reg.take_finished_digest()
+
+
+@pytest.mark.anyio
+async def test_release_waits_with_nobody_parked_is_a_noop():
+    reg = JobRegistry()
+    assert reg.release_waits() == 0
+    # A later wait is unaffected by an earlier release with nobody parked (the
+    # release is an edge, not a latch) — it blocks until completion.
+    jid = reg.register("agent", "a", _sleep_then("r", 0.05))
+    assert (await reg.wait_outcome(jid)).kind == "settled"
+
+
+@pytest.mark.anyio
+async def test_guidance_pending_releases_a_wait_before_it_parks():
+    """A steer scheduled while the model was still composing the wait call: the
+    wait sees pending guidance and returns at once instead of parking."""
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    reg.guidance_pending = lambda: True
+    outcome = await reg.wait_outcome(jid)
+    assert outcome.kind == "released"
+    assert outcome.elapsed == 0.0
+    assert reg.get(jid).status == "running"
+    reg.guidance_pending = lambda: False  # guidance drained ⇒ waits block again
+    ev.set()
+    assert (await reg.wait_outcome(jid)).kind == "settled"
+
+
+@pytest.mark.anyio
+async def test_release_racing_completion_reports_settled():
+    """Completion and release landing in the same loop step: the result exists,
+    so it is delivered (and wake-consumed) rather than reported as released."""
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev, "won"))
+    waiter = asyncio.ensure_future(reg.wait_outcome(jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    ev.set()  # the job's wake-up is scheduled before the release fires…
+    assert reg.release_waits() == 1
+    outcome = await asyncio.wait_for(waiter, 2)
+    assert outcome.kind == "settled"
+    assert outcome.text == "won"
+    assert reg.has_finished_pending() is False
+
+
+@pytest.mark.anyio
+async def test_release_waits_frees_every_parked_waiter_and_can_repeat():
+    reg = JobRegistry()
+    e1, e2 = asyncio.Event(), asyncio.Event()
+    j1 = reg.register("agent", "a", _ev_job(e1, "one"))
+    j2 = reg.register("agent", "b", _ev_job(e2, "two"))
+    w1 = asyncio.ensure_future(reg.wait_outcome(j1))
+    w2 = asyncio.ensure_future(reg.wait_outcome(j2))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert reg.release_waits() == 2
+    assert {(await w1).kind, (await w2).kind} == {"released"}
+    # Consecutive steer: fresh waiters park on a fresh release future.
+    w1 = asyncio.ensure_future(reg.wait_outcome(j1))
+    w2 = asyncio.ensure_future(reg.wait_outcome(j2, timeout=5))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert reg.release_waits() == 2
+    assert {(await w1).kind, (await w2).kind} == {"released"}
+    assert reg.release_waits() == 0  # nobody parked any more
+    e1.set(), e2.set()
+    assert (await reg.wait_outcome(j1)).text == "one"
+    assert (await reg.wait_outcome(j2)).text == "two"
+
+
+@pytest.mark.anyio
+async def test_cancelled_completion_waiter_leaves_job_running_and_unparks():
+    """The waiter's own cancellation (a turn abort during a no-timeout wait)
+    propagates, leaves the job running, and leaves no parked-waiter residue —
+    so a later release counts only real waiters."""
+    reg = JobRegistry()
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.wait_outcome(jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert reg.get(jid).status == "running"
+    assert reg.release_waits() == 0
+    ev.set()
+    await _settled(reg)
+    assert reg.has_finished_pending() is True  # never delivered ⇒ still wakes
+
+
+@pytest.mark.anyio
+async def test_backend_owned_wait_is_left_to_the_backend():
+    reg = JobRegistry()
+    job = reg.observe_agent("s1", "explore: cli-owned")  # running, no native task
+    outcome = await reg.wait_outcome(job.id)
+    assert outcome.kind == "backend"
+    assert "managed by the CLI backend" in outcome.text
+
+
+@pytest.mark.anyio
+async def test_wait_outcome_on_unknown_job():
+    reg = JobRegistry()
+    assert (await reg.wait_outcome("ghost")).kind == "missing"
+
+
+@pytest.mark.anyio
+async def test_released_wait_keeps_autonomous_wake_and_settled_wait_consumes_it():
+    """The wake driver's view of the two outcomes: a released wait delivered
+    nothing, so the completion fires exactly one autonomous wake; a wait that
+    delivered the result consumes it, so no duplicate wake follows."""
+    from marim_harness.runtime.wake import WakeController
+    from marim_harness.runtime.wake_driver import WakeDriver
+
+    reg = JobRegistry()
+    fired: list[int] = []
+    driver = WakeDriver(
+        WakeController(depth_cap=3),
+        is_enabled=lambda: True,
+        turn_busy=lambda: False,
+        has_finished_pending=reg.has_finished_pending,
+        all_jobs_settled=lambda: not reg.any_running(),
+        enqueue_digest_turn=lambda: fired.append(1),
+    )
+    ev = asyncio.Event()
+    jid = reg.register("agent", "a", _ev_job(ev))
+    waiter = asyncio.ensure_future(reg.wait_outcome(jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    reg.release_waits()
+    assert (await waiter).kind == "released"
+    assert driver.maybe_wake() is False  # still running
+    ev.set()
+    await _settled(reg)
+    assert driver.maybe_wake() is True  # the released wait left the wake owed
+    assert fired == [1]
+    reg.take_finished_digest()
+
+    ev2 = asyncio.Event()
+    jid2 = reg.register("agent", "b", _ev_job(ev2))
+    waiter = asyncio.ensure_future(reg.wait_outcome(jid2))
+    await asyncio.sleep(0)
+    ev2.set()
+    assert (await waiter).kind == "settled"
+    assert driver.maybe_wake() is False  # delivered ⇒ no duplicate wake
+    assert fired == [1]

@@ -264,3 +264,25 @@ def test_summarize_read_file_shows_workspace_relative_path():
     root = Path("/home/user/project")
     s = summarize("read_file", {"path": str(root / "src" / "app.py")}, workspace_root=root)
     assert s.target == "src/app.py"
+
+
+def test_job_tool_wait_action_reads_like_wait_for_job():
+    from marim_harness.interfaces.tui.widgets.tool_summary import is_wait_call
+
+    s = summarize("job", {"action": "wait", "id": "job-2"})
+    assert (s.label, s.target) == ("Wait", "job-2")
+    # The renderer's injected sub-agent label wins for both variants.
+    s = summarize("job", {"action": "wait", "id": "job-2", "_wait_label": "explore: map"})
+    assert s.target == "explore: map"
+    assert is_wait_call("wait_for_job", {"id": "job-2"})
+    assert is_wait_call("job", {"action": "wait", "id": "job-2"})
+    assert not is_wait_call("job", {"action": "output", "id": "job-2"})
+    assert not is_wait_call("bash", {"command": "wait"})
+
+
+def test_job_tool_other_actions_get_action_labels():
+    assert summarize("job", {"action": "list"}).label == "Jobs"
+    assert summarize("job", {"action": "output", "id": "job-1"}).label == "Job Output"
+    s = summarize("job", {"action": "cancel", "id": "job-1"})
+    assert (s.label, s.target) == ("Cancel Job", "job-1")
+    assert summarize("job", {}).label == "Job"  # unknown action ⇒ plain name

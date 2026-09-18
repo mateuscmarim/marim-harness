@@ -315,9 +315,11 @@ def _job_ctx(tmp_path):
             calls["output_mark_seen"] = mark_seen
             return f"out:{id}"
 
-        async def wait(self, id, timeout):
+        async def wait_outcome(self, id, timeout):
+            from marim_harness.jobs import WaitOutcome
+
             calls["wait"] = (id, timeout)
-            return f"waited:{id}:{timeout}"
+            return WaitOutcome("settled", f"waited:{id}:{timeout}")
 
         async def cancel(self, id):
             calls["cancel"] = id
@@ -1224,3 +1226,70 @@ async def test_run_workflow_is_denied_in_plan_mode():
     requests = FakeRequests(approvals=[FakeCall("c1", "run_workflow", {})])
     results = await resolve_approvals(requests, Mode.plan, None)
     assert isinstance(results.approvals["c1"], ToolDenied)
+
+
+@pytest.mark.anyio
+async def test_wait_for_job_default_blocks_until_completion(tmp_path):
+    """No timeout ⇒ the tool holds through completion and returns the result in
+    one call — no 'still running' round-trips, no nudge."""
+    from marim_harness.tools.job_tools import wait_for_job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    import asyncio
+
+    waiter = asyncio.ensure_future(wait_for_job(ctx, jid))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(waiter), 0.05)
+    gate.set()
+    assert await asyncio.wait_for(waiter, 5) == "done!"
+
+
+@pytest.mark.anyio
+async def test_wait_released_by_guidance_appends_read_guidance_note(tmp_path):
+    """A steer-released wait gets the read-the-guidance note in every mode: the
+    guidance is what ended the wait, so headless (no wake loop) gets it too."""
+    import asyncio
+
+    from marim_harness.tools.job_tools import wait_for_job
+
+    for interactive in (True, False):
+        ctx, gate, jid = await _poll_ctx(tmp_path)
+        ctx.deps.ui.interactive = interactive
+        waiter = asyncio.ensure_future(wait_for_job(ctx, jid))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert ctx.deps.jobs.release_waits() == 1
+        out = await asyncio.wait_for(waiter, 5)
+        assert "still running" in out
+        assert "did NOT finish" in out
+        assert "user's new message" in out
+        assert "end your turn" in out  # …or re-wait; both stay legitimate
+        assert ctx.deps.jobs.get(jid).status == "running"
+        gate.set()
+        await ctx.deps.jobs.wait(jid, 5)
+
+
+@pytest.mark.anyio
+async def test_job_tool_wait_variant_matches_wait_for_job(tmp_path):
+    """job(action="wait") shares the body: completion by default, explicit
+    timeout compat with the interactive nudge, and the released note."""
+    import asyncio
+
+    from marim_harness.tools.job_tools import job
+
+    ctx, gate, jid = await _poll_ctx(tmp_path)
+    ctx.deps.ui.interactive = True
+    timed = await job(ctx, "wait", jid, timeout=0.01)
+    assert "still running after 0.01s" in timed
+    assert "end your turn" in timed
+    waiter = asyncio.ensure_future(job(ctx, "wait", jid))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    ctx.deps.jobs.release_waits()
+    released = await asyncio.wait_for(waiter, 5)
+    assert "did NOT finish" in released
+    waiter = asyncio.ensure_future(job(ctx, "wait", jid))
+    await asyncio.sleep(0)
+    gate.set()
+    assert await asyncio.wait_for(waiter, 5) == "done!"

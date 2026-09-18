@@ -60,6 +60,7 @@ _TARGET_ARG = {
     "glob": "pattern",
     "tree": "path",
     "wait_for_job": "id",
+    "job": "id",
     "web_search": "query",
     "fetch_url": "url",
     # Pin the memory tools' targets to the title/name: their args also carry a
@@ -71,9 +72,34 @@ _TARGET_ARG = {
 }
 
 
+# The combined ``job(action=…)`` tool (MARIM_JOB_TOOL_COMBINED) folds four verbs
+# into one name; label the row by the action so it reads like the split tools.
+_JOB_ACTION_LABELS = {
+    "list": "Jobs",
+    "output": "Job Output",
+    "wait": "Wait",
+    "cancel": "Cancel Job",
+}
+
+
 def humanize_tool(name: str) -> str:
     """A short, friendly verb for a tool call (``read_file`` → ``Read``)."""
     return _TOOL_LABELS.get(name) or name.replace("_", " ").title()
+
+
+def is_wait_call(tool_name: str, args: dict) -> bool:
+    """Whether a call is a job wait in either tool variant: the split
+    ``wait_for_job`` or the combined ``job(action="wait")``. Every renderer that
+    treats a wait specially (the sub-agent label, the "Waiting for …" title with
+    its elapsed time) keys off this so both variants read the same."""
+    return tool_name == "wait_for_job" or (tool_name == "job" and args.get("action") == "wait")
+
+
+def _label(tool_name: str, args: dict) -> str:
+    if tool_name == "job":
+        action = str(args.get("action") or "")
+        return _JOB_ACTION_LABELS.get(action) or humanize_tool(tool_name)
+    return humanize_tool(tool_name)
 
 
 def _clip(text: str, limit: int = _PREVIEW_CAP) -> str:
@@ -156,7 +182,7 @@ def _raw_target_value(tool_name: str, args: dict) -> str:
         # `background: True` (which rendered as "Spawn Agent · True").
         v = args.get("description") or args.get("task") or ""
         return " ".join(str(v).split())
-    if tool_name == "wait_for_job":
+    if is_wait_call(tool_name, args):
         # The renderer injects `_wait_label` (the sub-agent's "type: task") when the
         # waited job is a sub-agent, so the row reads "Wait · <task>" and names what
         # it's blocking on instead of a bare job id.
@@ -226,7 +252,7 @@ def summarize(
     if tool_name == "read_file" and target:
         target += _read_range(args)
     return ToolSummary(
-        label=humanize_tool(tool_name),
+        label=_label(tool_name, args),
         target=target,
         badges=_badges(tool_name, args),
     )

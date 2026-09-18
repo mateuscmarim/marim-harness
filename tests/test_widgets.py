@@ -1622,8 +1622,11 @@ async def test_toolcall_header_uses_summary_shape():
     async with app.run_test():
         w = app.query_one(ToolCallWidget)
         # No raw repr — the registered target only, no key= / quotes / timeout.
-        assert "Wait · job-6" in w.title.plain
+        # While pending a wait row reads "Waiting for <job> · <elapsed>" (see
+        # test_wait_row_title_shows_waiting_with_real_elapsed_time).
+        assert "Waiting for job-6 · " in w.title.plain
         assert "timeout" not in w.title.plain
+        assert "600" not in w.title.plain
         assert "id='job-6'" not in w.title.plain
 
 
@@ -1881,3 +1884,40 @@ async def test_large_assistant_message_render_is_capped():
         # Far fewer blocks than a whole-document parse (~8000) — the cap held.
         assert 0 < _block_count(msg) < 600
         assert msg.text == big  # full source preserved for replay/inspection
+
+
+@pytest.mark.anyio
+async def test_wait_row_title_shows_waiting_with_real_elapsed_time():
+    """A pending job wait (either tool variant) reads 'Waiting for <job> ·
+    <elapsed>' — the elapsed being how long it has actually blocked, not the
+    requested timeout — and freezes the total once it finishes."""
+
+    class _WaitApp(App):
+        def compose(self) -> ComposeResult:
+            yield ToolCallWidget("wait_for_job", {"id": "job-3", "timeout": 600})
+            yield ToolCallWidget("job", {"action": "wait", "id": "job-4"})
+
+    app = _WaitApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        split, combined = app.query(ToolCallWidget).results()
+        for w in (split, combined):
+            w._t0 -= 42  # pretend it has been blocking for 42 seconds
+            w._tick()  # the spinner tick re-renders the title while pending
+        assert "Waiting for job-3 · 42s" in str(split.title)
+        assert "600" not in str(split.title)  # the timeout ceiling is not progress
+        assert "Waiting for job-4 · 42s" in str(combined.title)
+        split.finish("the report")
+        combined.finish("the report")
+        await pilot.pause()
+        assert "Wait · job-3 · 42." in str(split.title)  # precise total once done
+        assert "Waiting" not in str(split.title)
+        assert "Wait · job-4 · 42." in str(combined.title)
+
+
+def test_replayed_wait_row_shows_no_fake_duration():
+    w = ToolCallWidget("wait_for_job", {"id": "job-3"})
+    w.mark_replayed()
+    w.finish("the report")
+    assert str(w.title).startswith("✓ Wait · job-3")
+    assert "s" not in str(w.title).split("job-3")[-1]  # no "0.0s" tail
