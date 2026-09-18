@@ -61,7 +61,7 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, or `codex-cli`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, `codex-cli`, or `openai-codex`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
 | `MARIM_API_KEY` | `local` (local provider) | Generic API key: used by `local`, and as a last-resort fallback for `openrouter`, `google`, `zen`, and `zen-go`. |
@@ -254,6 +254,50 @@ simply stays absent. The same notification's `last.inputTokens` and
 own prompt size and window rather than an estimate over marim's mirror. The Settings › Providers card verifies the CLI live on
 show (a `model/list` against the app-server) and reports
 `✓ connected · N models` like a keyed provider.
+
+### Native Codex subscription access
+
+`openai-codex` uses Pydantic AI's `OpenAICodexModel` in Marim's native agent.
+It is opt-in; the default remains OpenRouter and `codex-cli` remains available.
+Authenticate on the machine running Marim, then start a **new** native session:
+
+```bash
+codex login
+MARIM_PROVIDER=openai-codex MARIM_MODEL=gpt-6-astra marim
+```
+
+Choose a model your subscription can access; `gpt-6-astra` is an example, not
+an entitlement guarantee. There is no default model for this provider. You can
+also select `/model openai-codex:gpt-6-astra` through the existing free-text
+picker. The catalog contains only the configured model and makes no network
+probe. Settings shows **configured · unverified** when a local auth file exists,
+or **login required** when absent. It has no API-key field or connection test.
+
+Upstream reads `$CODEX_HOME/auth.json` (normally `~/.codex/auth.json`) read-only.
+It refreshes OAuth credentials in memory and shares that refresh state across
+models from one source. Refreshed tokens are **not saved**: a restart or another
+client rotating the same grant can require `codex login` again, followed by a
+Marim restart. Cross-process refresh coordination and seamless rotation are not
+promised. Project `.env` files cannot redirect `CODEX_HOME` or authentication.
+`OPENAI_API_KEY`, `MARIM_API_KEY` and `MARIM_BASE_URL` cannot change this source
+to API billing or another endpoint; failures never fall back to a paid provider.
+
+Marim owns tools, approvals, MCP, native subagents, advisor, image attachments,
+thinking settings, context reduction, and local session history. This source
+runs no Codex subprocess and resumes no CLI thread or server-stored response.
+Token counts remain visible; monetary cost and subscription quota are unknown.
+Codex CLI sandbox behavior, live steering, quota cards, and remote child-agent
+semantics are not reproduced. Keep existing CLI sessions separate.
+
+To return to the CLI executor, start it explicitly:
+
+```bash
+MARIM_PROVIDER=codex-cli MARIM_MODEL=gpt-6-astra marim
+```
+
+See the [evaluation record](../guides/codex-subscription-evaluation.md) for the
+six live cases required before considering a default switch. Offline tests use
+fake OAuth/HTTP streams and consume no subscription quota.
 
 ## Context window & compaction
 

@@ -63,6 +63,7 @@ from .errors import (
     dump_provider_error,
     is_context_overflow_error,
     overflow_is_contention,
+    subscription_auth_error,
 )
 from .outcome import TurnOutcome
 from .permissions import Mode, resolve_approvals
@@ -925,6 +926,14 @@ class TurnController:
         reached session.usage but not the turn accumulator would let the next
         round overshoot the turn's usage limit and under-report the outcome's
         ``usage``."""
+        if (
+            delta.details.get("advisor_mixed_cost")
+            and self._turn_advisor is not None
+            and getattr(self._turn_advisor.model, "system", None) == "openai-codex"
+        ):
+            # An API estimate for a subscription consultation is not spend,
+            # even when the executor itself is billed through an API.
+            delta.details["estimated_cost_unknown"] = 1
         preserve_usage_cost(delta)
         self._turn_usage.incr(delta)
         self.session.add_usage(delta)
@@ -1103,6 +1112,8 @@ class TurnController:
             raise ContextWindowExceededError(
                 CONTEXT_CONTENTION_HELP if contention else CONTEXT_OVERFLOW_HELP
             ) from exc
+        if auth_help := subscription_auth_error(exc):
+            raise RuntimeError(auth_help) from None
         raise exc
 
     async def _resolve_approval_round(

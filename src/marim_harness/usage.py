@@ -20,6 +20,14 @@ from pydantic_ai.usage import RunUsage
 COST_DETAIL_KEY = "cost_micro_usd"
 
 
+def usage_model_ref(model) -> str | None:
+    """Retain subscription identity when an upstream model exposes a bare name."""
+    name = getattr(model, "model_name", None)
+    if getattr(model, "system", None) == "openai-codex" and name:
+        return f"openai-codex:{name}"
+    return name
+
+
 @dataclass(frozen=True)
 class TokenSplit:
     """A usage broken into the buckets worth showing: ``uncached_input`` is
@@ -69,6 +77,10 @@ def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, 
     """The best available cost as ``(usd, is_exact)``. Prefers the provider's
     billed amount (``is_exact=True``) and falls back to the genai-prices estimate
     (``is_exact=False``); ``(None, False)`` when neither is available."""
+    if model_ref and model_ref.startswith("openai-codex:"):
+        # API list prices (including upstream estimates) are not subscription
+        # charges. Token accounting remains useful; money is unknown.
+        return None, False
     if usage.details.get("advisor_mixed_cost"):
         if usage.details.get("estimated_cost_unknown"):
             return None, False

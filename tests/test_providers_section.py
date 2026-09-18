@@ -53,6 +53,7 @@ def test_provider_specs_env_keys():
         "local",
         "claude-cli",
         "codex-cli",
+        "openai-codex",
     ]
     assert specs["openrouter"].write_key == "OPENROUTER_API_KEY"
     assert specs["openrouter"].drop_keys == ("OPENROUTER_API_KEY",)
@@ -525,6 +526,8 @@ async def test_default_radio_persists_and_updates_badge(isolated_env, monkeypatc
     async with app.run_test(size=(120, 45)) as pilot:
         await pilot.pause()
         pane = app.query_one(ProvidersPane)
+        pane.query_one("#prov-default-local").scroll_visible(animate=False)
+        await pilot.pause()
         await pilot.click("#prov-default-local")
         await pilot.pause()
         assert os.environ.get("MARIM_PROVIDER") == "local"

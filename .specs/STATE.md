@@ -25,7 +25,38 @@ AD-004 (active, 2026-09-16): Display transcripts and reduced model context
 persist in one atomic session snapshot. History replay must not feed the model
 or substitute archived token estimates for current context measurements.
 
+AD-005 (active, 2026-09-18): User approved Pydantic AI's native Codex
+subscription provider as opt-in, reusing upstream read-only Codex login with
+documented refresh limitations. Retain CLI and defaults until a later decision.
+Raise core to >=2.44.0,<3; preserve master's Harness ==0.31.0 pin. No Codex SDK
+integration, API-key fallback, publication, or live subscription evaluation.
+
+AD-006 (active, 2026-09-18): User approved upstream authentication failure timing:
+missing/malformed/API-key-only credentials fail provider setup; rejected refresh
+fails the active request. Both require login guidance and prohibit provider fallback.
+This explicitly revises AC 9/C9's former requirement that all failures occur in a turn.
+
 ## Handoff
+
+### Codex subscription provider — author proofs pass, independent verification pending
+
+Branch `feat/codex-subscription-provider`, base `8c5fa218` (master v0.13.0).
+Plan approved 2026-09-18; 38 proof-backed checks, profile light. One builder has
+implemented the opt-in source and native integration in this worktree; the
+orchestrator owns artifacts and will dispatch a fresh independent verifier after
+the remaining authentication checks close.
+Plan/checks/evaluation live in `.specs/features/codex-subscription-provider/`;
+new specs remain local under repository policy. Author proofs pass for all 38
+checks, including C2/C9 under approved AD-006. No user decision remains outstanding.
+Independent verification is pending. All 53 subscription cases and 85 relevant
+regressions pass (138 total). The final auth addition changes tests only.
+Full isolated suites on Python 3.10/3.14 (core 2.45) and Python 3.12 (core 2.44)
+each passed 5257 tests, 7 skipped, 1 xfailed. Main Python 3.12/core 2.45 also passed
+5257 tests, 7 skipped, 1 xfailed, with 95.55% coverage (90% gate).
+Ruff lint/format, Pyright, and sdist/wheel build pass. Earlier concurrent suites
+overloaded the host; isolated reruns pass without weakening tests.
+Live evaluation is NOT RUN; current CLI/default selection remains unchanged.
+The original checkout's unrelated edits are untouched. No push/deploy authorized.
 
 ### Upstream advisor — port verified, PR authorized
 
