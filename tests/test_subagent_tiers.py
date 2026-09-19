@@ -1,7 +1,7 @@
 import asyncio
 
 from marim_harness.config.model import SubagentTiers
-from marim_harness.subagents.runner import _resolve_spawn_model_id
+from marim_harness.subagents.runner import _claude_cli_target, _resolve_spawn_model_id
 from marim_harness.subagents.tiers import TIER_NAMES, resolve_tier
 
 
@@ -166,6 +166,28 @@ def test_resolve_spawn_model_id_disabled_tiers_still_honor_explicit_slug():
         override_tier=None, slug="p:explicit", spec_tier=None, read_only=True, tiers=tiers
     )
     assert got == "p:explicit"
+
+
+def test_claude_cli_target_recognizes_qualified_model():
+    assert _claude_cli_target("claude-cli:haiku") == (True, "haiku")
+
+
+def test_claude_cli_target_empty_suffix_means_cli_default():
+    assert _claude_cli_target("claude-cli:") == (True, None)
+
+
+def test_claude_cli_target_none_is_not_a_target():
+    assert _claude_cli_target(None) == (False, None)
+
+
+def test_claude_cli_target_bare_word_without_colon_is_not_a_target():
+    # No colon at all is a bare model slug on the default provider, not the
+    # reserved claude-cli execution target — the syntax requires the colon.
+    assert _claude_cli_target("claude-cli") == (False, None)
+
+
+def test_claude_cli_target_other_provider_is_not_a_target():
+    assert _claude_cli_target("openrouter:some/model") == (False, None)
 
 
 def test_run_forwards_tier_to_execute_spawn(monkeypatch):

@@ -36,6 +36,13 @@ missing/malformed/API-key-only credentials fail provider setup; rejected refresh
 fails the active request. Both require login guidance and prohibit provider fallback.
 This explicitly revises AC 9/C9's former requirement that all failures occur in a turn.
 
+AD-007 (active, 2026-09-18): Claude CLI tier routing is Claude-only in this
+slice. `claude-cli:<model>` is the qualified tier target shape for transparently
+routing native agent roles; an explicitly authored non-native `backend:` remains
+authoritative. A selected Claude target must fail visibly without native/API
+fallback, and interrupted work resumes from its persisted effective backend/model
+rather than current tier configuration.
+
 ## Handoff
 
 ### Codex subscription provider — complete, independently verified

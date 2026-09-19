@@ -214,6 +214,22 @@ is unchanged and `tier` is always safe to pass. Disabling the switch keeps
 the curated slugs, so it round-trips as a toggle (also available in TUI
 Settings).
 
+A tier value can also be the reserved `claude-cli:<model>` target (an empty
+suffix means the CLI's own configured/default model). A `backend: native`
+spawn that resolves to it — an ordinary `explore`/`general`/custom role,
+never a Claude-specific agent type — transparently runs through the
+[claude-cli backend](#the-claude-cli-backend) below on `<model>`, with no
+native/API fallback if that fails:
+
+```bash
+MARIM_SUBAGENT_TIER_CHEAP=claude-cli:haiku
+MARIM_SUBAGENT_TIER_HIGH=claude-cli:opus
+```
+
+An explicitly authored `backend: claude-cli`/`backend: codex-cli` spec is
+never subject to this — it already picked its engine and keeps its own model
+precedence (below).
+
 `model=` on `spawn_agent` is the escape hatch: an exact model id for one
 spawn. With no tiers configured it passes through as-is; once any tier is
 configured it is bounded to the set of configured tier models — an
@@ -237,10 +253,13 @@ background handling.
 
 Differences that matter:
 
-- `model:` in the spec (or `model=` on the spawn) is a Claude Code model name
-  (`sonnet`, `opus`, or a full id), passed straight to `--model`;
-  `MARIM_CLAUDE_CLI_MODEL` is the env default. **Tiers do not apply** to
-  claude-cli spawns.
+- For an explicitly authored `backend: claude-cli` spec, `model:` in the spec
+  (or `model=` on the spawn) is a Claude Code model name (`sonnet`, `opus`, or
+  a full id), passed straight to `--model`; `MARIM_CLAUDE_CLI_MODEL` is the env
+  default. **Tiers do not apply** to this precedence — an explicit backend
+  already picked its engine. (A `backend: native` role reaching this same
+  process via a `claude-cli:<model>` tier target is a different path — see
+  [Model tiers](#model-tiers) — and uses the tier-resolved `<model>` instead.)
 - An interrupted claude-cli spawn resumes through the CLI's own
   `--resume <session id>` (checkpointed into the spawn's sidecar meta) — the
   CLI regenerates the turn from its own session history, not from a replayed
@@ -270,8 +289,21 @@ use the spawn override or tier settings above to choose a model.
 
 ## Tiered Claude CLI workers
 
-Copy the desired examples from `docs/examples/agents/` into a trusted project's
-`.marim/agents/` or your global `$XDG_CONFIG_HOME/marim/agents/`:
+Configure the tiers with `claude-cli:<model>` targets (see
+[Model tiers](#model-tiers)) and spawn ordinary roles — `explore`, `general`,
+or a custom native agent — without naming a Claude-specific agent type:
+
+```bash
+MARIM_SUBAGENT_TIER_CHEAP=claude-cli:haiku
+MARIM_SUBAGENT_TIER_MED=claude-cli:sonnet
+MARIM_SUBAGENT_TIER_HIGH=claude-cli:opus
+```
+
+Named Claude worker specs remain a role-specific alternative — useful when a
+role needs its own fixed prompt, tool grant, or backend rather than inheriting
+whichever one the spawner names. Copy the desired examples from
+`docs/examples/agents/` into a trusted project's `.marim/agents/` or your
+global `$XDG_CONFIG_HOME/marim/agents/`:
 
 | Tier | Use for | Example |
 | --- | --- | --- |

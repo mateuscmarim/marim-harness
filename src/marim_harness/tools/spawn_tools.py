@@ -318,15 +318,18 @@ async def spawn_agent(
     for a hard sub-task. Omit it and the spawn takes its automatic tier (a
     read-only agent defaults to cheap, a workspace-mutating one to high; a custom
     agent may pin its own tier). A tier with no model configured falls back to
-    your current model, so `tier` is always safe to pass.
+    your current model, so `tier` is always safe to pass. A tier may itself be
+    configured as a Claude CLI target, in which case an ordinary agent (not just
+    one whose definition sets `backend: claude-cli`) transparently runs through
+    Claude Code instead of your own model.
 
     `model` is an advanced escape hatch: it names a specific model id to run this
     spawn on, bounded to your configured tier models. Prefer `tier` — reach for
     `model` only when you need an exact model the tiers don't cover. For a
     sub-agent whose definition sets `backend: claude-cli`, `model` is a Claude
     Code model name (e.g. `opus`, `sonnet`, a full id) passed straight to the
-    CLI; `tier` does not apply to claude-cli spawns. Omit both to inherit your
-    current model (the usual case).
+    CLI, ahead of any tier configuration. Omit both to inherit your current
+    model (the usual case).
 
     `thinking` overrides this spawn's reasoning effort — one of `"off"`,
     `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`. Omit it and the

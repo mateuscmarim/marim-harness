@@ -371,9 +371,9 @@ a cloned repo cannot self-trust; the store lives outside the repo entirely
 | `MARIM_SUBAGENT_CONCURRENCY` | `8` | Shared cap on native model requests and external CLI runs. Native tool execution does not hold a slot. `0` (or negative) = unbounded. |
 | `MARIM_SUBAGENT_REQUEST_LIMIT` | `200` | Non-negative int. Model requests one sub-agent run may make before it is asked to wrap up with a final report from the work so far (see the [sub-agents guide](../guides/subagents.md)). `0` = unbounded. |
 | `MARIM_SUBAGENT_TRANSCRIPT_CAP` | `2000` | Positive int. Per-part character cap on persisted spawn transcripts (tool results are truncated to this many characters). |
-| `MARIM_SUBAGENT_TIER_CHEAP` | unset (inherit main) | Model for the `cheap` tier, qualified `provider:model_id`. |
-| `MARIM_SUBAGENT_TIER_MED` | unset (inherit main) | Model for the `med` tier. |
-| `MARIM_SUBAGENT_TIER_HIGH` | unset (inherit main) | Model for the `high` tier. |
+| `MARIM_SUBAGENT_TIER_CHEAP` | unset (inherit main) | Execution target for the `cheap` tier: qualified `provider:model_id`, or `claude-cli:<model>` (see below). |
+| `MARIM_SUBAGENT_TIER_MED` | unset (inherit main) | Execution target for the `med` tier. |
+| `MARIM_SUBAGENT_TIER_HIGH` | unset (inherit main) | Execution target for the `high` tier. |
 | `MARIM_SUBAGENT_TIERING` | `1` (on) | Boolean. Master switch for tier routing. |
 | `MARIM_DETACH_FANOUT` | `1` (on) | Boolean. `spawn_agent` with `background` unset auto-detaches in the TUI (live cards + job handles) instead of running inline. |
 | `MARIM_AUTONOMOUS_WAKE` | `1` (on) | Boolean. Finished background jobs start a new turn to deliver their reports while you're away. |
@@ -383,15 +383,28 @@ a cloned repo cannot self-trust; the store lives outside the repo entirely
 meaningful sentinel (unbounded) rather than an error; unparseable garbage
 falls back to the safe cap of 8, never to unbounded.
 
-Native spawns pick a model by tier (`cheap`/`med`/`high`): resolved from the
-spawner's `tier=` override, then the spec's `tier:` frontmatter, then tool
-reach (read-only → cheap, mutating → high). A configured tier maps to its
-`MARIM_SUBAGENT_TIER_*` model; unset tiers inherit the main model. Once any
-tier is configured, a raw `model=` slug override is bounded to the set of
-configured tier models. `MARIM_SUBAGENT_TIERING=0` bypasses routing (every
-spawn inherits the main model) without clearing the configured slugs, so it
-round-trips as a toggle. Tiering applies to native spawns only; the
-`claude-cli` main-loop provider bypasses it.
+Native (`backend: native`) spawns pick an execution target by tier
+(`cheap`/`med`/`high`): resolved from the spawner's `tier=` override, then the
+spec's `tier:` frontmatter, then tool reach (read-only → cheap, mutating →
+high). A configured tier maps to its `MARIM_SUBAGENT_TIER_*` value; unset
+tiers inherit the main model. Once any tier is configured, a raw `model=`
+slug override is bounded to the set of configured tier values — an
+out-of-allowlist override (including one naming `claude-cli:<model>`) is
+dropped in favor of the resolved tier target. `MARIM_SUBAGENT_TIERING=0`
+bypasses routing (every spawn inherits the main model) without clearing the
+configured slugs, so it round-trips as a toggle.
+
+A tier value beginning `claude-cli:` (an empty suffix means the CLI's own
+configured/default model) is the one target that is not a native model: a
+`backend: native` role resolving to it transparently runs through the same
+external `claude` process a `backend: claude-cli` spec uses (see
+[guides/subagents.md](../guides/subagents.md#the-claude-cli-backend)), with no
+native/API fallback if the CLI is unavailable or fails. An explicitly
+authored `backend: claude-cli`/`backend: codex-cli` spec is never subject to
+tier routing — it keeps its own existing model precedence regardless of tier
+configuration. Tiering (native or claude-cli-targeted) applies to sub-agent
+spawns only; the `claude-cli` **main-loop** provider (the session's own model)
+is a separate mechanism this switch does not touch.
 
 ## LSP
 
