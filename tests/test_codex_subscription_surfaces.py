@@ -152,6 +152,18 @@ def test_setup_documentation():
 
 
 def test_evaluation_record():
+    """The evaluation guide may only claim what was actually run.
+
+    Until the 2026-09-19 live run this asserted every row still read NOT RUN,
+    so that nobody could quietly promote a case to a success without executing
+    it. Those rows are real now, so the guard moves rather than disappears —
+    relaxing it to "the table exists" would retire the one check that makes the
+    page trustworthy. What it still forbids is a bare verdict: an outcome has
+    to be one of the two honest ones, a PASS has to carry the observation that
+    earned it, an unfilled case has to stay on the page with the reason it is
+    unfilled, and the run parameters the guide itself demands have to be
+    recorded.
+    """
     text = Path("docs/guides/codex-subscription-evaluation.md").read_text()
     for case in (
         "File edit plus repository test",
@@ -161,9 +173,20 @@ def test_evaluation_record():
         "Context reduction followed by recall",
         "Process restart after credential refresh",
     ):
+        # "| case | expected | outcome | evidence |" -> cells 3 and 4.
         row = next(line for line in text.splitlines() if line.startswith(f"| {case} |"))
-        assert "NOT RUN" in row and "authorized" in row
-    assert "No row below is a live success" in text
+        outcome, evidence = (cell.strip() for cell in row.split("|")[3:5])
+        assert outcome in ("PASS", "NOT RUN"), f"{case}: unreadable outcome {outcome!r}"
+        # A verdict is worth only as much as the cell beside it: a PASS needs the
+        # observation behind it, and an unavailable case stays visible with its
+        # reason rather than vanishing from the table.
+        assert len(evidence) > 40, f"{case}: {outcome} with no evidence or reason"
+    # The run record the guide's own "Run record required for each executed
+    # case" section asks for. A PASS with no provenance is not evidence.
+    for field in ("| Commit |", "| Date |", "| Model |", "| Permission mode |"):
+        assert field in text, f"run parameters missing {field}"
+    # Unknown monetary cost must never be restated as zero quota use.
+    assert "not evidence of zero quota use" in text
 
 
 @pytest.mark.anyio
