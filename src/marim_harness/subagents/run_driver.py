@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.usage import RunUsage, UsageLimits
 from pydantic_ai_harness.compaction import compact_now, estimate_token_count
 
@@ -33,6 +34,41 @@ from ..usage import usage_model_ref
 from .policies import RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+# The continuation a spawn receives when it reaches its request budget: one
+# more request, tools withheld, asking for the report the spawner is waiting
+# for. Phrased as a budget, not a failure — the run did nothing wrong.
+WRAPUP_PROMPT = (
+    "You have used your model-request budget for this task and your tools have "
+    "been withdrawn. Do not call any tool. Write your final report now from the "
+    "work you have completed so far: state what you found, what remains "
+    "unverified, and what you did not get to."
+)
+
+
+def budget_note(limit: int) -> str:
+    """The note prefixed to a wrapped-up report so the spawner knows it is
+    reading a budget-bounded result rather than a finished one."""
+    return (
+        f"[note: this sub-agent reached its request budget ({limit} model "
+        "requests) and was asked to report what it had; the report below may be "
+        "incomplete. Spawn again with a narrower task, or raise "
+        "MARIM_SUBAGENT_REQUEST_LIMIT, for the rest.]\n\n"
+    )
+
+
+@contextlib.contextmanager
+def _withheld_tools(sub: object):
+    """Run ``sub`` with every function tool and constructor toolset withheld,
+    so a wrap-up request can only answer. A structured spawn keeps its output
+    tool (that lives in the output toolset, which ``override`` does not
+    touch). A test double without ``override`` runs as-is."""
+    override = getattr(sub, "override", None)
+    if override is None:
+        yield
+        return
+    with override(tools=[], toolsets=[]):
+        yield
 
 
 @contextlib.contextmanager
@@ -209,10 +245,32 @@ class SpawnRunDriver:
         both ``task`` (the continuation prompt) as the run's input AND
         ``message_history=history``, so pydantic-ai appends the prompt on top of
         the prior conversation. A later transient-retry resume within the same
-        call takes over from ``resume_history`` instead, exactly as before."""
+        call takes over from ``resume_history`` instead, exactly as before.
+
+        Reaching the request budget (``RetryPolicy.request_limit``) is a
+        wrap-up, not a failure: the cap is a runaway guard, and the work the
+        run did before tripping it is exactly what the spawner is waiting
+        for. pydantic-ai raises ``UsageLimitExceeded`` *before* the request
+        that would exceed the cap, so the captured conversation is intact;
+        it is repaired like any resume and continued ONCE with
+        ``WRAPUP_PROMPT`` as the next user turn, every tool withheld
+        (``_withheld_tools``) and room for exactly one more request. A text
+        report comes back prefixed with ``budget_note`` so the spawner can
+        tell a bounded report from a finished one. A structured (dict) report
+        is returned as-is: its schema is the spawner's contract, and a key
+        injected into it could fail a strict schema downstream, so for a
+        structured spawn the wrap-up is visible only on the card notice and
+        in the log — the spawner should treat a report as complete only if
+        its own schema says so (a ``done``/``confidence`` field). A run that
+        cannot produce it — the model insists on a tool call, which pydantic-ai
+        answers with a retry prompt that needs a request the budget no longer
+        allows — surfaces the usage error as before; an unbounded policy
+        (``request_limit=0``) never gets here."""
         attempt = 0
         overflow_shed = False
+        wrapped_up = False
         resume_history: list | None = None
+        limits = self._retry.usage_limits()
         # One usage accumulator across ALL attempts, mirroring the controller's
         # per-round banking (see _run_with_approval): pydantic-ai mutates it in
         # place as each model step completes, so an attempt that dies mid-run
@@ -229,6 +287,10 @@ class SpawnRunDriver:
                 # inside the main turn's capture context, which the public API
                 # would silently reuse — see _fresh_capture's docstring.
                 with _fresh_capture() as captured:
+                    if wrapped_up and resume_history is not None:
+                        return await self._wrap_up(
+                            sub, resume_history, run_deps, handler, run_usage
+                        )
                     return await sub.run(
                         task if resume_history is None else None,
                         message_history=(resume_history if resume_history is not None else history),
@@ -236,8 +298,32 @@ class SpawnRunDriver:
                         toolsets=granted,
                         event_stream_handler=handler,
                         usage=run_usage,
-                        usage_limits=UsageLimits(request_limit=self._retry.request_limit),
+                        usage_limits=limits,
                     )
+            except UsageLimitExceeded:
+                # One shot: a wrap-up that itself trips the (widened) cap means
+                # the model would not stop calling tools — surface it.
+                if wrapped_up or self._retry.request_limit <= 0:
+                    self.session.add_usage(
+                        run_usage, model_id=usage_model_ref(getattr(sub, "model", None))
+                    )
+                    raise
+                resume_history = _resumable_history(list(captured))
+                if resume_history is None:
+                    # Nothing captured — the cap tripped before a single request
+                    # (a resumed run whose accumulator was already spent). There
+                    # is no work to report on; surface it.
+                    self.session.add_usage(
+                        run_usage, model_id=usage_model_ref(getattr(sub, "model", None))
+                    )
+                    raise
+                wrapped_up = True
+                logger.info(
+                    "sub-agent reached its request budget (%d); asking for a final report",
+                    self._retry.request_limit,
+                )
+                await self._notice_budget(stream_id)
+                continue
             except Exception as exc:  # noqa: BLE001
                 # An overflow whose request is far below the KNOWN served window
                 # is pool CONTENTION, not an oversized conversation: local
@@ -298,6 +384,45 @@ class SpawnRunDriver:
                 )
                 await self._notice_retry(stream_id, exc, attempt)
                 await self.backoff(attempt)
+
+    async def _wrap_up(
+        self,
+        sub: SubAgent,
+        history: list,
+        run_deps: Deps,
+        handler: EventStreamHandler[Deps] | None,
+        run_usage: RunUsage,
+    ) -> AgentRunResult[str | dict[str, Any]]:
+        """The budget wrap-up request: continue ``history`` with the wrap-up
+        prompt, tools withheld, and stamp the budget note onto a text report.
+        The cap is widened by exactly one over what the shared accumulator has
+        already spent, so the run gets one more request and no more. A
+        structured (dict) report is returned as-is — its schema is the
+        spawner's contract and has no slot for a note; the notice on the card
+        and the log line still say what happened."""
+        with _withheld_tools(sub):
+            result = await sub.run(
+                WRAPUP_PROMPT,
+                message_history=history,
+                deps=run_deps,
+                event_stream_handler=handler,
+                usage=run_usage,
+                usage_limits=UsageLimits(request_limit=run_usage.requests + 1),
+            )
+        if isinstance(result.output, str):
+            result.output = budget_note(self._retry.request_limit) + result.output
+        return result
+
+    async def _notice_budget(self, stream_id: str | None) -> None:
+        """Surface a budget wrap-up on a foreground spawn's card. A no-op for a
+        background spawn (no card) or when no UI is listening."""
+        cb = self.deps.ui.on_subagent_notice
+        if cb is None or not stream_id:
+            return
+        await cb(
+            stream_id,
+            f"request budget ({self._retry.request_limit}) reached — asking for a final report…",
+        )
 
     async def _notice_retry(self, stream_id: str | None, exc: Exception, attempt: int) -> None:
         """Surface a transient-error retry on a foreground spawn's card. A no-op for

@@ -638,3 +638,148 @@ async def test_contention_overflow_retries_as_transient_instead_of_shedding(tmp_
         if type(p).__name__ == "ToolReturnPart"
     ]
     assert contents == ["x" * 500, "x" * 500]  # nothing masked
+
+
+# ---------------------------------------------------------------------------
+# Request budget → wrap-up, not failure
+# ---------------------------------------------------------------------------
+
+
+def _budget_model(state: dict):
+    """A model that calls a tool on every request while it has tools, and
+    writes its report the moment the tools are withdrawn — the shape of an
+    honest investigation that simply needed more requests than the budget."""
+
+    def fn(messages, info):
+        state["requests"] += 1
+        if info.function_tools:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="counter", args={}, tool_call_id=f"t{state['requests']}")
+                ]
+            )
+        state["saw_wrapup"] = any(
+            "final report" in str(getattr(p, "content", ""))
+            for m in messages
+            for p in getattr(m, "parts", [])
+        )
+        return ModelResponse(parts=[TextPart(content="partial findings")])
+
+    return fn
+
+
+def _budget_runner(tmp_path: Path, limit: int):
+    from dataclasses import replace
+
+    runner, sleeps = _runner(tmp_path)
+    runner._driver._retry = replace(runner._driver._retry, request_limit=limit)
+    return runner, sleeps
+
+
+@pytest.mark.anyio
+async def test_request_budget_wraps_up_with_a_noted_report(tmp_path: Path):
+    """Reaching the request cap continues the run ONCE with the wrap-up
+    prompt, tools withheld, and returns the report prefixed with the budget
+    note — instead of discarding the whole run as UsageLimitExceeded."""
+    runner, sleeps = _budget_runner(tmp_path, limit=3)
+    state = {"requests": 0, "tool_runs": 0, "saw_wrapup": False}
+    sub = Agent(FunctionModel(_budget_model(state)))
+
+    @sub.tool_plain
+    def counter() -> str:
+        state["tool_runs"] += 1
+        return "counted"
+
+    result = await runner._driver.run_to_completion(sub, "investigate", None, None, None)
+    assert result.output.startswith("[note: this sub-agent reached its request budget (3")
+    assert result.output.endswith("partial findings")
+    assert state["saw_wrapup"], "the wrap-up prompt must reach the model"
+    assert state["tool_runs"] == 3  # every budgeted request did real work
+    assert state["requests"] == 4  # the budget, plus exactly one wrap-up request
+    assert result.usage.requests == 4  # one accumulator across budget + wrap-up
+    assert sleeps == []  # not a transient retry — no backoff
+
+
+@pytest.mark.anyio
+async def test_request_budget_wrapup_that_still_calls_tools_surfaces_the_limit(tmp_path: Path):
+    """A model that keeps calling a (now withheld) tool in the wrap-up request
+    cannot report; the usage error surfaces as before, and only one wrap-up
+    was attempted."""
+    from pydantic_ai.exceptions import UsageLimitExceeded
+
+    runner, _ = _budget_runner(tmp_path, limit=2)
+    state = {"requests": 0}
+
+    def fn(messages, info):
+        state["requests"] += 1
+        return ModelResponse(parts=[ToolCallPart(tool_name="counter", args={}, tool_call_id="t")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def counter() -> str:
+        return "counted"
+
+    with pytest.raises(UsageLimitExceeded):
+        await runner._driver.run_to_completion(sub, "loop", None, None, None)
+    assert state["requests"] == 3  # 2 budgeted + the single wrap-up attempt
+    assert runner.session.usage.requests == 3  # the spend was banked before the re-raise
+
+
+@pytest.mark.anyio
+async def test_request_budget_wrapup_emits_a_ui_notice_for_a_foreground_spawn(tmp_path: Path):
+    runner, _ = _budget_runner(tmp_path, limit=1)
+    notices: list[tuple[str, str]] = []
+
+    async def _notice(stream_id: str, message: str) -> None:
+        notices.append((stream_id, message))
+
+    runner.deps.ui.on_subagent_notice = _notice
+    state = {"requests": 0, "tool_runs": 0, "saw_wrapup": False}
+    sub = Agent(FunctionModel(_budget_model(state)))
+
+    @sub.tool_plain
+    def counter() -> str:
+        return "counted"
+
+    await runner._driver.run_to_completion(sub, "go", None, None, None, "s1")
+    assert notices == [("s1", "request budget (1) reached — asking for a final report…")]
+
+
+@pytest.mark.anyio
+async def test_unbounded_request_budget_never_wraps_up(tmp_path: Path):
+    """``request_limit=0`` opts out of the cap: a run far past the old default
+    finishes on its own terms with no note."""
+    runner, _ = _budget_runner(tmp_path, limit=0)
+    state = {"requests": 0}
+
+    def fn(messages, info):
+        state["requests"] += 1
+        if state["requests"] <= 60:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name="counter", args={}, tool_call_id=f"t{state['requests']}")
+                ]
+            )
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    sub = Agent(FunctionModel(fn))
+
+    @sub.tool_plain
+    def counter() -> str:
+        return "counted"
+
+    result = await runner._driver.run_to_completion(sub, "go", None, None, None)
+    assert result.output == "done"
+    assert state["requests"] == 61
+
+
+def test_retry_policy_usage_limits():
+    from pydantic_ai.usage import UsageLimits
+
+    from marim_harness.subagents.policies import RetryPolicy
+
+    assert RetryPolicy().request_limit == 200
+    assert RetryPolicy(request_limit=7).usage_limits() == UsageLimits(request_limit=7)
+    assert RetryPolicy(request_limit=0).usage_limits() == UsageLimits(request_limit=None)
+    assert not RetryPolicy(request_limit=-1).bounded

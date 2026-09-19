@@ -42,7 +42,7 @@ ENV_INT_INPUTS: dict[str, tuple[str, str]] = {
 # "0 = unbudgeted" (window-only); the advisor per-request cap's label promises
 # "0 = unlimited" — both must accept it; every other integer field still
 # requires a positive value.
-ZERO_OK_INPUTS = frozenset({"ctx-input", "advisor-max-uses"})
+ZERO_OK_INPUTS = frozenset({"ctx-input", "advisor-max-uses", "subagent-req-limit"})
 # env var -> deprecated aliases removed in the same save. Saving the budget
 # must retire MARIM_MAX_CONTEXT_TOKENS: leaving the old line behind would make
 # the deprecation nag fire against a line the app wrote itself, and — worse —
@@ -88,7 +88,10 @@ FIELD_HELP: dict[str, str] = {
         "tools. Applies next launch."
     ),
     "sw-workflows": ("Model-authored Python workflows in a sandbox (run_workflow). Applies live."),
-    "subagent-req-limit": ("Maximum model requests per sub-agent run. Applies next launch."),
+    "subagent-req-limit": (
+        "Model requests one sub-agent run may make before it is asked for a final "
+        "report; 0 = unbounded. Applies next launch."
+    ),
     "wake-depth-cap": (
         "Maximum autonomous turns after a finished job wakes the agent. Applies next launch."
     ),

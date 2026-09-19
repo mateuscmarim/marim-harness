@@ -36,7 +36,11 @@ from ..compaction import (
 )
 from ..config.context_limits import ContextLimits
 from ..config.context_report import current_context_report
-from ..config.model import DEFAULT_SUBAGENT_CONCURRENCY, SubagentTiers
+from ..config.model import (
+    DEFAULT_SUBAGENT_CONCURRENCY,
+    DEFAULT_SUBAGENT_REQUEST_LIMIT,
+    SubagentTiers,
+)
 from ..hooks.dispatch import TurnHooks
 from ..lsp.manager import LspManager
 from ..lsp.provider import LspRegistry
@@ -176,9 +180,10 @@ class HarnessConfig:
     autonomous_wake: bool = True
     wake_depth_cap: int = 8
     # Backstop on a single sub-agent run: the most model requests it may make
-    # before pydantic-ai aborts it. A runaway sub-agent (stuck calling tools and
-    # never concluding) is bounded rather than blocking the spawning turn forever.
-    subagent_request_limit: int = 50
+    # before it is asked to wrap up with a final report from the work so far. A
+    # runaway sub-agent (stuck calling tools and never concluding) is bounded
+    # rather than blocking the spawning turn forever; 0 removes the cap.
+    subagent_request_limit: int = DEFAULT_SUBAGENT_REQUEST_LIMIT
     # How many times a sub-agent run is retried after a transient model error
     # (gateway/server hiccup, request timeout, rate limit) before the failure
     # surfaces. Permanent errors (malformed request, auth) are never retried.
