@@ -165,10 +165,13 @@ def synth_usage(
     ``input_tokens`` here, exactly as genai-prices does for a native Anthropic
     response. Without this the uncached split underflowed to 0 (the reported ``↑``
     was always zero) and the token total omitted all cached tokens."""
-    from ..usage import COST_DETAIL_KEY
+    from ..usage import COST_DETAIL_KEY, SUBSCRIPTION_DETAIL_KEY
 
     u = cli_usage or {}
-    details: dict = {}
+    # Subscription traffic: see request_usage_from_cli. Without the flag a
+    # spawn whose result carried no cost would be priced at API list rates by
+    # whichever consumer only has the bare model name.
+    details: dict = {SUBSCRIPTION_DETAIL_KEY: 1}
     if total_cost_usd is not None:
         # round(), not int(): truncation loses up to a full microdollar and
         # amplifies float artifacts (a billed 1.001 → 1000999.9999999999 →

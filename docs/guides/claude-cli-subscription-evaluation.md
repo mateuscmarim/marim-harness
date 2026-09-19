@@ -101,14 +101,29 @@ rows in the native `openai-codex` stores has it. That is the attribution
 evidence: no claude-cli turn fell back to another provider, and no native
 turn was served by the CLI.
 
-One finding the run surfaced. The proposal expected each row's model column
-to read `claude-cli:<model>`; it reads the **bare** id (`haiku`, `sonnet`)
-instead. `usage_model_ref` qualifies only `openai-codex`, so a `claude-cli`
-row is indistinguishable by model name alone from an API row on the same
-model. Cost is unaffected — the CLI reports `cost_micro_usd` per turn, so
-these rows are `cost_is_exact: true` rather than priced from a catalog — but
-an operator reading the stats ledger has to use `backend_result` to tell the
-two apart.
+One finding the run surfaced, since fixed. The proposal expected each row's
+model column to read `claude-cli:<model>`; during the run it read the **bare**
+id (`haiku`, `sonnet`), because `usage_model_ref` qualified only
+`openai-codex` — so a `claude-cli` row was indistinguishable by model name
+alone from an API row on the same model, and an operator reading the ledger
+had to fall back to `backend_result` to tell them apart. Cost was never
+affected on these rows (the CLI reports `cost_micro_usd` per turn, so they are
+`cost_is_exact: true`), but the same gap had a latent edge: with no billed
+amount to fall back on, subscription tokens would have been priced at API list
+rates. A bare alias escaped that by luck — `haiku` is not in the price table —
+while a concrete id from the live catalog picker
+(`claude-haiku-4-5-20251001`) is. Both are closed: subscription systems are
+qualified in the ledger, and a subscription usage never falls back to an
+estimate. The rows recorded above predate the fix and still show bare ids.
+
+## What the run changed
+
+| Finding | Change |
+| --- | --- |
+| Bare model id in the ledger | `usage_model_ref` qualifies every subscription system, not just `openai-codex` (`claude-cli:haiku`) |
+| Subscription tokens priced at API list rates when the CLI reports no cost | `resolve_cost` refuses the estimate for subscription usage; the CLI backends mark their usage so a consumer holding only a bare model id is covered too |
+| Plan mode told a refused `WebSearch` to "describe the change instead" | `PLAN_EGRESS_MESSAGE` — the egress denial says to state what it wanted to look up |
+| Headless persists no tool parts | Documented in the configuration reference; unchanged behavior |
 
 ## What this evaluation cannot establish
 
@@ -153,5 +168,5 @@ three-test live smoke. What these rows add is evidence, not a verdict: the
 launcher carries marim's gating, resumability, control parity, sub-agent
 demux and reporting on real subscription traffic, and it does so while
 Claude Code owns the tools. Re-run the page once per meaningful change to the
-control seam. The genuine gaps left are case 6 (refresh and restart
-reliability) and the ledger attribution finding above.
+control seam. The one genuine gap left is case 6 (refresh and restart
+reliability); the findings above are fixed.

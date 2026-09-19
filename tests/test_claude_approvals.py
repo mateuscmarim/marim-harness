@@ -15,6 +15,7 @@ from marim_harness.claude.approvals import (
     HEADLESS_DENY_MESSAGE,
     NO_USER_MESSAGE,
     PLAN_DENY_MESSAGE,
+    PLAN_EGRESS_MESSAGE,
     USER_DENIED_MESSAGE,
     ClaudeApprovalBroker,
     ToolRequest,
@@ -165,12 +166,13 @@ def _fetch(tid: str = "w1") -> dict:
 
 async def test_plan_denies_network_tools_without_prompting(tmp_path: Path):
     """Plan mode is local-research only: a non-mutating WebFetch/WebSearch is
-    still egress, so it is refused exactly like a mutation would be."""
+    still egress, so it is refused exactly like a mutation would be — but with
+    the egress wording, since there is no "change" for Claude to describe."""
     for tool in ("WebFetch", "WebSearch"):
         panel = _Panel(True)
         broker = _broker(Mode.plan, tmp_path, panel=panel)
         req = dict(_fetch(), tool_name=tool)
-        assert await broker.handle("r1", req) == deny_reply(PLAN_DENY_MESSAGE)
+        assert await broker.handle("r1", req) == deny_reply(PLAN_EGRESS_MESSAGE)
         assert panel.calls == []
 
 

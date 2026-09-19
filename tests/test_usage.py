@@ -3,11 +3,14 @@ from pydantic_ai.usage import RunUsage
 
 from marim_harness.usage import (
     COST_DETAIL_KEY,
+    SUBSCRIPTION_DETAIL_KEY,
     TokenSplit,
     estimate_cost,
     exact_cost,
+    is_subscription_ref,
     resolve_cost,
     split_tokens,
+    usage_model_ref,
     usage_summary,
 )
 
@@ -247,3 +250,70 @@ def test_estimate_cost_colon_then_slash_slash_wins_as_provider(monkeypatch):
     estimate_cost(u, "openrouter:anthropic/claude-sonnet-4-6")
     assert captured["provider_id"] == "anthropic"
     assert captured["model_ref"] == "claude-sonnet-4-6"
+
+
+# --- subscription traffic ---------------------------------------------------
+
+
+class _Model:
+    def __init__(self, system: str, name: str) -> None:
+        self.system = system
+        self.model_name = name
+
+
+def test_usage_model_ref_qualifies_every_subscription_system():
+    # A bare "haiku" row is indistinguishable from the same model reached over
+    # a metered API, so load_models() would sum subscription and API spend into
+    # one row. The provider qualifier is what keeps them apart.
+    assert usage_model_ref(_Model("claude-cli", "haiku")) == "claude-cli:haiku"
+    assert usage_model_ref(_Model("openai-codex", "gpt-6-astra")) == "openai-codex:gpt-6-astra"
+    assert usage_model_ref(_Model("anthropic", "claude-sonnet-4-6")) == "claude-sonnet-4-6"
+    # An empty name is passed through unqualified, as before: a bare "" is a
+    # missing id, not a subscription model worth labelling.
+    assert usage_model_ref(_Model("claude-cli", "")) == ""
+    assert usage_model_ref(object()) is None
+
+
+def test_is_subscription_ref():
+    assert is_subscription_ref("claude-cli:haiku")
+    assert is_subscription_ref("openai-codex:gpt-6-astra")
+    assert not is_subscription_ref("anthropic/claude-sonnet-4-6")
+    assert not is_subscription_ref("claude-haiku-4-5-20251001")
+    assert not is_subscription_ref(None)
+
+
+def _priced() -> RunUsage:
+    """A usage on a model genai-prices DOES know — the whole point: a bare
+    alias like "haiku" misses the price table by luck, but the live catalog
+    picker offers concrete ids that hit it."""
+    return RunUsage(input_tokens=56000, output_tokens=2000)
+
+
+def test_priced_id_would_otherwise_be_estimated():
+    # Guards the guard: without a subscription marker this usage prices.
+    value, is_exact = resolve_cost(_priced(), "claude-haiku-4-5-20251001")
+    assert value is not None and value > 0 and is_exact is False
+
+
+def test_subscription_detail_blocks_the_estimate_for_a_bare_model_id():
+    # The status bar prices harness.model_id, which under claude-cli is the raw
+    # selection ("claude-haiku-4-5-20251001") with no provider to go on. The
+    # detail the CLI backends set is what stops API list prices being printed
+    # for tokens the subscription already covered.
+    u = _priced()
+    u.details[SUBSCRIPTION_DETAIL_KEY] = 1
+    assert resolve_cost(u, "claude-haiku-4-5-20251001") == (None, False)
+
+
+def test_subscription_ref_blocks_the_estimate_without_the_detail():
+    assert resolve_cost(_priced(), "claude-cli:claude-haiku-4-5-20251001") == (None, False)
+
+
+def test_a_reported_amount_still_wins_over_the_subscription_guard():
+    # The guard suppresses a client-side *estimate*, never the backend's own
+    # number: CostMeter bills the CLI's total_cost_usd and that must survive,
+    # including in a session total one costless turn also contributed to.
+    u = _priced()
+    u.details[SUBSCRIPTION_DETAIL_KEY] = 1
+    u.details[COST_DETAIL_KEY] = 26_832
+    assert resolve_cost(u, "claude-cli:haiku") == (0.026832, True)

@@ -28,6 +28,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestParameters
 
+from marim_harness.claude.approvals import PLAN_DENY_MESSAGE, PLAN_EGRESS_MESSAGE
 from marim_harness.claude.env import CLI_BINARY_ENV, CLI_IDLE_TIMEOUT_ENV
 from marim_harness.claude.process import ClaudeProcess
 from marim_harness.claude.protocol import CLOSED
@@ -52,7 +53,7 @@ from marim_harness.config.claude_cli_model import (
 from marim_harness.config.context_report import ContextReport
 from marim_harness.config.external_cli import CliModelError
 from marim_harness.runtime.context import wrap_turn_context
-from marim_harness.usage import COST_DETAIL_KEY
+from marim_harness.usage import COST_DETAIL_KEY, SUBSCRIPTION_DETAIL_KEY
 from tests.fakes import fake_claude_bin, read_claude_argv, read_claude_argvs, read_claude_log
 
 _STATUS_POLLS = {"get_context_usage", "get_usage"}
@@ -1071,9 +1072,7 @@ async def test_plan_mode_denies_writes_with_the_wire_message(tmp_path, monkeypat
         resp = await model.request(_user("hi"), None, ModelRequestParameters())
     finally:
         await model.aclose()
-    assert resp.parts[0].content.endswith(
-        "denied: plan mode: read-only — describe the change instead of making it"
-    )
+    assert resp.parts[0].content.endswith(f"denied: {PLAN_DENY_MESSAGE}")
     log = read_claude_log(tmp_path)
     denials = [m for m in log if m.get("type") == "control_response"]
     assert denials and denials[0]["response"]["response"]["behavior"] == "deny"
@@ -1096,9 +1095,9 @@ async def test_plan_mode_denies_webfetch_end_to_end(tmp_path, monkeypatch):
         resp = await model.request(_user("hi"), None, ModelRequestParameters())
     finally:
         await model.aclose()
-    assert resp.parts[0].content.endswith(
-        "denied: plan mode: read-only — describe the change instead of making it"
-    )
+    # The egress wording, not the mutation one: nothing was being changed, so
+    # "describe the change instead" would be advice Claude cannot act on.
+    assert resp.parts[0].content.endswith(f"denied: {PLAN_EGRESS_MESSAGE}")
 
 
 @pytest.mark.anyio
@@ -1208,7 +1207,7 @@ def test_cost_meter_deltas_sum_exactly_to_the_cli_total_in_micro_usd():
     assert sum(billed) == round(totals[-1] * 1_000_000) == 16_174
 
 
-def test_charge_cost_sets_only_the_cost_detail():
+def test_charge_cost_sets_only_the_cost_and_subscription_details():
     from pydantic_ai.usage import RequestUsage
 
     from marim_harness.config.claude_cli_model import charge_cost
@@ -1217,7 +1216,7 @@ def test_charge_cost_sets_only_the_cost_detail():
     assert charge_cost(base, None) is base
     charged = charge_cost(base, 0.0000007)
     assert charged.input_tokens == 5 and charged.cache_read_tokens == 3
-    assert charged.details == {"x": 1, COST_DETAIL_KEY: 1}
+    assert charged.details == {"x": 1, COST_DETAIL_KEY: 1, SUBSCRIPTION_DETAIL_KEY: 1}
 
 
 @pytest.mark.anyio

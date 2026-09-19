@@ -19,13 +19,34 @@ from pydantic_ai.usage import RunUsage
 # config/openrouter_cost.py.
 COST_DETAIL_KEY = "cost_micro_usd"
 
+# Marks usage that a subscription served rather than metered API access. API
+# list prices do not apply to it, so :func:`resolve_cost` never falls back to a
+# genai-prices estimate for a usage carrying this — a backend-reported billed
+# amount still wins. Set by the CLI backends, which know the traffic was
+# subscription-served even where the consumer only has a bare model id to go on
+# (the status bar prices ``harness.model_id``, which is the raw selection).
+SUBSCRIPTION_DETAIL_KEY = "subscription_tokens"
+
+# Providers whose model name arrives bare — a name that is indistinguishable
+# from the same model reached over a metered API. Qualifying the ledger's model
+# column with the provider is what keeps subscription spend and API spend on
+# (say) ``haiku`` from being summed into one row by ``load_models()``.
+SUBSCRIPTION_SYSTEMS = frozenset({"openai-codex", "claude-cli"})
+
 
 def usage_model_ref(model) -> str | None:
     """Retain subscription identity when an upstream model exposes a bare name."""
     name = getattr(model, "model_name", None)
-    if getattr(model, "system", None) == "openai-codex" and name:
-        return f"openai-codex:{name}"
+    system = getattr(model, "system", None)
+    if system in SUBSCRIPTION_SYSTEMS and name:
+        return f"{system}:{name}"
     return name
+
+
+def is_subscription_ref(model_ref: str | None) -> bool:
+    """True when ``model_ref`` is a :data:`SUBSCRIPTION_SYSTEMS`-qualified id
+    (``claude-cli:haiku``) — the form :func:`usage_model_ref` produces."""
+    return bool(model_ref) and str(model_ref).split(":", 1)[0] in SUBSCRIPTION_SYSTEMS
 
 
 @dataclass(frozen=True)
@@ -73,6 +94,20 @@ def exact_cost(usage: RunUsage) -> float | None:
     return micro / 1_000_000 if micro is not None else None
 
 
+def _advisor_cost(usage: RunUsage) -> tuple[float | None, bool]:
+    """The banked estimate for a usage mixing the main model with an advisor
+    on another provider — no single ``model_ref`` prices it, so the aggregate
+    estimate recorded per delta (``preserve_usage_cost``) is the only number."""
+    if usage.details.get("estimated_cost_unknown"):
+        return None, False
+    # The persisted detail includes pre-reload turns; RunUsage.cost only
+    # includes turns since reload because the session format omits it.
+    micro = usage.details.get("estimated_cost_micro_usd")
+    if micro is not None:
+        return micro / 1_000_000, False
+    return (float(usage.cost) if usage.cost is not None else None), False
+
+
 def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, bool]:
     """The best available cost as ``(usd, is_exact)``. Prefers the provider's
     billed amount (``is_exact=True``) and falls back to the genai-prices estimate
@@ -84,17 +119,18 @@ def resolve_cost(usage: RunUsage, model_ref: str | None) -> tuple[float | None, 
         # charges. Token accounting remains useful; money is unknown.
         return None, False
     if usage.details.get("advisor_mixed_cost"):
-        if usage.details.get("estimated_cost_unknown"):
-            return None, False
-        # The persisted detail includes pre-reload turns; RunUsage.cost only
-        # includes turns since reload because the session format omits it.
-        micro = usage.details.get("estimated_cost_micro_usd")
-        if micro is not None:
-            return micro / 1_000_000, False
-        return (float(usage.cost) if usage.cost is not None else None), False
+        return _advisor_cost(usage)
     billed = exact_cost(usage)
     if billed is not None:
         return billed, True
+    if usage.details.get(SUBSCRIPTION_DETAIL_KEY) or is_subscription_ref(model_ref):
+        # Subscription traffic the backend reported no amount for. Estimating it
+        # would print API list prices for tokens the subscription already
+        # covered — the same mistake the openai-codex guard above prevents, and
+        # the one a *bare* alias only escapes by accident: "haiku" isn't in the
+        # price table but "claude-haiku-4-5-20251001" (what the live catalog
+        # picker offers) is. Unknown, not free.
+        return None, False
     return estimate_cost(usage, model_ref), False
 
 

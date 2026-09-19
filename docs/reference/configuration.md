@@ -196,6 +196,23 @@ name resolved on PATH or a path; a non-positive or unparseable
 falls back to its default rather than disabling the guard (`0` for the idle
 timeout means never reap).
 
+Claude's own tool calls are rendered as native tool cards and persisted to the
+session history — but only where a front-end is attached to receive them. The
+TUI and the `marim serve` host both bind that seam; a pure headless run
+(`marim -p`) does not, so its record of a tool call is the folded `▸` line
+inside the turn's text, not a tool part. A session produced headlessly and
+later resumed in the TUI (or read back through `GET
+/sessions/{id}/history`) therefore shows no tool cards for those turns. Token
+accounting, cost and quota are unaffected.
+
+Spend on this provider is billed against the subscription, so marim records
+the amount the CLI itself reports (`total_cost_usd`, charged per turn as the
+delta of its running total) and never substitutes an API-list-price estimate
+when the CLI reports nothing — an unknown amount stays unknown rather than
+being priced as if the tokens had been bought. Ledger rows are attributed to
+`claude-cli:<model>` so subscription spend is never summed with metered API
+spend on the same model name.
+
 See the [evaluation record](../guides/claude-cli-subscription-evaluation.md)
 for the ten live cases run against a real subscription on 2026-09-19, and what
 they do and do not establish. Offline tests script a fake `claude` process and
