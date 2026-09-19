@@ -196,6 +196,11 @@ name resolved on PATH or a path; a non-positive or unparseable
 falls back to its default rather than disabling the guard (`0` for the idle
 timeout means never reap).
 
+See the [evaluation record](../guides/claude-cli-subscription-evaluation.md)
+for the ten live cases run against a real subscription on 2026-09-19, and what
+they do and do not establish. Offline tests script a fake `claude` process and
+consume no subscription quota.
+
 ### Native Codex subscription access
 
 `openai-codex` uses Pydantic AI's `OpenAICodexModel` in Marim's native agent.

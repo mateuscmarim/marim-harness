@@ -65,3 +65,36 @@ def test_relative_links_resolve() -> None:
             if not (page.parent / target).resolve().exists():
                 dangling.append(f"{page.relative_to(ROOT)}: {target}")
     assert not dangling, f"dangling relative links: {dangling}"
+
+
+def test_claude_cli_evaluation_record() -> None:
+    """The claude-cli evaluation guide may only claim what was actually run.
+
+    The sibling of ``test_evaluation_record`` in
+    ``tests/test_codex_subscription_surfaces.py``, and it forbids the same
+    thing: a bare verdict. Every case in the table has to carry an outcome
+    from a closed vocabulary, a passing case has to carry the observation
+    that earned it, a case left unfilled has to stay on the page with its
+    reason, and the run parameters the guide itself demands have to be
+    recorded. Relaxing this to "the table exists" would retire the one check
+    that makes the page trustworthy.
+    """
+    text = (ROOT / "docs" / "guides" / "claude-cli-subscription-evaluation.md").read_text(
+        encoding="utf-8"
+    )
+    rows = [
+        line
+        for line in text.splitlines()
+        if re.match(r"\| (?:\d+b?|#) \|", line) and not line.startswith("| # |")
+    ]
+    assert len(rows) >= 10, f"expected the full case table, found {len(rows)} rows"
+    for row in rows:
+        # "| # | case | expected | outcome | evidence |" -> cells 4 and 5.
+        cells = row.split("|")
+        case, outcome, evidence = (cells[2].strip(), cells[4].strip(), cells[5].strip())
+        assert outcome in ("PASS", "PARTIAL", "NOT RUN"), f"{case}: unreadable outcome {outcome!r}"
+        assert len(evidence) > 40, f"{case}: {outcome} with no evidence or reason"
+    for field in ("| Commit |", "| Date |", "| Model |", "| Permission mode |"):
+        assert field in text, f"run parameters missing {field}"
+    # Unknown monetary cost must never be restated as zero quota use.
+    assert "not evidence of zero quota use" in text

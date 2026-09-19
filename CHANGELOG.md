@@ -10,6 +10,16 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **Claude CLI subscription evaluation record.** `docs/guides/claude-cli-subscription-evaluation.md`
+  documents a live run of ten cases against a real Claude subscription and a
+  real Claude Code binary, covering the seam marim actually owns under the
+  launcher: permission gating, approval denial, plan mode, interrupt and
+  resume, Claude's own compaction, live `/mode` `/model` `/think` control
+  parity, Claude's Agent sub-agents demuxed and persisted, a native main loop
+  driving a `claude-cli` child and tier, and quota/context reporting through
+  both the harness and `marim serve`. A doc-lint guard keeps every row's
+  verdict tied to the observation that earned it.
+
 - **Claude CLI tier routing.** A sub-agent model tier can now name the
   reserved `claude-cli:<model>` execution target: an ordinary native role
   (`explore`, `general`, a custom agent) resolving to that tier transparently
