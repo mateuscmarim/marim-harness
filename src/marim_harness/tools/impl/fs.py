@@ -1,10 +1,12 @@
 import bisect
+import codecs
 import fnmatch
+import io
 import os
 import re
 import stat
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -36,6 +38,11 @@ _DEFAULT_READ_LIMIT = 500
 # returned. At least one line always comes back so a read never returns empty.
 _MAX_LINE_CHARS = 2_000
 _MAX_READ_CHARS = 100_000
+
+# TextIOWrapper iteration delegates to readline(), which allocates an entire
+# physical line before yielding it. Read fixed-size byte chunks instead, so a
+# minified file cannot make a line buffer larger than this bound.
+_READ_CHUNK_BYTES = 8_192
 
 # A NUL byte in the first chunk of a file marks it binary (grep skips it,
 # read_file refuses to display it). This bounds how much we sniff before
@@ -125,61 +132,93 @@ def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> P
     return _resolve_with_extra_roots(root, path, extra_write_roots)
 
 
-def _read_window(p: Path, start: int, end: int) -> tuple[list[str], int]:
-    """Stream ``p`` rather than ``read_text().splitlines()``: the old path
-    materialized the *entire* file (plus a Python list holding every line), so
-    paging lines 9000-9010 of a 500 MB file dragged all 500 MB into memory. Here
-    only the requested window [start, end) is retained; the rest of the file is
-    iterated but discarded, kept solely to count ``total`` for the "of {total}"
-    footer (no way to know a variable-width file's line count without reading
-    it, and the output contract requires the total). Memory is bounded by the
-    window, not the file size. Universal-newline text mode (the default) folds
-    ``\\r\\n``/``\\r`` into ``\\n`` the same way ``splitlines`` does for the
-    common separators, and we strip the one trailing ``\\n`` per line to match
-    ``splitlines``' terminator-free output; only the exotic separators (``\\v``,
-    ``\\f``, U+2028, …) that ``splitlines`` also breaks on are treated as
-    in-line text here, which never arises for normal-size text files."""
-    window: list[str] = []
-    total = 0
-    # Explicit UTF-8, matching edit_file's read and _read_text_for_grep: without
-    # it, open() decodes under the process/platform locale (e.g. CP1252/Latin-1
-    # on some hosts), so a read could show different text than the UTF-8 bytes
-    # edit_file (and the file itself) actually contain — mojibake here, a
-    # byte-for-byte different view there.
-    with p.open("r", encoding="utf-8", errors="replace") as fh:
-        for i, raw in enumerate(fh):
-            if start <= i < end:
-                window.append(raw[:-1] if raw.endswith("\n") else raw)
-            total = i + 1
-    return window, total
+def _render_line(prefix: str, length: int, line_no: int) -> tuple[str, bool]:
+    """Render one bounded line summary without retaining the complete line."""
+    if length <= _MAX_LINE_CHARS:
+        return f"{line_no}\t{prefix}", False
+    extra = length - _MAX_LINE_CHARS
+    return f"{line_no}\t{prefix}… (+{extra} more chars on this line)", True
 
 
-def _render_window(window: list[str], start: int) -> tuple[str, bool, int]:
-    """Render ``window`` into numbered ``lineno\\ttext`` rows, clipping any
-    over-long line and stopping once the char budget is spent. Returns
-    ``(body, clipped, last)`` where ``last`` is the 1-based number of the last
-    line included."""
-    rendered: list[str] = []
-    used = 0
-    clipped = False
-    for idx, line in enumerate(window):
-        lineno = start + idx + 1
-        if len(line) > _MAX_LINE_CHARS:
-            extra = len(line) - _MAX_LINE_CHARS
-            line = f"{line[:_MAX_LINE_CHARS]}… (+{extra} more chars on this line)"
-            clipped = True
-        row = f"{lineno}\t{line}"
-        # Stop before the char budget is exceeded, but always emit at least one
-        # row so a read never comes back empty (a single wide line still returns,
-        # clipped to _MAX_LINE_CHARS).
-        if rendered and used + len(row) + 1 > _MAX_READ_CHARS:
-            break
-        rendered.append(row)
-        used += len(row) + 1
+@dataclass
+class _WindowRenderer:
+    """Bounded state for one streamed text-file window."""
 
-    last = start + len(rendered)  # 1-based number of the last line included
-    body = "\n".join(rendered)
-    return body, clipped, last
+    start: int
+    end: int
+    rendered: list[str] = field(default_factory=list)
+    used: int = 0
+    total: int = 0
+    prefix: str = ""
+    length: int = 0
+    line_open: bool = False
+    accepting: bool = True
+    clipped: bool = False
+
+    def add_text(self, text: str) -> None:
+        # Even outside the selected/renderable range, remember that this final
+        # physical line has content so the total includes it at EOF.
+        self.line_open = self.line_open or bool(text)
+        if not self.accepting or not (self.start <= self.total < self.end):
+            return
+        self.length += len(text)
+        remaining = _MAX_LINE_CHARS - len(self.prefix)
+        if remaining > 0:
+            self.prefix += text[:remaining]
+
+    def finish_line(self) -> None:
+        if self.accepting and self.start <= self.total < self.end:
+            row, line_clipped = _render_line(self.prefix, self.length, self.total + 1)
+            # Keep the clipping footer's historical meaning: it reports a
+            # clipped line encountered at the output boundary too, even when
+            # that row itself is omitted by the aggregate character budget.
+            self.clipped = self.clipped or line_clipped
+            if self.rendered and self.used + len(row) + 1 > _MAX_READ_CHARS:
+                self.accepting = False
+            else:
+                self.rendered.append(row)
+                self.used += len(row) + 1
+        self.total += 1
+        self.prefix = ""
+        self.length = 0
+        self.line_open = False
+
+    def consume(self, text: str) -> None:
+        segments = text.split("\n")
+        for segment in segments[:-1]:
+            self.add_text(segment)
+            self.finish_line()
+        self.add_text(segments[-1])
+
+    def result(self) -> tuple[str, bool, int, int]:
+        last = self.start + len(self.rendered)
+        return "\n".join(self.rendered), self.clipped, last, self.total
+
+
+def _read_window(p: Path, start: int, end: int) -> tuple[str, bool, int, int]:
+    """Stream and render ``p``'s requested window with bounded buffering.
+
+    ``TextIOWrapper`` iteration reads a complete physical line before yielding
+    it, defeating the output caps for a minified file. This decoder reads fixed
+    byte chunks, retains only each displayed line's prefix, and renders rows as
+    soon as their newline arrives. Once the rendered budget is full, subsequent
+    requested lines are counted but never retained. We still scan the file to
+    preserve the footer's total-line contract.
+    """
+    decoder = io.IncrementalNewlineDecoder(
+        codecs.getincrementaldecoder("utf-8")(errors="replace"), translate=True
+    )
+    renderer = _WindowRenderer(start, end)
+    # Explicit UTF-8, matching edit_file's read and _read_text_for_grep. The
+    # incremental decoder retains incomplete code points and CRLF boundaries,
+    # preserving text mode's replacement and universal-newline behavior.
+    with p.open("rb") as fh:
+        while chunk := fh.read(_READ_CHUNK_BYTES):
+            renderer.consume(decoder.decode(chunk))
+    renderer.consume(decoder.decode(b"", final=True))
+    if renderer.line_open:
+        renderer.finish_line()
+    return renderer.result()
 
 
 def _footer(offset: int, last: int, total: int, windowed: bool, clipped: bool) -> str:
@@ -324,13 +363,12 @@ def read_file(
     span = limit if limit is not None else _DEFAULT_READ_LIMIT
     end = start + span
 
-    window, total = _read_window(p, start, end)
+    body, clipped, last, total = _read_window(p, start, end)
     if total == 0:
         return ""
     if offset > total:
         raise ModelRetry(f"offset {offset} is past end of file ({total} lines).")
 
-    body, clipped, last = _render_window(window, start)
     windowed = not (start == 0 and last == total)
     return body + _footer(offset, last, total, windowed, clipped)
 
