@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from pydantic_ai.usage import RunUsage
@@ -1887,10 +1888,25 @@ async def test_large_assistant_message_render_is_capped():
 
 
 @pytest.mark.anyio
-async def test_wait_row_title_shows_waiting_with_real_elapsed_time():
+async def test_wait_row_title_shows_waiting_with_real_elapsed_time(monkeypatch):
     """A pending job wait (either tool variant) reads 'Waiting for <job> ·
     <elapsed>' — the elapsed being how long it has actually blocked, not the
-    requested timeout — and freezes the total once it finishes."""
+    requested timeout — and freezes the total once it finishes.
+
+    The widget reads ``time.monotonic()`` both while pending and again in
+    ``finish()``, so asserting on a rendered "42." against the real clock is a
+    race: it only holds while under a second passes between backdating ``_t0``
+    and finishing, and a loaded CI runner loses that and renders "43.0s".
+    Pinning the module's clock removes the race without faking the code path —
+    ``finish()`` still records ``_t_end`` itself, it just records a known value.
+    """
+    from types import SimpleNamespace
+
+    from marim_harness.interfaces.tui.widgets import tools as tools_mod
+
+    # `monotonic` is the only thing tools.py uses `time` for.
+    frozen = time.monotonic()
+    monkeypatch.setattr(tools_mod, "time", SimpleNamespace(monotonic=lambda: frozen))
 
     class _WaitApp(App):
         def compose(self) -> ComposeResult:
@@ -1902,7 +1918,9 @@ async def test_wait_row_title_shows_waiting_with_real_elapsed_time():
         await pilot.pause()
         split, combined = app.query(ToolCallWidget).results()
         for w in (split, combined):
-            w._t0 -= 42  # pretend it has been blocking for 42 seconds
+            # Anchored to the frozen clock, so the blocked time is exactly 42s
+            # here AND in finish() below — no wall-clock drift in between.
+            w._t0 = frozen - 42
             w._tick()  # the spinner tick re-renders the title while pending
         assert "Waiting for job-3 · 42s" in str(split.title)
         assert "600" not in str(split.title)  # the timeout ceiling is not progress
@@ -1910,9 +1928,9 @@ async def test_wait_row_title_shows_waiting_with_real_elapsed_time():
         split.finish("the report")
         combined.finish("the report")
         await pilot.pause()
-        assert "Wait · job-3 · 42." in str(split.title)  # precise total once done
+        assert "Wait · job-3 · 42.0s" in str(split.title)  # precise total once done
         assert "Waiting" not in str(split.title)
-        assert "Wait · job-4 · 42." in str(combined.title)
+        assert "Wait · job-4 · 42.0s" in str(combined.title)
 
 
 def test_replayed_wait_row_shows_no_fake_duration():
