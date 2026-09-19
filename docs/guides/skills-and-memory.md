@@ -77,6 +77,13 @@ metadata: {}                      # optional free-form dict
 The full instructions the agent follows once the skill is activated.
 ```
 
+The body reaches the model whole on activation: the activation result (this
+body plus a short skill-directory header) passes through while it stays below
+60,000 characters, well past the general 10,000-character
+[tool-output spill](tool-output.md) — because a skill is instructions to
+follow, not data to page through. Files the skill bundles (`read_skill_file`)
+use the general policy.
+
 Only `description` is required. A malformed skill — no `SKILL.md`, bad YAML,
 missing description, a `name` that doesn't match the directory, or an illegal
 directory name — is silently skipped, never fatal.
@@ -89,8 +96,9 @@ model won't auto-activate them). When a task matches a description, the model
 calls:
 
 - `activate_skill(name)` — returns the full `SKILL.md` body plus the skill's
-  absolute directory. Oversized bodies are spilled to a file with a preview
-  rather than flooding the context.
+  absolute directory. The result (header plus body) arrives whole while it
+  stays below 60,000 characters; only a pathological one is spilled to a file
+  with a preview (see [Large tool output](tool-output.md)).
 - `read_skill_file(name, path)` — reads a bundled file (e.g.
   `references/REFERENCE.md`) by path relative to the skill directory, guarded
   against escaping it. Works for global skills outside the workspace too.
