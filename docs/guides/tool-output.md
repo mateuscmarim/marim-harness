@@ -12,7 +12,7 @@ custom tools, skill instructions and resources, and MCP results. External
   to the session's output store.
 - **Skill activation is the one carve-out.** `activate_skill` returns
   instructions the model must follow in full, so its result passes through
-  whole up to **60,000 characters** and spills only beyond that. Bundled skill
+  whole **below 60,000 characters** and spills at or above that. Bundled skill
   files read with `read_skill_file` use the general threshold.
 - A successful spill returns an upstream handle and a head-and-tail preview.
   The default preview budget is **1,000 characters**, plus the handle and

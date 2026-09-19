@@ -77,8 +77,8 @@ metadata: {}                      # optional free-form dict
 The full instructions the agent follows once the skill is activated.
 ```
 
-The body reaches the model whole on activation — up to 60,000 characters,
-well past the general 10,000-character [tool-output spill](tool-output.md) —
+The body reaches the model whole on activation — anything below 60,000
+characters, well past the general 10,000-character [tool-output spill](tool-output.md) —
 because a skill is instructions to follow, not data to page through. Files the
 skill bundles (`read_skill_file`) use the general policy.
 
