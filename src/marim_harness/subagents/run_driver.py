@@ -265,8 +265,6 @@ class SpawnRunDriver:
         overflow_shed = False
         wrapped_up = False
         resume_history: list | None = None
-        # The request cap for the next attempt; widened by one for the wrap-up
-        # request so the same accumulator (below) admits exactly one more.
         limits = self._retry.usage_limits()
         # One usage accumulator across ALL attempts, mirroring the controller's
         # per-round banking (see _run_with_approval): pydantic-ai mutates it in
@@ -286,7 +284,7 @@ class SpawnRunDriver:
                 with _fresh_capture() as captured:
                     if wrapped_up and resume_history is not None:
                         return await self._wrap_up(
-                            sub, resume_history, run_deps, handler, run_usage, limits
+                            sub, resume_history, run_deps, handler, run_usage
                         )
                     return await sub.run(
                         task if resume_history is None else None,
@@ -315,7 +313,6 @@ class SpawnRunDriver:
                     )
                     raise
                 wrapped_up = True
-                limits = UsageLimits(request_limit=run_usage.requests + 1)
                 logger.info(
                     "sub-agent reached its request budget (%d); asking for a final report",
                     self._retry.request_limit,
@@ -390,11 +387,12 @@ class SpawnRunDriver:
         run_deps: Deps,
         handler: EventStreamHandler[Deps] | None,
         run_usage: RunUsage,
-        limits: UsageLimits,
     ) -> AgentRunResult[str | dict[str, Any]]:
         """The budget wrap-up request: continue ``history`` with the wrap-up
         prompt, tools withheld, and stamp the budget note onto a text report.
-        A structured (dict) report is returned as-is — its schema is the
+        The cap is widened by exactly one over what the shared accumulator has
+        already spent, so the run gets one more request and no more. A
+        structured (dict) report is returned as-is — its schema is the
         spawner's contract and has no slot for a note; the notice on the card
         and the log line still say what happened."""
         with _withheld_tools(sub):
@@ -404,7 +402,7 @@ class SpawnRunDriver:
                 deps=run_deps,
                 event_stream_handler=handler,
                 usage=run_usage,
-                usage_limits=limits,
+                usage_limits=UsageLimits(request_limit=run_usage.requests + 1),
             )
         if isinstance(result.output, str):
             result.output = budget_note(self._retry.request_limit) + result.output
