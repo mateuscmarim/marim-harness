@@ -1043,8 +1043,7 @@ class StreamRenderer:
         ``thinking.delta`` / ``tool.call`` / ``tool.result``), already parsed by
         the app's pump. Anything else is ignored here — the pump routes the rest
         of the vocabulary (asks, workflow cards, session status) to its own
-        handlers. An external CLI model's own tool activity (claude-cli /
-        codex-cli run their tools themselves) arrives here too: the host
+        handlers. An external CLI model's own tool activity arrives here too: the host
         publishes it as the same ``tool.call`` / ``tool.result`` events, so a
         card mounted for it finalizes the in-flight assistant text and the
         model's next text part opens a fresh message below it, exactly as for a

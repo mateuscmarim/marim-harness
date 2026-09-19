@@ -222,13 +222,3 @@ def claude_input(content: Sequence[UserContent]) -> list[dict]:
             }
         )
     return blocks or [{"type": "text", "text": ""}]
-
-
-def codex_input(content: Sequence[UserContent]) -> list[dict]:
-    """Codex turn/start and turn/steer input; image URLs carry inline data URIs."""
-    return [
-        {"type": "text", "text": item, "text_elements": []}
-        if isinstance(item, str)
-        else {"type": "image", "url": _image(item).data_uri}
-        for item in content
-    ]

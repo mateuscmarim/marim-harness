@@ -1,5 +1,8 @@
 # CLI lifecycle capabilities
 
+> Historical protocol evidence: Codex CLI execution is removed. Codex rows
+> describe old records only; Claude lifecycle support remains active.
+
 Phase 3 baseline: Claude Code **2.1.270**, Codex CLI **0.154.0**.
 Protocol inspection: 2026-09-14. Fixtures are synthetic and derived from the
 installed schemas; they are not recordings of paid live turns. No compaction,

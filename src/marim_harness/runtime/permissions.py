@@ -57,8 +57,8 @@ class UiSeams:
 
 @dataclass(frozen=True)
 class ExternalRequest:
-    """A transport-neutral view of one thing an external CLI (codex-cli,
-    claude-cli) wants to do: would it change files / run commands / reach the
+    """A transport-neutral view of an external CLI request:
+    would it change files / run commands / reach the
     network, and which file paths does it name (when known).
 
     ``network`` is a separate axis from ``mutating`` because a web fetch or a

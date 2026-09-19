@@ -41,7 +41,7 @@ Fields are separated by `·`, left to right:
 - **ctx N/M (P%)** — estimated context size versus the compaction threshold
   (the smaller of your context budget and 80% of the model's window). The
   field turns yellow at 75% and red at 90%; 100% means compaction is
-  imminent. Under `claude-cli` and `codex-cli` the field shows the backend's
+  imminent. Under `claude-cli` the field shows the backend's
   own numbers instead: the prompt size of its most recent model request
   (what the CLI's `/context` counts, system prompt and tool schemas
   included) over the model's context window, so it moves with the CLI's
@@ -58,7 +58,7 @@ Fields are separated by `·`, left to right:
 - **ttft N.Ns** — time-to-first-token of the latest model request: how snappy
   the provider feels right now. It lingers while idle (it describes the last
   request) and clears on a session reset.
-- **quota 37% (5h) · 12% (1w)** — `codex-cli` and `claude-cli`: the
+- **quota 37% (5h) · 12% (1w)** — `claude-cli`: the
   subscription's rate-limit windows (percent used, window length),
   refreshed once per turn — Codex's primary and secondary windows from
   `account/rateLimits/read`, Claude's five-hour and seven-day windows from
@@ -152,10 +152,8 @@ through the ask-user panel too. The mode is also sent to the process
 own plan mode and presents a plan rather than running into denials (its
 `ExitPlanMode` request is refused with a note that `/mode` is how the user
 switches); `auto` and `ask` both run it in Claude's `default` mode, where it
-keeps asking marim before every gated tool. Under `codex-cli`, Codex runs its own tools
-but its approval requests are brokered into this same panel (with the Codex
-command or file diff), so `ask` mode still gates every privileged action and
-`plan` mode is read-only.
+keeps asking marim before every gated tool.
+
 
 ### The approval panel
 
@@ -327,8 +325,7 @@ Two kinds of settings live here:
 
 - Mode (this session), model, theme
 - MCP server enable/disable
-- Provider credentials (Providers section; keyed providers and a detected
-  `codex-cli` are verified live when the section opens)
+- Provider credentials (Providers section; keyed providers are verified live when the section opens)
 - Autonomous wake (session-only; mirrors `/jobs wake`)
 - Dynamic workflows (persists `MARIM_WORKFLOWS` *and* flips the live seam
   when possible)
@@ -406,7 +403,7 @@ Clipboard image reading needs `wl-clipboard` (Wayland), `xclip` (X11), or
 helper, the file-path method still works. Cached images live under
 `~/.marim/image-cache/`; override this with `MARIM_IMAGE_CACHE_DIR`.
 
-Image attachments also work with `claude-cli` and `codex-cli`, including
+Image attachments also work with `claude-cli`, including
 mid-turn steering in a local session. Marim sends the image bytes directly
 to the CLI. When rebuilding a missing CLI conversation, it replays the
 images alongside their original user messages.

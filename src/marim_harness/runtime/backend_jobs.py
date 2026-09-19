@@ -2,7 +2,7 @@
 
 The display routers are deliberately separate instances: their ledger seals,
 replay and consumer lifetime must never settle a real job. Reusing their
-translation keeps Agent/Task and Codex collab variants consistent with cards.
+translation keeps Claude Agent/Task variants consistent with cards.
 These observers neither adopt threads nor execute/cancel backend work.
 """
 
@@ -129,47 +129,3 @@ class ClaudeJobObserver(AgentJobMirror):
                 if obj.get("status") in ("stopped", "cancelled", "interrupted"):
                     status = "cancelled"
                 self.finish(event.part.tool_call_id, str(event.part.content), status)
-
-
-class CodexJobObserver(AgentJobMirror):
-    def __init__(
-        self, registry: JobRegistry, parent: str, on_settled: Callable[[], None] | None = None
-    ) -> None:
-        super().__init__(registry, on_settled)
-        from ..codex.collab import CollabRouter
-        from ..codex.translate import ItemTranslator
-
-        self.router = CollabRouter(parent, adopt=lambda *_: None, release=lambda _: None)
-        self.translator = ItemTranslator()
-
-    def __call__(self, method: str, params: dict) -> None:
-        from ..codex.server import CLOSED
-
-        if method == CLOSED:
-            self.close()
-        if not self.active:
-            return
-        routed = self.router.route(method, params)
-        if routed is None:
-            routed = []
-            for item in self.translator.translate(method, params):
-                routed.extend(self.router.route_item(item))
-        for item in routed:
-            self._record(item)
-
-    def _record(self, item: object) -> None:
-        from ..codex.collab import Routed
-        from ..codex.translate import ActivityEnd, ActivityStart
-
-        if isinstance(item, Routed):
-            item = item.item
-        if isinstance(item, ActivityStart) and item.tool_name == "spawn_agent":
-            self.start(item.item_id, item.args)
-        elif isinstance(item, ActivityEnd):
-            statuses: dict[str, Status] = {
-                "completed": "done",
-                "interrupted": "cancelled",
-                "shutdown": "cancelled",
-            }
-            status = statuses.get(self.router.status_for(item.item_id) or "", "failed")
-            self.finish(item.item_id, item.content, status)

@@ -1,13 +1,6 @@
-"""Chunked NDJSON line reader shared by the external-CLI transports.
+"""Chunked NDJSON reader for external CLI streams.
 
-A leaf module on purpose: both ``subagents/cli_backend.py`` (the ``claude -p``
-stream) and ``codex/rpc.py`` (the app-server JSON-RPC stream) read
-newline-delimited JSON off a subprocess pipe, and the codex transport used to
-import the reader from ``cli_backend`` — whose package ``__init__`` pulls in
-the runner → ``codex_spawn`` → ``codex.approvals`` → ``codex.rpc``, i.e. a
-cycle that raised ``ImportError`` for anyone importing
-``marim_harness.codex.server`` before ``marim_harness.subagents`` (an
-embedder, a probe script). Nothing here imports from the package.
+A leaf module avoids importing the sub-agent runner from a transport.
 """
 
 from __future__ import annotations

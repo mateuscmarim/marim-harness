@@ -147,12 +147,11 @@ async def test_disabled_advisor_has_no_tool_or_guidance(tmp_path):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("backend", ["claude"])
 async def test_cli_advisor_isolation(tmp_path, monkeypatch, backend):
     from marim_harness.config.claude_cli_model import ClaudeCliModel
-    from marim_harness.config.codex_cli_model import CodexCliModel
 
-    cls = ClaudeCliModel if backend == "claude" else CodexCliModel
+    cls = ClaudeCliModel
     parent = cls("reviewer")
     parent.session_ref_getter = lambda: "live-thread"
     closed = []
@@ -177,12 +176,11 @@ async def test_cli_advisor_isolation(tmp_path, monkeypatch, backend):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("backend", ["claude"])
 async def test_cli_executor_omits_runtime_advisor(tmp_path, monkeypatch, backend):
     from marim_harness.config.claude_cli_model import ClaudeCliModel
-    from marim_harness.config.codex_cli_model import CodexCliModel
 
-    cls = ClaudeCliModel if backend == "claude" else CodexCliModel
+    cls = ClaudeCliModel
 
     async def request(self, messages, model_settings, model_request_parameters):
         assert "advisor" not in [t.name for t in model_request_parameters.function_tools]

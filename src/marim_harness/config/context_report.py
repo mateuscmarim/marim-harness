@@ -1,14 +1,13 @@
 """What a CLI backend says about its own context: the ``ContextReport``.
 
-Under ``claude-cli`` and ``codex-cli`` the conversation lives inside the
+Under ``claude-cli`` the conversation lives inside the
 backend, and marim's history is a mirror of it — so the status bar's chars/4
 estimate over that mirror (denominated against marim's own budget) is a
-guess about a context it does not own. Both backends report the truth on
+guess about a context it does not own. Claude reports context on
 the wire: Claude's ``assistant`` events carry the request's ``usage``, its
 ``result`` the model's ``contextWindow``, and ``get_context_usage`` refines
-the total with the same local category estimates as ``/context``; Codex's
-``thread/tokenUsage/updated`` carries the last response's usage and
-``modelContextWindow``. Each CLI model adapter keeps the newest reading on a
+the total with the same local category estimates as ``/context``.
+Historical Codex context reports remain readable. Each adapter keeps its reading on a
 ``context_report`` attribute (the same pattern as ``quota_hint``); the status
 bar and the ``GET session`` payload prefer it over the estimate.
 

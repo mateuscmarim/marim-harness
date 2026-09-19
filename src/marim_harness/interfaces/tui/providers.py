@@ -33,20 +33,16 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class CliDetection:
-    """Whether each CLI-backed provider's binary (and, for codex, its login)
-    was found — folded from two loose bools into one value object so
+    """Whether the Claude CLI binary was found; kept as a value object so
     ``ProvidersPane.__init__`` stays under ruff's PLR0913 argument ceiling.
     ``for_`` answers "is this provider's CLI detected" for any provider name,
     defaulting to False for the non-CLI providers ``_configured`` never asks."""
 
     claude_cli: bool = False
-    codex_cli: bool = False
 
     def for_(self, provider: str) -> bool:
         if provider == "claude-cli":
             return self.claude_cli
-        if provider == "codex-cli":
-            return self.codex_cli
         return False
 
 
@@ -110,9 +106,6 @@ PROVIDER_SPECS: tuple[ProviderSpec, ...] = (
     ),
     # claude-cli stores nothing: the CLI owns auth; status is binary detection.
     ProviderSpec("claude-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
-    # codex-cli stores nothing either: `codex login` owns auth; status is
-    # binary + login detection.
-    ProviderSpec("codex-cli", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
     ProviderSpec("openai-codex", write_key=None, key_fallbacks=(), read_keys=(), drop_keys=()),
 )
 _SPECS = {s.name: s for s in PROVIDER_SPECS}
@@ -250,12 +243,6 @@ class ProvidersPane(Vertical):
                     classes="prov-note",
                     id="prov-note-claude-cli",
                 )
-            elif name == "codex-cli":
-                yield Static(
-                    "(auth handled by `codex login`; needs codex ≥ 0.152)",
-                    classes="prov-note",
-                    id="prov-note-codex-cli",
-                )
             elif name == "zen-go":
                 yield Static(
                     "Same key as zen — removing it deconfigures both.",
@@ -280,16 +267,14 @@ class ProvidersPane(Vertical):
         # actually displayed, so the cards show live truth ('✓ connected ·
         # N models') matching what a save would show — skipped when there's
         # no MultiModelSource (embedding/tests) and for claude-cli (nothing
-        # to fetch). codex-cli has no key but IS verifiable: its catalog
-        # fetch is a live `model/list` against the app-server, so the card
-        # can prove the CLI actually answers, not just that it is installed.
+        # to fetch). Subscription credentials retain an unverified badge.
         # Once per pane lifetime: rail navigation away and back must not
         # re-fire network calls (the cache repaints the verdicts).
         if self._verified_once:
             return
         self._verified_once = True
         for spec in PROVIDER_SPECS:
-            verifiable = spec.write_key is not None or spec.name == "codex-cli"
+            verifiable = spec.write_key is not None
             if verifiable and self._configured(spec):
                 self._start_verify(spec.name)
 
@@ -303,7 +288,7 @@ class ProvidersPane(Vertical):
             from ...config.codex_subscription import credentials_present
 
             return credentials_present()
-        if spec.name in ("claude-cli", "codex-cli"):
+        if spec.name == "claude-cli":
             return self._cli_detection.for_(spec.name)
         return spec_configured(spec)
 
@@ -332,8 +317,6 @@ class ProvidersPane(Vertical):
             base = self._verify_results[spec.name]
         elif spec.name == "claude-cli":
             base = "detected on PATH" if configured else "not found"
-        elif spec.name == "codex-cli":
-            base = "detected + logged in" if configured else "not found or not logged in"
         elif spec.name == "openai-codex":
             base = "configured · unverified" if configured else "login required · codex login"
         else:

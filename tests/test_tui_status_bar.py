@@ -149,11 +149,11 @@ async def test_ttft_display():
 
 @pytest.mark.anyio
 async def test_quota_hint_read_off_the_current_model():
-    """A codex-cli model exposes `quota_hint`; the bar renders it. Providers
+    """A CLI model exposes `quota_hint`; the bar renders it. Providers
     without one (the stub harness has no current_model) show nothing."""
     from types import SimpleNamespace
 
-    from marim_harness.codex.quota import QuotaHint, QuotaWindow
+    from marim_harness.config.quota import QuotaHint, QuotaWindow
 
     async with _StatusBarApp().run_test() as pilot:
         bar = pilot.app.query_one(StatusBar)

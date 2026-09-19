@@ -370,7 +370,7 @@ class SessionHost:
         self._publish("subagent.usage", {"stream_id": stream_id, "usage": _dump_usage(usage)})
 
     async def _on_cli_activity(self, events: list) -> None:
-        """An external CLI model's own tool activity (claude-cli / codex-cli run
+        """An external CLI model's own tool activity (external CLIs run
         their tools themselves, so the calls never enter the pydantic-ai stream)
         is published as the SAME top-level ``tool.call`` / ``tool.result`` events
         the turn stream produces for a native tool. Every client then renders a

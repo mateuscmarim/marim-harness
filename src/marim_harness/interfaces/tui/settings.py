@@ -30,7 +30,6 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Input, RadioSet, Static
 
 from ...claude.env import resolve_cli_binary
-from ...codex.env import codex_available
 from ...config import ModelConfig, MultiModelSource
 from ...runtime.permissions import Mode
 from .model_picker import ModelPickerModal
@@ -224,7 +223,6 @@ class SettingsScreen(Screen[None]):
                     set_badge=self._set_providers_badge,
                     cli_detection=CliDetection(
                         claude_cli=resolve_cli_binary() is not None,
-                        codex_cli=codex_available(),
                     ),
                     id="section-providers",
                 )

@@ -145,7 +145,6 @@ def wire(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
     from marim_harness.config import model as config
 
-    monkeypatch.setattr(config, "_codex_cli_available", lambda: False)
     monkeypatch.setattr(config, "_claude_cli_available", lambda: False)
     transport = Wire()
     monkeypatch.setattr(

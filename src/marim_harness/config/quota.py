@@ -1,11 +1,7 @@
-"""The subscription quota hint the status bar shows: ``quota 37% (5h) · 12% (1w)``.
+"""Subscription quota values shared by adapters and the status bar.
 
-Both CLI backends run on a subscription with rolling rate-limit windows —
-Codex reports a "primary" and a "secondary" window (``account/rateLimits/
-read``), Claude Code a five-hour and a seven-day one (the ``get_usage``
-control request). The provider-neutral value objects live here so the two
-adapters and the status bar share one rendering; the wire-shape parsers
-stay with their backend (``codex/quota.py``, ``claude/quota.py``).
+Claude Code reports five-hour and seven-day rate-limit windows. Backend wire
+parsing stays in claude/quota.py; these objects own provider-neutral rendering.
 """
 
 from __future__ import annotations

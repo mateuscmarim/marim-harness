@@ -8,6 +8,13 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Removed
+
+- **Codex CLI executor.** Native `openai-codex` now supplies Codex subscription
+  access. Removed the app-server transport, CLI model provider, CLI child backend,
+  and their configuration/examples. Old transcripts remain readable; selecting
+  or resuming the retired backend reports migration guidance without provider fallback.
+
 ## [0.14.0] - 2026-09-17
 
 ### Added

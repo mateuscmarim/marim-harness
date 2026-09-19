@@ -29,17 +29,13 @@ and 3.14 (plus a `uv build` packaging check on the 3.12 leg). Match that order
 locally before claiming work is done. `requires-python` is `>=3.10`, so avoid
 3.11+ only syntax.
 
-Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
-(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`Codex-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
-`OPENROUTER_API_KEY`, etc. Default provider is OpenRouter, default model
-`anthropic/Codex-sonnet-4-6`. `Codex-cli` delegates each turn to the `Codex` CLI on a
-Codex subscription — marim acts as a launcher (Codex runs its own tools/loop), so marim's
-own tools/approval/LSP/MCP do not apply in that provider. Codex's own Agent/Task
-sub-agents, however, are demuxed out of the stream (`subagents/cli_demux.py`) and
-rendered as first-class cards in the sub-agents screen, for both the main-loop
-provider and `backend: Codex-cli` spawns. Interrupted `Codex-cli` spawns
-resume via the CLI's own `--resume` (the session id is checkpointed in the
-spawn's sidecar meta).
+Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in environment
+variables and `.env` (see `.env.example`). Default provider is OpenRouter.
+`openai-codex` runs native Pydantic AI agents through a Codex subscription,
+reusing `codex login` credentials through upstream OAuth. Marim owns its tools,
+permissions, MCP, sub-agents, and sessions. The `codex-cli` executor is removed;
+retired selections fail with migration guidance while old transcripts stay readable.
+`claude-cli` remains an external executor with its own tools and Agent/Task loop.
 
 ## Architecture
 
@@ -164,9 +160,9 @@ to avoid import cycles.
   readers; active reduction lives in `session/compaction.py` through upstream strategies.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
-  `cli_spawn.py` (`Codex -p` execute/resume orchestration), upstream
+  `cli_spawn.py` (`claude -p` execute/resume orchestration), upstream
   `ClearToolResults` capabilities for native-spawn history clearing, and `cli_backend.py`
-  (the optional `Codex -p` CLI backend it delegates to). Re-exported as
+  (the optional `claude -p` CLI backend it delegates to). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
 - `workflows/` — dynamic workflows: the gated `run_workflow` tool executes a
   model-authored `code` script through Pydantic AI Harness `DynamicWorkflow`.
@@ -190,7 +186,7 @@ to avoid import cycles.
   retry, and output-correction rounds. `MARIM_ADVISOR_MAX_USES` is per model request;
   nested usage shares the parent's limits, and provider errors use normal turn
   failure handling. The saved `"off"` sentinel overrides configuration defaults.
-  Claude/Codex CLI main executors do not run Marim's advisor tool; either may serve
+  Claude CLI main executors do not run Marim's advisor tool; Claude may serve
   as an advisor through an isolated read-only `aux_model_for` clone. Embedders can
   compose upstream Advisor directly for its native/auto modes, but cannot combine
   an explicit Advisor with the runtime advisor in the same turn.
@@ -204,8 +200,7 @@ to avoid import cycles.
   level persists on `SessionStore.thinking` and lives on `Harness.thinking_level_id`
   (read lazily by the controller closure and the sub-agent runner, so `/think`
   switches without a rebuild). Seeded by `MARIM_THINKING` / `--think`; TUI
-  `/think` command + Settings row. Under the `Codex-cli` main provider it's a
-  documented no-op (marim's `ModelSettings` don't reach Codex). Detection
+  `/think` command + Settings row. Detection
   (`catalog.supports_thinking`) is best-effort UI annotation only — it never
   blocks a level.
 - `interfaces/tui/` — Textual app, widgets, `styles.tcss`, streaming render;

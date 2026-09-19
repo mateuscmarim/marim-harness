@@ -1,5 +1,8 @@
 # CLI backend parity roadmap
 
+> Historical plan: the Codex CLI executor was removed on 2026-09-18.
+> Codex execution now uses native `openai-codex` subscription access.
+
 What marim and its CLI backends (`claude-cli`, `codex-cli`) could share that
 they don't yet. Drafted 2026-09-13 against Claude Code 2.1.270 and
 codex-cli 0.154.0. Like `ROADMAP.md`, this is direction, not a queue: phases

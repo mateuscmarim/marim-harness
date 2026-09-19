@@ -61,7 +61,7 @@ non-positive values and fall back to the default (exceptions are noted).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, `codex-cli`, or `openai-codex`. |
+| `MARIM_PROVIDER` | `openrouter` | Default provider: `openrouter`, `local`, `google`, `zen`, `zen-go`, `claude-cli`, or `openai-codex`. |
 | `MARIM_MODEL` | per provider, see below | Model id on the default provider. Sent to the provider verbatim. |
 | `MARIM_CODEX_SUBSCRIPTION_MODEL` | unset | Explicit native Codex subscription model and catalog fallback. Takes precedence over `MARIM_MODEL` for `openai-codex`; the latter is used only when `openai-codex` is the default provider. Other providers' defaults are unchanged. |
 | `MARIM_BASE_URL` | `http://localhost:11434/v1` | Base URL for the `local` provider (any OpenAI-compatible server). |
@@ -74,9 +74,6 @@ non-positive values and fall back to the default (exceptions are noted).
 | `MARIM_CLAUDE_CLI_MODEL` | unset (CLI's own default) | Claude Code model for `backend: claude-cli` **sub-agent** spawns (alias like `sonnet` or a full id). |
 | `MARIM_CLAUDE_CLI_TIMEOUT` | `600` | Seconds of silence (no stream object) allowed inside one open claude-cli turn, excluding time an approval prompt is waiting in the panel; on expiry marim interrupts, waits 2 s, then kills the process. |
 | `MARIM_CLAUDE_CLI_IDLE_TIMEOUT` | `600` | Seconds a main-loop `claude` process may sit with no turn open before marim closes it; the next turn resumes the same Claude session by id. `0` disables reaping. Spawns and aux clones never idle (their process closes at run end). |
-| `MARIM_CODEX_CLI_BIN` | `codex` (resolved on PATH) | Path to the `codex` binary when it is not on PATH (used by the `codex-cli` provider and `backend: codex-cli` sub-agents). |
-| `MARIM_CODEX_CLI_TIMEOUT` | `600` | Seconds a Codex turn may sit idle (no notification) before marim interrupts it. Default `600`. |
-| `MARIM_CODEX_CLI_MODEL` | unset (CLI's own default) | Default model for `backend: codex-cli` sub-agents (a Codex model id such as `gpt-5.4-mini`). The spec's `model:` and a spawn's `model=` override it. |
 
 An unknown `MARIM_PROVIDER` value falls back to `openrouter` with a warning.
 Every provider whose credentials are present is auto-detected and merged into
@@ -87,8 +84,7 @@ id like `local:qwen2.5-coder` addresses any active provider.
 `MARIM_MODEL` defaults per provider: `anthropic/claude-sonnet-4-6`
 (openrouter), `qwen2.5-coder` (local), `gemini-2.5-flash` (google),
 `mimo-v2.5-free` (zen), `glm-5.2` (zen-go), and *unset* for `claude-cli`
-(the CLI uses its own configured default) and for `codex-cli` (the Codex
-CLI's configured default model). The value is passed to the
+(the CLI uses its own configured default). Native `openai-codex` requires an explicit model. The value is passed to the
 provider verbatim — marim does not validate or rewrite it.
 
 Requests to the `zen` and `zen-go` gateway carry a `marim-harness/<version>`
@@ -200,66 +196,10 @@ name resolved on PATH or a path; a non-positive or unparseable
 falls back to its default rather than disabling the guard (`0` for the idle
 timeout means never reap).
 
-Under the `codex-cli` provider marim delegates each turn to `codex app-server`
-(the Codex CLI's JSON-RPC front end): one app-server per marim *process* — a
-module-level singleton shared by the main-loop model and every `codex-cli`
-spawn, not one process per session (a `marim serve` daemon holding many
-sessions shares a single app-server). Codex runs its own tools inside its
-own sandbox, so marim's tools and LSP do not apply. The app-server is
-launched with config overrides that isolate it from the user's own Codex
-setup: every MCP server in the user's Codex config is disabled by name
-(`codex mcp list` enumerates them, each gets
-`-c mcp_servers.<name>.enabled=false`), the plugin system is switched off
-(`-c features.plugins=false`) and so is the built-in apps connector
-(`-c features.apps=false`, the `codex_apps` server with the `github.*`
-tools), so a marim-started thread loads neither marim's own MCP servers nor
-Codex's user-level ones, nor Codex plugins or connectors. Two residuals:
-Codex *skills* (`$CODEX_HOME/skills`, `~/.agents/skills`, `.codex/skills`)
-have no working override and still load, and a server whose name is not a
-bare TOML key (anything outside `[A-Za-z0-9_-]`) cannot be disabled this
-way — marim logs it at WARNING and it loads. The env-gated live smoke
-(`tests/test_codex_live.py`) checks the server's own `mcpServerStatus/list`
-reports no connected server (disabled servers are still listed there,
-without server info or tools). Unlike `claude-cli`, Codex *asks*
-before privileged actions and marim answers: approvals go through the same
-approval panel native tools use. The modes map as follows.
-
-| marim mode | Codex `approvalPolicy` | Codex sandbox |
-|---|---|---|
-| `auto` | `on-request` | workspace-write (the workspace root; the scratchpad is always writable) |
-| `ask` | `untrusted` (every command/edit is brokered to the approval panel; scratchpad-only edits auto-accept) | workspace-write |
-| `plan` | `never` | read-only |
-
-Requires `codex login` (marim never handles the OpenAI credentials) and
-`codex >= 0.152`. `/think` levels map to Codex reasoning effort
-(`minimal`/`low` → low, `medium`, `high`, `xhigh` when the model lists it);
-`/steer` forwards to the running turn; `/compact` also compacts the Codex
-thread. The thread id is saved with the session, so `--resume` continues the
-same Codex thread; if Codex no longer has it, a fresh thread starts from the
-saved history. Codex's own sub-agents (its collab `spawn_agent` tool) are
-first-class `spawn_agent` cards in the sub-agents screen, their approval
-requests brokered through the same panel labelled with the agent's name —
-see [Codex-side sub-agents](../guides/subagents.md#codex-side-sub-agents).
-(Up to 0.7.2 they rendered as opaque `codex_agent` tool cards; histories
-written then still expand fine, the name is just no longer produced.)
-
-Per-turn usage on a resumed thread is seeded from Codex's own
-`thread/tokenUsage/updated` notification (its cumulative `total` minus the
-newest response's `last` at the turn's first update), so the first turn
-after `--resume` reports only its own tokens rather than the whole thread's
-history. After each turn marim also polls `account/rateLimits/read` once and
-shows the subscription quota in the status bar as `quota 37% (5h) · 12% (1w)`
-(primary and secondary windows); a failed read is ignored and the field
-simply stays absent. The same notification's `last.inputTokens` and
-`modelContextWindow` feed the status bar's `ctx` field, so it shows Codex's
-own prompt size and window rather than an estimate over marim's mirror. The Settings › Providers card verifies the CLI live on
-show (a `model/list` against the app-server) and reports
-`✓ connected · N models` like a keyed provider.
-
 ### Native Codex subscription access
 
 `openai-codex` uses Pydantic AI's `OpenAICodexModel` in Marim's native agent.
-It is opt-in; the default remains OpenRouter and `codex-cli` remains available.
+It is opt-in; the default remains OpenRouter. The `codex-cli` executor has been removed.
 Authenticate on the machine running Marim, then start a **new** native session:
 
 ```bash
@@ -317,11 +257,18 @@ Token counts remain visible; monetary cost and subscription quota are unknown.
 Codex CLI sandbox behavior, live steering, quota cards, and remote child-agent
 semantics are not reproduced. Keep existing CLI sessions separate.
 
-To return to the CLI executor, start it explicitly:
+Migrating from the removed CLI executor:
 
-```bash
-MARIM_PROVIDER=codex-cli MARIM_MODEL=gpt-6-astra marim
-```
+- Replace `MARIM_PROVIDER=codex-cli` with `MARIM_PROVIDER=openai-codex` and
+  select an explicit model, such as `MARIM_MODEL=gpt-5.6-terra`.
+- Replace `backend: codex-cli` roles with `backend: native`; select the model
+  through the spawn's `model="openai-codex:gpt-5.6-terra"` argument or native tiers.
+  The old backend-specific role `model:` field does not select native models.
+- Old session transcripts and child sidecars remain readable. Start a new native
+  session; old CLI threads and interrupted CLI children cannot be resumed.
+- Retired selections fail with migration guidance, never a paid-provider fallback.
+  `MARIM_CODEX_CLI_BIN`, `MARIM_CODEX_CLI_TIMEOUT`, and `MARIM_CODEX_CLI_MODEL`
+  no longer affect execution. The installed `codex` command remains useful for login.
 
 See the [evaluation record](../guides/codex-subscription-evaluation.md) for the
 six live cases required before considering a default switch. Offline tests use
@@ -342,8 +289,7 @@ Compaction and masking trigger at `min(budget, 0.8 × window)`, where the 0.8
 safety ratio applies only when the window is *known* (discovered from the
 provider catalog / local probe, or stated via `MARIM_CONTEXT_WINDOW`). A
 negative `MARIM_CONTEXT_BUDGET` is treated as garbage and fails **closed** to
-the 100k default (only an explicit `0` uncaps). Under `claude-cli` and
-`codex-cli` the CLI's own auto-compaction governs its context; marim's
+the 100k default (only an explicit `0` uncaps). Under `claude-cli` the CLI's own auto-compaction governs its context; marim's
 threshold still gates compaction of the mirrored history, but the status
 bar's gauge shows the backend's reported context, not this threshold (see
 the provider notes above).
@@ -517,8 +463,8 @@ normal turn handling, and nested usage shares the turn's usage limits.
 Runtime configuration resolves a concrete model through Marim's model source and
 uses upstream local execution. The SDK's explicit upstream `Advisor` also offers
 native/auto routing with upstream provider resolution. See [SDK migration](../sdk/capabilities.md).
-Runtime advice is unavailable with a `claude-cli` or `codex-cli` main executor;
-either CLI works as an advisor using a separate ephemeral read-only conversation.
+Runtime advice is unavailable with a `claude-cli` main executor;
+Claude CLI works as an advisor using a separate ephemeral read-only conversation.
 
 ## Thinking
 

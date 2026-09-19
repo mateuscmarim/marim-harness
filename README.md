@@ -37,13 +37,15 @@ marim --mode ask
 
 ### Codex
 
-Install Codex CLI **0.152+** and sign in with `codex login` first. The `codex`
-executable must be on your PATH; Marim uses the CLI's authentication.
+Sign in with `codex login`, then select native subscription access:
 
 ```bash
-export MARIM_PROVIDER=codex-cli
+export MARIM_PROVIDER=openai-codex
+export MARIM_MODEL=gpt-5.6-terra
 marim --mode ask
 ```
+
+Marim runs the agent loop with Pydantic AI and reuses the subscription credentials.
 
 ### API provider
 
@@ -80,9 +82,9 @@ explicitly for headless runs.
 | --- | --- | --- |
 | API providers / local models | Agent loop, tools, approvals, sessions, and configured MCP/LSP integrations | Model inference |
 | Claude Code (`claude-cli`) | Terminal UI, approval requests, and session resume | Claude's agent loop, tools, and authentication |
-| Codex (`codex-cli`) | Terminal UI, approval requests, and session resume | Codex's agent loop, tools, sandbox, and authentication |
+| Codex subscription (`openai-codex`) | Agent loop, tools, approvals, sessions, and MCP/LSP integrations | Subscription model inference and upstream OAuth |
 
-Marim's native tools and MCP/LSP configuration apply to API/local backends.
+Marim's native tools and MCP/LSP configuration apply to API/local and native Codex subscription backends.
 The CLI backends have separate integration and configuration limits; see
 [provider details](docs/reference/configuration.md#provider--model).
 

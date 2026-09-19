@@ -1,6 +1,6 @@
 """Expand a CLI provider's recorded tool activity into real history messages.
 
-Under ``claude-cli`` / ``codex-cli`` the CLI runs its own tools, so its calls
+Under ``claude-cli`` the CLI runs its own tools, so its calls
 never enter the model loop: the streamed ``ModelResponse`` is text-only and
 the activity rides in ``provider_details["cli_activity"]`` (an
 ``ActivityLedger``, see ``config.external_cli``). At the controller's persist

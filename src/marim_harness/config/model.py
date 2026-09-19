@@ -17,6 +17,7 @@ from ..workspace.catalog import (
     fetch_openrouter_models,
     fetch_zen_models,
 )
+from .retired import reject_codex_cli
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,6 @@ _DEFAULT_LOCAL_MODEL = "qwen2.5-coder"
 _DEFAULT_GOOGLE_MODEL = "gemini-2.5-flash"
 # None ⇒ let the claude CLI use its own configured default model.
 _DEFAULT_CLAUDE_CLI_MODEL: str | None = None
-# None ⇒ let the codex CLI use its own configured default model.
-_DEFAULT_CODEX_CLI_MODEL: str | None = None
 _DEFAULT_ZEN_MODEL = "mimo-v2.5-free"
 # OpenCode Zen's OpenAI-compatible endpoint root. Fixed, not MARIM_BASE_URL —
 # that env belongs to the `local` provider and both can be active at once.
@@ -49,7 +48,7 @@ _OPENCODE_SESSION_ID = uuid.uuid4().hex
 # the OpenRouter branch (the historical default), but we warn first so a typo
 # like MARIM_PROVIDER=azure doesn't masquerade as a confusing "missing API key".
 KNOWN_PROVIDERS = frozenset(
-    {"openrouter", "local", "google", "claude-cli", "codex-cli", "openai-codex", "zen", "zen-go"}
+    {"openrouter", "local", "google", "claude-cli", "openai-codex", "zen", "zen-go"}
 )
 
 
@@ -146,9 +145,9 @@ class SubagentConfig:
 
 @dataclass
 class ModelConfig:
-    # "openrouter" | "local" | "google" | "claude-cli" | "codex-cli" | "zen" | "zen-go"
+    # "openrouter" | "local" | "google" | "claude-cli" | "openai-codex" | "zen" | "zen-go"
     provider: str
-    model: str | None  # None ⇒ claude-cli/codex-cli uses its own configured default
+    model: str | None  # None ⇒ claude-cli uses its own configured default
     base_url: str | None = None
     api_key: str | None = None
     # The GLOBAL context budget in tokens — an economic ceiling, not the
@@ -400,16 +399,6 @@ def _claude_cli_provider_config(common: dict[str, Any]) -> ModelConfig:
     )
 
 
-def _codex_cli_provider_config(common: dict[str, Any]) -> ModelConfig:
-    return ModelConfig(
-        provider="codex-cli",
-        model=os.getenv("MARIM_MODEL", _DEFAULT_CODEX_CLI_MODEL),
-        base_url=None,
-        api_key=None,  # the CLI owns auth (`codex login`)
-        **common,
-    )
-
-
 def _openrouter_provider_config(common: dict[str, Any]) -> ModelConfig:
     return ModelConfig(
         provider="openrouter",
@@ -440,7 +429,6 @@ _PROVIDER_CONFIG_BUILDERS: dict[str, Callable[[dict[str, Any]], ModelConfig]] = 
     "zen-go": _zen_go_provider_config,
     "google": _google_provider_config,
     "claude-cli": _claude_cli_provider_config,
-    "codex-cli": _codex_cli_provider_config,
     "openai-codex": _codex_subscription_config,
     "openrouter": _openrouter_provider_config,
 }
@@ -449,6 +437,7 @@ _PROVIDER_CONFIG_BUILDERS: dict[str, Callable[[dict[str, Any]], ModelConfig]] = 
 def _provider_config(provider: str, common: dict[str, Any]) -> ModelConfig:
     """Build the per-provider ModelConfig (model id, base_url, api_key) sharing
     ``common``. Unknown provider falls back to openrouter (historical default)."""
+    reject_codex_cli(provider)
     builder = _PROVIDER_CONFIG_BUILDERS.get(provider, _openrouter_provider_config)
     return builder(common)
 
@@ -459,15 +448,6 @@ def _claude_cli_available() -> bool:
     from ..claude.env import resolve_cli_binary
 
     return resolve_cli_binary() is not None
-
-
-def _codex_cli_available() -> bool:
-    """True when a ``codex`` binary resolves AND ``codex login`` has run
-    (auth.json under CODEX_HOME). Both, unlike claude-cli's binary-only
-    check: an unauthenticated app-server fails only on the first turn."""
-    from ..codex.env import codex_available
-
-    return codex_available()
 
 
 def _zen_has_creds() -> bool:
@@ -494,11 +474,10 @@ _CRED_CHECKS: dict[str, Callable[[], bool]] = {
     "zen": _zen_has_creds,
     "zen-go": _zen_has_creds,
     # Indirected through a lambda (rather than the function object itself) so
-    # tests that monkeypatch the module-level `_claude_cli_available` /
-    # `_codex_cli_available` name are honored — a bound reference captured at
+    # tests that monkeypatch the module-level `_claude_cli_available`
+    # name are honored — a bound reference captured at
     # dict-construction time would freeze the pre-patch function forever.
     "claude-cli": lambda: _claude_cli_available(),
-    "codex-cli": lambda: _codex_cli_available(),
     "openai-codex": _codex_subscription_available,
 }
 
@@ -513,6 +492,7 @@ def detect_active_providers() -> tuple[dict[str, ModelConfig], str]:
     provider (MARIM_PROVIDER). The default is always included so startup has a
     home even if its creds are absent."""
     default = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    reject_codex_cli(default)
     if default not in KNOWN_PROVIDERS:
         default = "openrouter"
     common = _common_kwargs()
@@ -529,6 +509,7 @@ def load_config() -> ModelConfig:
     the model id and credentials. Command allow/deny lists come from
     MARIM_COMMAND_DENYLIST / MARIM_COMMAND_ALLOWLIST."""
     provider = os.getenv("MARIM_PROVIDER", "openrouter").lower()
+    reject_codex_cli(provider)
     if provider not in KNOWN_PROVIDERS:
         logger.warning(
             "Unknown MARIM_PROVIDER=%r; falling back to 'openrouter' (known providers: %s).",
@@ -607,6 +588,8 @@ def _opencode_http_client():
 def build_model(cfg: ModelConfig):
     """Construct a Pydantic AI model from config. Imported lazily so tests that
     only check config parsing don't require provider packages."""
+    reject_codex_cli(cfg.provider)
+    reject_codex_cli(cfg.model)
     from pydantic_ai.models.openai import OpenAIChatModel
     from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -641,11 +624,6 @@ def build_model(cfg: ModelConfig):
 
         return ClaudeCliModel(cfg.model)
 
-    if cfg.provider == "codex-cli":
-        from .codex_cli_model import CodexCliModel
-
-        return CodexCliModel(cfg.model)
-
     from .openrouter_cost import build_openrouter_model
 
     assert cfg.model is not None  # openrouter always has a model id
@@ -670,6 +648,8 @@ class ModelSource:
 
     def build(self, model_id: str):
         """Construct a Pydantic AI model for ``model_id`` on this provider."""
+        reject_codex_cli(self.cfg.provider)
+        reject_codex_cli(model_id)
         if self.cfg.provider == "openai-codex":
             from .codex_subscription import subscription_model
 
@@ -687,7 +667,7 @@ class ModelSource:
         dead server) raises instead of degrading to ``[]`` — used by provider
         verification, which needs to tell "connected, 0 models" apart from
         "failed to connect". Dispatches through ``_LIST_MODELS_BY_PROVIDER``
-        (defined below the class, mirroring ``_METHODS`` in codex/translate.py)
+        (defined below the class)
         rather than an if/elif/return chain past ruff's PLR0911 ceiling."""
         handler = _LIST_MODELS_BY_PROVIDER.get(self.cfg.provider)
         return await handler(self, strict=strict) if handler is not None else []
@@ -714,19 +694,14 @@ class ModelSource:
 
         return await claude_catalog.list_claude_models(strict=strict)
 
-    async def _list_codex_cli(self, *, strict: bool) -> list[ModelEntry]:
-        from ..codex import catalog as codex_catalog
-
-        return await codex_catalog.list_codex_models(strict=strict)
-
     async def _list_codex_subscription(self, *, strict: bool) -> list[ModelEntry]:
         from .codex_subscription_catalog import list_subscription_models
 
         return await list_subscription_models(self.cfg.model, strict=strict)
 
 
-# Dispatch table for `ModelSource.list_models`, keyed by provider name — same
-# rationale as codex/translate.py's `_METHODS`: handlers are unbound methods,
+# Dispatch table for `ModelSource.list_models`, keyed by provider name. The
+# handlers are unbound methods,
 # called as `handler(self, strict=strict)`. An unknown provider has no entry,
 # so `list_models` falls back to [].
 _LIST_MODELS_BY_PROVIDER: dict[str, Callable[..., Awaitable[list[ModelEntry]]]] = {
@@ -736,7 +711,6 @@ _LIST_MODELS_BY_PROVIDER: dict[str, Callable[..., Awaitable[list[ModelEntry]]]] 
     "zen": ModelSource._list_zen,
     "zen-go": ModelSource._list_zen_go,
     "claude-cli": ModelSource._list_claude_cli,
-    "codex-cli": ModelSource._list_codex_cli,
     "openai-codex": ModelSource._list_codex_subscription,
 }
 
@@ -781,6 +755,7 @@ class MultiModelSource:
         return True
 
     def _route(self, qualified: str) -> tuple[ModelSource, str]:
+        reject_codex_cli(qualified)
         if qualified.startswith("openai-codex:") and "openai-codex" not in self.sources:
             # Explicit subscription selection must never become an OpenRouter
             # model slug merely because local credentials are absent.
@@ -790,7 +765,7 @@ class MultiModelSource:
 
     def label(self, model_id: str) -> str:
         provider, bare = parse_qualified(
-            model_id, set(self.sources) | {"openai-codex"}, self.default
+            model_id, set(self.sources) | {"openai-codex", "codex-cli"}, self.default
         )
         return f"{provider}:{bare}"
 

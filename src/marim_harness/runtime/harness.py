@@ -1093,10 +1093,10 @@ class Harness:
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def wire_cli_model(self, model: Model) -> None:
-        """Bind the late-bound seams an ``ExternalCliModel`` (claude-cli,
-        codex-cli) needs — live approval mode, the real workspace (or worktree)
+        """Bind an ``ExternalCliModel`` to live approval mode and the workspace
+        (or worktree)
         cwd, the TUI tool-card and sub-agents side-channels, interactive gating
-        (request_approval/ask_user — both CLIs broker their tool-permission
+        (request_approval/ask_user — external CLIs broker their tool-permission
         prompts through them), the scratchpad, the live thinking level and the
         persisted provider-side conversation reference. A no-op for every other
         provider's model. Public because ``HarnessBuilder`` binds it before
@@ -1356,8 +1356,7 @@ class Harness:
         # for both phases, or a live reader/worker could write after claim release.
         try:
             if isinstance(self.current_model, ExternalCliModel):
-                # Codex drops only this harness's thread on its shared server;
-                # Claude closes its owned subprocess. Other providers are inert.
+                # Close the owned CLI process. Native providers are inert here.
                 await drain_task(asyncio.create_task(self.current_model.aclose()))
         finally:
             await self.cli_job_persistence.flush()
@@ -1384,9 +1383,8 @@ class Harness:
 
     def steer(self, text: str, attachments: list[tuple[bytes, str]] | None = None) -> None:
         """Delegate to ``turn_controller.steer`` — unless an external-CLI
-        model owns the live turn and took the steer itself (codex-cli's
-        ``turn/steer``): the harness's buffer would otherwise replay the text
-        as a second user turn after Codex already acted on it."""
+        model owns the live turn and took the steer itself: buffering would
+        otherwise replay text the external executor already acted on."""
         model = self.current_model
         if isinstance(model, ExternalCliModel) and model.steer(text, attachments):
             return

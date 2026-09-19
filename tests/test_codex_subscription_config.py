@@ -112,11 +112,9 @@ def test_missing_model(wire, model):
 
 
 def test_existing_providers(wire):
-    from marim_harness.config.codex_cli_model import CodexCliModel
 
     assert load_config().provider == "openrouter"
     assert load_config().model == "anthropic/claude-sonnet-4-6"
-    assert isinstance(build_model(ModelConfig(provider="codex-cli", model=MODEL)), CodexCliModel)
 
 
 @pytest.mark.anyio
@@ -287,7 +285,8 @@ def test_opt_in_only(wire):
     from marim_harness.config.model import KNOWN_PROVIDERS
 
     assert load_config().provider == "openrouter"
-    assert {"openai-codex", "codex-cli"} <= KNOWN_PROVIDERS
+    assert "openai-codex" in KNOWN_PROVIDERS
+    assert "codex-cli" not in KNOWN_PROVIDERS
 
 
 def test_dependency_contract():

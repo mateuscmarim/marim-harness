@@ -174,25 +174,6 @@ def test_claude_child_lifecycle_uses_child_stream_and_history():
 
 
 @pytest.mark.anyio
-async def test_codex_child_lifecycle_stream_and_history_share_identity():
-    from marim_harness.codex.collab import ChildSinks, ChildStreams, Routed
-    from marim_harness.codex.translate import Notice
-
-    received = []
-
-    async def on_event(sid, event, usage):
-        received.append((sid, event))
-
-    streams = ChildStreams(ChildSinks(on_event=on_event))
-    await streams.deliver(Routed("child", Notice("warning", id="same-id")))
-    [(sid, notice)] = received
-    assert sid == "child"
-    assert isinstance(notice, BackendNotice)
-    [message] = streams.transcripts["child"]
-    assert notice_from_part(message.parts[0])["id"] == notice.id == "same-id"
-
-
-@pytest.mark.anyio
 async def test_backend_observation_preserves_parked_approval_identity(tmp_path):
     from marim_harness.config.lifecycle import BackendObservation
     from tests.test_server_host import _text_only_model
@@ -213,56 +194,28 @@ async def test_backend_observation_preserves_parked_approval_identity(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_child_notice_callback_failure_retains_history_without_payload_log(caplog):
-    from marim_harness.codex.collab import ChildSinks, ChildStreams, Routed
-    from marim_harness.codex.translate import Notice, TextDelta
-
-    async def fail(sid, event, usage):
-        if isinstance(event, BackendNotice):
-            raise ValueError("private error")
-
-    streams = ChildStreams(ChildSinks(on_event=fail))
-    await streams.deliver(Routed("child", Notice("private notice", id="private-id")))
-    await streams.deliver(Routed("child", TextDelta("message", "still working")))
-    [message] = streams.transcripts["child"]
-    assert notice_from_part(message.parts[0])["id"] == "private-id"
-    assert message.parts[1].content == "still working"
-    assert "codex-cli" in caplog.text
-    assert "private" not in caplog.text
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("backend", ["claude"])
 async def test_fake_backend_through_host_persists_same_notice_identity(
     tmp_path, monkeypatch, backend
 ):
     from tests.test_claude_cli_model import _model as claude_model
-    from tests.test_codex_cli_model import _model as codex_model
 
-    if backend == "claude":
-        steps = [
-            {"text": "before"},
-            {"raw": {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 17}},
-            {"raw": {"type": "system", "subtype": "vcs_state_changed", "kind": "commit"}},
-            {
-                "raw": {
-                    "type": "system",
-                    "subtype": "compact_boundary",
-                    "uuid": "host-compact",
-                    "session_id": "s",
-                    "compact_metadata": {"post_tokens": 100},
-                }
-            },
-            {"text": "after"},
-        ]
-        model = claude_model(tmp_path, monkeypatch, {"turns": [steps]})
-    else:
-        steps = [
-            {"notify": "item/agentMessage/delta", "params": {"itemId": "m", "delta": "before"}},
-            {"notify": "model/rerouted", "params": {"fromModel": "old", "toModel": "new"}},
-            {"notify": "item/agentMessage/delta", "params": {"itemId": "m", "delta": "after"}},
-        ]
-        model = codex_model(tmp_path, {"turns": [steps]})
+    steps = [
+        {"text": "before"},
+        {"raw": {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 17}},
+        {"raw": {"type": "system", "subtype": "vcs_state_changed", "kind": "commit"}},
+        {
+            "raw": {
+                "type": "system",
+                "subtype": "compact_boundary",
+                "uuid": "host-compact",
+                "session_id": "s",
+                "compact_metadata": {"post_tokens": 100},
+            }
+        },
+        {"text": "after"},
+    ]
+    model = claude_model(tmp_path, monkeypatch, {"turns": [steps]})
     harness = _harness(tmp_path, model=model)
     host = SessionHost(harness, EventBus())
     events = _spy(host.bus)
@@ -278,20 +231,17 @@ async def test_fake_backend_through_host_persists_same_notice_identity(
         messages = harness.session.store.load()[0]
         persisted = [notice_from_part(p) for m in messages for p in m.parts if notice_from_part(p)]
         assert persisted == [notice.data]
-        if backend == "claude":
-            snapshots = [e for e in events if e.type == "session.backend_state"]
-            assert any(
-                e.data["telemetry"].get("vcs_revision") == 1 and e.seq < terminal.seq
-                for e in snapshots
-            )
-            assert any(
-                e.data["inventory"].get("tools") == ["Read", "Write", "Edit", "Bash"]
-                for e in snapshots
-            )
-            assert any(
-                e.data["telemetry"].get("thinking_tokens") == 17 and e.seq < terminal.seq
-                for e in snapshots
-            )
+        snapshots = [e for e in events if e.type == "session.backend_state"]
+        assert any(
+            e.data["telemetry"].get("vcs_revision") == 1 and e.seq < terminal.seq for e in snapshots
+        )
+        assert any(
+            e.data["inventory"].get("tools") == ["Read", "Write", "Edit", "Bash"] for e in snapshots
+        )
+        assert any(
+            e.data["telemetry"].get("thinking_tokens") == 17 and e.seq < terminal.seq
+            for e in snapshots
+        )
     finally:
         await host.aclose()
 
@@ -450,66 +400,44 @@ async def test_adopted_claude_process_delivers_notices_to_new_adapter(tmp_path, 
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["claude", "codex"])
+@pytest.mark.parametrize("backend", ["claude"])
 async def test_malformed_backend_notice_does_not_block_valid_notice_or_completion(
     tmp_path, monkeypatch, backend
 ):
     from tests.test_claude_cli_model import _model as claude_model
-    from tests.test_codex_cli_model import _model as codex_model
 
-    if backend == "claude":
-        model = claude_model(
-            tmp_path,
-            monkeypatch,
-            {
-                "turns": [
-                    [
-                        {
-                            "raw": {
-                                "type": "system",
-                                "subtype": "notification",
-                                "text": {"invalid": True},
-                            }
-                        },
-                        {
-                            "raw": {
-                                "type": "system",
-                                "subtype": "compact_boundary",
-                                "compact_metadata": [],
-                            }
-                        },
-                        {
-                            "raw": {
-                                "type": "system",
-                                "subtype": "notification",
-                                "text": "valid notice",
-                            }
-                        },
-                        {"text": "completed despite malformed notice"},
-                    ]
+    model = claude_model(
+        tmp_path,
+        monkeypatch,
+        {
+            "turns": [
+                [
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "notification",
+                            "text": {"invalid": True},
+                        }
+                    },
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "compact_boundary",
+                            "compact_metadata": [],
+                        }
+                    },
+                    {
+                        "raw": {
+                            "type": "system",
+                            "subtype": "notification",
+                            "text": "valid notice",
+                        }
+                    },
+                    {"text": "completed despite malformed notice"},
                 ]
-            },
-        )
-    else:
-        model = codex_model(
-            tmp_path,
-            {
-                "turns": [
-                    [
-                        {"notify": "model/rerouted", "params": {"fromModel": [], "toModel": "new"}},
-                        {"notify": "warning", "params": {"message": {"invalid": True}}},
-                        {"notify": "warning", "params": {"message": "valid notice"}},
-                        {
-                            "notify": "item/agentMessage/delta",
-                            "params": {
-                                "itemId": "m",
-                                "delta": "completed despite malformed notice",
-                            },
-                        },
-                    ]
-                ]
-            },
-        )
+            ]
+        },
+    )
     host = SessionHost(_harness(tmp_path, model=model), EventBus())
     events = _spy(host.bus)
     try:

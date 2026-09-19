@@ -317,7 +317,7 @@ async def test_model_overrides_share_request_pool(tmp_path):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["claude-cli", "codex-cli"])
+@pytest.mark.parametrize("backend", ["claude-cli"])
 @pytest.mark.parametrize("cancel_cli", [False, True])
 async def test_native_and_cli_spawns_share_pool(tmp_path, monkeypatch, backend, cancel_cli):
     entered = asyncio.Event()
@@ -356,7 +356,6 @@ async def test_native_and_cli_spawns_share_pool(tmp_path, monkeypatch, backend, 
     )
     runner = harness.subagents
     monkeypatch.setattr(runner._cli, "run_cli", cli)
-    monkeypatch.setattr(runner._codex, "run_codex", cli)
     tasks = [asyncio.create_task(runner.run("cli", "first", stream_id="first"))]
     try:
         await asyncio.wait_for(entered.wait(), timeout=3)

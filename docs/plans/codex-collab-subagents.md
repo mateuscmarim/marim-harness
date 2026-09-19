@@ -1,5 +1,8 @@
 # Codex collab sub-agents as first-class cards
 
+> Historical plan: the Codex CLI executor was removed on 2026-09-18.
+> Codex execution now uses native `openai-codex` subscription access.
+
 Spec for the next PR on the `codex-cli` provider. Drafted 2026-09-13 against
 codex-cli 0.154.0 (app-server protocol v2, schema regenerated locally with
 `codex app-server generate-json-schema`) and marim master `b2f32beb`. It is

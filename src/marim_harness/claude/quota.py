@@ -7,7 +7,7 @@ windows under ``rate_limits`` — ``five_hour`` and ``seven_day``, each with
 plan; ``rate_limits_available`` is False on an API-key login, where there
 is nothing to show). marim asks once per turn after the ``result``
 (``skip_behaviors`` so the CLI does not react to the reading itself) and
-renders it exactly like the codex-cli hint: ``quota 11% (5h) · 59% (1w)``.
+renders the shared hint: ``quota 11% (5h) · 59% (1w)``.
 Pure parse helpers; the request itself is on ``ClaudeProcess``.
 """
 
