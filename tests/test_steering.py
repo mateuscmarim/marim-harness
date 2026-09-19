@@ -314,6 +314,54 @@ async def test_steer_while_busy_calls_harness_steer(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_steer_during_a_real_turn_reaches_the_harness(tmp_path):
+    """Regression: Textual runs its loop with an eager task factory, under
+    which the host's first status of a turn used to read ``idle`` — so a steer
+    pressed while a turn was genuinely running was submitted as a NEW turn
+    instead of reaching ``harness.steer``. Gate a real turn and steer into it
+    (``_pretend_busy`` latches the tracker by hand and never saw this)."""
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from marim_harness.runtime.harness import Harness
+    from marim_harness.tools.provider import BuiltinToolProvider
+
+    release = asyncio.Event()
+    model_reached = asyncio.Event()
+
+    def fn(messages, info):
+        return ModelResponse(parts=[TextPart(content="done")])
+
+    async def stream_fn(messages, info):
+        model_reached.set()
+        await release.wait()
+        yield "done"
+
+    deps = _make_deps(tmp_path)
+    harness = Harness(
+        FunctionModel(fn, stream_function=stream_fn),
+        BuiltinToolProvider(),
+        deps,
+        instructions="test",
+    )
+    app = HarnessApp(harness)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        submitted = _spy_submit(app)
+        seen: list[str] = []
+        app.harness.steer = lambda text, attachments=None: seen.append(text)
+        await app.start_turn("first")
+        await asyncio.wait_for(model_reached.wait(), 10)
+        assert app.turn_busy, vars(app.turns)
+        await app.on_prompt_input_steer(PromptInput.Steer("redirect", []))
+        assert seen == ["redirect"]
+        assert [p for p, _ in submitted] == ["first"]  # steered, not re-submitted
+        release.set()
+        await _settle(pilot, lambda: not app.turn_busy, what="the gated turn to end")
+        assert [p for p, _ in submitted] == ["first"]
+
+
+@pytest.mark.anyio
 async def test_steer_while_idle_runs_normally(tmp_path):
     app = _tui_app(tmp_path)
     async with app.run_test() as pilot:

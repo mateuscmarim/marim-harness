@@ -210,6 +210,47 @@ async def test_simple_turn_publishes_lifecycle_events(tmp_path):
     await host.aclose()
 
 
+@pytest.mark.skipif(
+    not hasattr(asyncio, "eager_task_factory"), reason="eager task factories need Python 3.12+"
+)
+async def test_first_status_of_a_turn_is_running_under_an_eager_task_factory(tmp_path):
+    """Textual installs ``asyncio.eager_task_factory`` on its loop, so the turn
+    task's first slice — ``turn.started`` and the status published right after
+    it — runs inside ``create_task``, before ``_turn_task`` is assigned. That
+    status must still say ``running``: read as ``idle``, the in-process TUI
+    folded every turn as already over (a mid-turn steer became a new turn)."""
+    loop = asyncio.get_running_loop()
+    previous = loop.get_task_factory()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    try:
+        deps = _make_deps(tmp_path, mode=Mode.auto)
+        release = asyncio.Event()
+
+        def fn(messages, info):
+            return ModelResponse(parts=[TextPart(content="done")])
+
+        async def stream_fn(messages, info):
+            await release.wait()
+            yield "done"
+
+        host = SessionHost(
+            _make_harness(FunctionModel(fn, stream_function=stream_fn), deps), EventBus()
+        )
+        events = _spy(host.bus)
+        host.submit("hi")
+        started = await _drain_until(events, "turn.started")
+        after_start = events[events.index(started) :]
+        statuses = [e.data["status"] for e in after_start if e.type == "session.status"]
+        assert statuses[:1] == ["running"], statuses
+        assert host.status == "running"
+        release.set()
+        await _drain_until(events, "turn.finished")
+        await _wait_for(lambda: host.status == "idle")
+        await host.aclose()
+    finally:
+        loop.set_task_factory(previous)
+
+
 async def test_approval_parks_then_answer_approves(tmp_path):
     (tmp_path / "a.txt").write_text("foo\n")
     deps = _make_deps(tmp_path, mode=Mode.ask)
