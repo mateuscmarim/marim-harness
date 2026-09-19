@@ -48,20 +48,6 @@ def test_example_cli_agent_parses_as_claude_cli(tmp_path: Path):
     assert defn.backend == "claude-cli"
 
 
-def test_example_codex_agent_parses_as_codex_cli(tmp_path: Path):
-    import shutil
-
-    src = Path("docs/examples/agents/codex-worker.md")
-    dst = tmp_path / ".marim" / "agents" / "codex-worker.md"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
-    defn = find_agent(tmp_path, "codex-worker")
-    assert defn is not None
-    assert defn.backend == "codex-cli"
-    assert defn.model is None  # let the CLI pick; MARIM_CODEX_CLI_MODEL overrides
-    assert defn.thinking == "medium"
-
-
 # The tiered CLI workers (docs/examples/agents/<backend>-<tier>.md, for the
 # claude-cli and codex-cli backends x fast/general/deep) are the copy-to-config
 # examples the sub-agents guide points at; a frontmatter typo there would only
@@ -70,9 +56,6 @@ _TIERED_EXAMPLES = [
     ("claude-fast", "claude-cli", "haiku", None),
     ("claude-general", "claude-cli", "sonnet", None),
     ("claude-deep", "claude-cli", "opus", None),
-    ("codex-fast", "codex-cli", "gpt-5.6-luna", "low"),
-    ("codex-general", "codex-cli", "gpt-5.6-terra", "medium"),
-    ("codex-deep", "codex-cli", "gpt-5.6-sol", "high"),
 ]
 
 

@@ -36,6 +36,48 @@ def test_explicit_model(wire, monkeypatch, tmp_path):
     assert wire.requests == []
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "default,global_model,specific,expected",
+    [
+        ("zen-go", None, "gpt-6-astra", "gpt-6-astra"),
+        ("zen-go", "zen-only-model", "gpt-6-astra", "gpt-6-astra"),
+        ("zen-go", "zen-only-model", None, None),
+        ("zen-go", None, None, None),
+        ("zen-go", None, "", None),
+        ("zen-go", None, "   ", "   "),
+        ("openai-codex", "gpt-6-astra", None, "gpt-6-astra"),
+        ("openai-codex", "gpt-6-astra", "", "gpt-6-astra"),
+        ("openai-codex", "gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-luna"),
+        ("openai-codex", None, None, None),
+        ("openai-codex", None, "", None),
+        ("openai-codex", None, "   ", "   "),
+    ],
+)
+async def test_subscription_model_setting(
+    wire, monkeypatch, default, global_model, specific, expected
+):
+    monkeypatch.setenv("MARIM_PROVIDER", default)
+    if global_model is not None:
+        monkeypatch.setenv("MARIM_MODEL", global_model)
+    if specific is not None:
+        monkeypatch.setenv("MARIM_CODEX_SUBSCRIPTION_MODEL", specific)
+    sources = MultiModelSource.from_env()
+    native = sources.sources["openai-codex"]
+    assert native.cfg.model == expected
+    assert sources.default == default
+    assert load_config().provider == default
+    if default == "zen-go":
+        assert load_config().model == (global_model or "glm-5.2")
+    else:
+        assert load_config().model == expected
+    entries = await native.list_models()
+    assert [entry.id for entry in entries] == ([expected] if expected and expected.strip() else [])
+    assert sources.is_local is True  # Existing TUI free-text selection remains enabled.
+    assert wire.requests == []
+    assert wire.refreshes == []
+
+
 @pytest.mark.parametrize("credentials", ["present", "missing"])
 def test_qualified_routing(wire, monkeypatch, credentials):
     from marim_harness.config.model import ModelSource
@@ -70,11 +112,9 @@ def test_missing_model(wire, model):
 
 
 def test_existing_providers(wire):
-    from marim_harness.config.codex_cli_model import CodexCliModel
 
     assert load_config().provider == "openrouter"
     assert load_config().model == "anthropic/claude-sonnet-4-6"
-    assert isinstance(build_model(ModelConfig(provider="codex-cli", model=MODEL)), CodexCliModel)
 
 
 @pytest.mark.anyio
@@ -245,7 +285,8 @@ def test_opt_in_only(wire):
     from marim_harness.config.model import KNOWN_PROVIDERS
 
     assert load_config().provider == "openrouter"
-    assert {"openai-codex", "codex-cli"} <= KNOWN_PROVIDERS
+    assert "openai-codex" in KNOWN_PROVIDERS
+    assert "codex-cli" not in KNOWN_PROVIDERS
 
 
 def test_dependency_contract():

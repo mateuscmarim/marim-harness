@@ -181,7 +181,7 @@ class SessionInfo:
     thinking: str | None = None
     mode: str | None = None
     # The external CLI's thread/session ref ("<provider>:<id>") when the
-    # session ran on codex-cli (claude-cli keeps its own on the model today).
+    # session uses Claude, or for a historical Codex CLI session.
     cli_thread_id: str | None = None
 
 
@@ -247,8 +247,8 @@ class SessionStore:
         # by the serve daemon so a session's mode survives a restart; the TUI
         # neither sets nor reads it (its mode is a live, per-launch toggle).
         self.mode = mode
-        # The external-CLI conversation this session continues (codex-cli
-        # thread id, prefixed with the provider). Per-session, never
+        # External-CLI conversation reference, prefixed with the provider.
+        # Historical references remain readable. Per-session, never
         # inherited by `create` — a new marim session is a new thread.
         self.cli_thread_id = cli_thread_id
         # Published only after a successful load, from that SAME JSON snapshot.

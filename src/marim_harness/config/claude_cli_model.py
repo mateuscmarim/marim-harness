@@ -855,11 +855,11 @@ class ClaudeCliModel(ExternalCliModel):
         # Clones made by ephemeral_clone(); closed with their parent, because
         # nothing else holds them (Harness.aclose knows only the session's
         # current model, and the aux titler/summarizer/advisor keep theirs
-        # inside a pydantic-ai Agent). Mirrors CodexCliModel._clones.
+        # inside a pydantic-ai Agent).
         self._clones: list[ClaudeCliModel] = []
         self._broker: ClaudeApprovalBroker | None = None
         # What Claude reports about its own context and subscription, for the
-        # status bar / GET session (read the way codex-cli's quota_hint is:
+        # status bar / GET session (read through the optional property:
         # `getattr(model, ...)`). Refreshed per assistant event / per result
         # / once per turn respectively; None until the first reading.
         self.context_report: ContextReport | None = None
@@ -1084,7 +1084,7 @@ class ClaudeCliModel(ExternalCliModel):
     def _thinking(self, model_settings: ModelSettings | None) -> str | None:
         """The turn's thinking level: the per-turn ``ModelSettings`` (the main
         loop, via ``TurnController._turn_model_settings``) first, else the live
-        harness level — the same precedence as codex-cli."""
+        harness level."""
         level = (model_settings or {}).get("thinking")
         if level is None and self.thinking_getter is not None:
             level = self.thinking_getter()
@@ -1530,7 +1530,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
     # stream (session id, live context report); the DoneChunk → usage
     # settle (per-turn cost); the provider_details to persist; and the
     # once-per-turn quota poll awaited after the settle (best-effort, never
-    # raises into the stream — mirrors CodexStreamedResponse._after).
+    # raises into the stream).
     _on_note: Callable[[InitChunk | PromptUsageChunk], None] | None = None
     _on_lifecycle: Callable[[LifecycleChunk], list] | None = None
     _observation: Callable[[], BackendObservation] | None = None
@@ -1709,7 +1709,7 @@ class ClaudeCliStreamedResponse(StreamedResponse):
             ledger.note_event(ev)
             yield ev
         # After the settle: a cancellation landing in this await must not
-        # cost the turn its usage (same ordering as CodexStreamedResponse).
+        # cost the turn its usage.
         if self._after is not None:
             await self._after()
         # The status refresh can refine the context report after

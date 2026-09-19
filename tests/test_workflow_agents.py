@@ -92,7 +92,7 @@ async def _call(agents, deps, code):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("backend", ["native", "claude-cli", "codex-cli"])
+@pytest.mark.parametrize("backend", ["native", "claude-cli"])
 async def test_upstream_dispatches_once_through_runner_with_original_role(tmp_path, backend):
     calls = []
 

@@ -535,8 +535,7 @@ the token budget the context gauge is denominated against; both are
 `null` while no host is loaded (a cold session has nothing live to
 report — the listing's `tokens` is the persisted estimate).
 
-`context` and `quota` exist for the CLI backends. Under `claude-cli` or
-`codex-cli` the conversation lives inside the CLI and marim's history is a
+`context` and `quota` exist for the CLI backends. Under `claude-cli` the conversation lives inside the CLI and marim's history is a
 mirror of it, so `context` is the backend's own reading: `used` is the
 prompt size of its most recent model request (cache-inclusive input tokens,
 what the CLI's own `/context` counts) and `window` the model's context
@@ -775,7 +774,7 @@ owns. These routes are the authority an attached TUI reads its jobs panel
 and sub-agent cards from; the `jobs.changed` stream event is only the
 trigger to re-read them.
 
-Agents spawned internally by a `claude-cli` or `codex-cli` session also appear
+Agents spawned internally by a `claude-cli` session also appear
 here, with `backend_owned: true`. Their lifecycle is observed at the backend
 reader, including completions between parent turns. The CLI retains execution
 and result delivery; these rows never trigger marim's autonomous job wake.
@@ -975,7 +974,7 @@ records on a preceding tool return. Restore these as system notices at that
 position and deduplicate live/history overlap by `id` (not message text).
 See [lifecycle capabilities](cli-lifecycle-capabilities.md) for field sources.
 
-Under the `claude-cli` and `codex-cli` providers the CLI runs its own tools,
+Under the `claude-cli` provider the CLI runs its own tools,
 so those calls never enter the model loop's stream; the daemon publishes them
 as the same `tool.call` / `tool.result` events (with `status`), so a client
 renders a CLI provider's tool calls with no special case. They are persisted
@@ -987,15 +986,10 @@ a `…[truncated N chars]` marker in the persisted copy; a call the CLI never
 answered (the turn was interrupted mid-tool) is persisted with an
 `interrupted` return so the history stays resumable.
 
-Both CLIs can spawn sub-agents of their own (Claude's Agent/Task tool,
-Codex's collab `spawn_agent`). marim demuxes them out of the stream and
-publishes each as a `spawn_agent` `tool.call` on the parent's stream (its
-`id` is the child's `stream_id`) followed by the child's own traffic as the
-`subagent.*` family below — `subagent.model` (`codex-cli:<model>` /
-`claude-cli:<model>`), `subagent.event` for its text and tool calls,
-`subagent.usage`, `subagent.notice` for collab follow-ups (`wait`,
-`send_input …`) — and a `tool.result` when the agent settles. A client
-that renders marim's own nested spawns needs no special case.
+Claude's Agent/Task tool can spawn sub-agents. Marim publishes a `spawn_agent`
+`tool.call` on the parent's stream, child events through `subagent.*`, and a
+`tool.result` when the child settles. Historical Codex events remain readable;
+the Codex CLI executor no longer produces new events.
 
 Turn lifecycle:
 

@@ -217,7 +217,7 @@ def _isolated_provider_env(request, monkeypatch):
             monkeypatch.delenv(key, raising=False)
     for key in _PROVIDER_CRED_ENVS:
         monkeypatch.delenv(key, raising=False)
-    # codex-cli detection reads the developer's real ~/.codex/auth.json; point
+    # Native Codex detection reads the developer's real ~/.codex/auth.json; point
     # CODEX_HOME at nothing so provider auto-detection is deterministic. Tests
     # that want a "logged in" codex set their own CODEX_HOME.
     monkeypatch.setenv("CODEX_HOME", "/nonexistent/marim-test-codex-home")

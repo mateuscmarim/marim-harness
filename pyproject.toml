@@ -36,6 +36,8 @@ dependencies = [
     "anyio>=4.14.2",
     "genai-prices>=0.0.70",
     "httpx>=0.27",
+    # Native Codex catalog uses the upstream provider's authenticated HTTP seam.
+    "httpx2>=2.12.0",
     "markdownify>=0.13",
     "beautifulsoup4>=4.12",
     "python-dotenv>=1.2.2",

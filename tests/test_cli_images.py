@@ -15,13 +15,11 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models import ModelRequestParameters
 
-from marim_harness.codex.server import CodexServer
 from marim_harness.config.claude_cli_model import ClaudeCliModel
-from marim_harness.config.cli_input import claude_input, codex_input, prompt_content
-from marim_harness.config.codex_cli_model import CodexCliModel
+from marim_harness.config.cli_input import claude_input, prompt_content
 from marim_harness.config.external_cli import CliModelError
 from tests.conftest import _make_deps, _make_harness, _text_model
-from tests.fakes import fake_claude_bin, fake_codex_bin, read_claude_log, read_request_log
+from tests.fakes import fake_claude_bin, read_claude_log
 
 pytestmark = pytest.mark.anyio
 PARAMS = ModelRequestParameters()
@@ -29,43 +27,28 @@ FIRST = BinaryContent(data=b"\x89PNG\xfb\xff", media_type="image/png")
 SECOND = BinaryContent(data=b"\xff\xd8\xff", media_type="image/jpeg")
 
 
-@pytest.fixture(params=["claude", "codex"])
+@pytest.fixture(params=["claude"])
 def backend(request):
     return request.param
 
 
 def _model(backend, tmp_path, monkeypatch, *, resume=False, waiting=False):
-    if backend == "claude":
-        turn = [{"text": "ready"}]
-        if waiting:
-            turn.append({"await_user": True})
-        binary = fake_claude_bin(
-            tmp_path, {"known_sessions": ["OLD"] if resume else [], "turns": [turn]}
-        )
-        monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", binary)
-        model = ClaudeCliModel("sonnet")
-    else:
-        turn = [{"notify": "item/agentMessage/delta", "params": {"delta": "ready"}}]
-        if waiting:
-            turn.append({"hang": True})
-        binary = fake_codex_bin(tmp_path, {"resumable": ["OLD"] if resume else [], "turns": [turn]})
-        model = CodexCliModel("test-model", server=CodexServer(binary=binary))
+    turn = [{"text": "ready"}]
+    if waiting:
+        turn.append({"await_user": True})
+    binary = fake_claude_bin(
+        tmp_path, {"known_sessions": ["OLD"] if resume else [], "turns": [turn]}
+    )
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", binary)
+    model = ClaudeCliModel("sonnet")
     model.cwd = str(tmp_path)
     model.mode_getter = lambda: "auto"
     return model
 
 
 def _inputs(backend, tmp_path):
-    if backend == "claude":
-        return [
-            obj["message"]["content"]
-            for obj in read_claude_log(tmp_path)
-            if obj.get("type") == "user"
-        ]
     return [
-        obj["params"]["input"]
-        for obj in read_request_log(tmp_path)
-        if obj.get("method") in {"turn/start", "turn/steer"}
+        obj["message"]["content"] for obj in read_claude_log(tmp_path) if obj.get("type") == "user"
     ]
 
 
@@ -162,8 +145,6 @@ async def test_harness_steers_image_into_open_cli_turn(backend, tmp_path, monkey
         async def wait_open():
             while not _inputs(backend, tmp_path):
                 await asyncio.sleep(0.01)
-            while backend == "codex" and model.thread.current_turn_id is None:
-                await asyncio.sleep(0.01)
 
         await asyncio.wait_for(wait_open(), 5)
         harness.steer("look here", [(SECOND.data, SECOND.media_type)])
@@ -192,7 +173,7 @@ async def test_image_steer_without_live_turn_stays_buffered(backend, tmp_path, m
     assert _inputs(backend, tmp_path) == []
 
 
-@pytest.mark.parametrize("encode", [claude_input, codex_input])
+@pytest.mark.parametrize("encode", [claude_input])
 def test_non_image_binary_input_fails_instead_of_disappearing(encode):
     with pytest.raises(CliModelError, match="image attachments"):
         encode([BinaryContent(data=b"audio", media_type="audio/wav")])

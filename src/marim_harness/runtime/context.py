@@ -199,7 +199,7 @@ def actionable_error_note(exc: BaseException) -> str | None:
     from ..config.external_cli import CliModelError
 
     if isinstance(exc, CliModelError):
-        # An external CLI turn (claude-cli / codex-cli) failed or was cut off;
+        # An external CLI turn (claude-cli) failed or was cut off;
         # the CLI's message is the actionable part (usage limit, auth, crash).
         return f"{head} The external CLI reported: {_short(exc)}. Adjust and continue."
     return None

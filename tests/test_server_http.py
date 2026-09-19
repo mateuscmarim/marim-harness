@@ -961,29 +961,19 @@ def test_jobs_list_and_detail_for_live_bash_and_agent_jobs(
     assert agent_body["duration_secs"] == 7.5
 
 
-async def _observed_codex_handle(host):
-    from marim_harness.codex.server import ThreadHandle
-    from marim_harness.config.codex_cli_model import CodexCliModel
-    from marim_harness.runtime.backend_jobs import CodexJobObserver
+async def _observed_cli_mirror(host):
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
+    from marim_harness.runtime.backend_jobs import AgentJobMirror
 
-    async def decline(_method, _params):
-        return {"decision": "denied"}
-
-    model = CodexCliModel(None)
+    model = ClaudeCliModel(None)
     host.harness.wire_cli_model(model)
     assert model.job_registry is host.harness.deps.jobs
-    return ThreadHandle(
-        thread_id="cli-parent",
-        events=asyncio.Queue(),
-        request_handler=decline,
-        on_observation=CodexJobObserver(model.job_registry, "cli-parent", model.on_jobs_settled),
-    )
+    return AgentJobMirror(model.job_registry, model.on_jobs_settled)
 
 
-async def _feed_codex_observations(handle, notifications):
-    for method, params in notifications:
-        handle.observe(method, params)
-    # Let scheduled wake callbacks run before crossing back to HTTP.
+async def _feed_cli_observations(mirror, operations):
+    for method, args in operations:
+        getattr(mirror, method)(*args)
     await asyncio.sleep(0)
 
 
@@ -998,7 +988,7 @@ async def _observed_job_events(host, after_seq):
 
 
 @pytest.mark.parametrize("outcome", ["done", "failed", "cancelled"])
-def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_supervisor, outcome):
+def test_cli_observations_reach_http_jobs_after_parent_turn_ends(client_with_supervisor, outcome):
     """Raw backend events update the real host, API and jobs.changed bus while idle.
 
     No transcript consumer drains the handle, and no provider call runs after
@@ -1014,22 +1004,14 @@ def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_s
     host = supervisor.peek(ws_id, sid)
     assert host is not None
     loop = loop_holder["loop"]
-    handle = asyncio.run_coroutine_threadsafe(_observed_codex_handle(host), loop).result(timeout=5)
+    handle = asyncio.run_coroutine_threadsafe(_observed_cli_mirror(host), loop).result(timeout=5)
     cursor = host.bus.last_seq
-    spawn = {
-        "type": "collabAgentToolCall",
-        "id": "cli-spawn",
-        "tool": "spawnAgent",
-        "receiverThreadIds": ["cli-child"],
-        "prompt": "Implement and verify file download support.",
-        "status": "inProgress",
-    }
+    spawn = {"prompt": "Implement and verify file download support."}
     initial = [
-        ("item/started", {"threadId": "cli-parent", "item": spawn}),
-        ("item/started", {"threadId": "cli-parent", "item": spawn}),
-        ("turn/completed", {"threadId": "cli-parent", "turn": {"status": "completed"}}),
+        ("start", ("cli-spawn", {"task": spawn["prompt"]})),
+        ("start", ("cli-spawn", {"task": spawn["prompt"]})),
     ]
-    asyncio.run_coroutine_threadsafe(_feed_codex_observations(handle, initial), loop).result(
+    asyncio.run_coroutine_threadsafe(_feed_cli_observations(handle, initial), loop).result(
         timeout=5
     )
     listed = test_client.get(f"{base}/jobs", headers=AUTH)
@@ -1044,26 +1026,11 @@ def test_codex_observations_reach_http_jobs_after_parent_turn_ends(client_with_s
     assert test_client.get(job_url, headers=AUTH).json()["status"] == "running"
 
     report = "Detailed implementation report\n" + "verified result\n" * 40
-    terminal_item = {
-        **spawn,
-        "status": "completed",
-        "agentsStates": {"cli-child": {"status": "completed" if outcome == "done" else "errored"}},
-    }
-    if outcome == "cancelled":
-        terminal_item = {
-            "type": "subAgentActivity",
-            "id": "cli-spawn",
-            "agentThreadId": "cli-child",
-            "kind": "interrupted",
-        }
-    terminal_method = "item/started" if outcome == "cancelled" else "item/completed"
-    terminal = (terminal_method, {"threadId": "cli-parent", "item": terminal_item})
     notifications = [
-        ("item/agentMessage/delta", {"threadId": "cli-child", "itemId": "report", "delta": report}),
-        terminal,
-        terminal,
+        ("finish", ("cli-spawn", report, outcome)),
+        ("finish", ("cli-spawn", report, outcome)),
     ]
-    asyncio.run_coroutine_threadsafe(_feed_codex_observations(handle, notifications), loop).result(
+    asyncio.run_coroutine_threadsafe(_feed_cli_observations(handle, notifications), loop).result(
         timeout=5
     )
     response = test_client.get(job_url, headers=AUTH)

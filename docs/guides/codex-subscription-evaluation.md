@@ -2,7 +2,9 @@
 
 Date: 2026-09-18
 Status: NOT RUN — live subscription evaluation has not been requested.
-Decision: Keep this provider opt-in and retain `codex-cli`.
+Historical decision: keep this provider opt-in and retain `codex-cli`.
+Superseded on 2026-09-18 by the user-authorized CLI executor removal. The
+following original evaluation rows remain historical, not new completion claims.
 
 Offline integration proofs establish wiring and deterministic behavior. They do
 not establish model entitlement, coding quality, real subscription consumption,

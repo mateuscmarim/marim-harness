@@ -182,40 +182,32 @@ async def test_manual_compact_also_compacts_remote_thread(tmp_path: Path, monkey
 
 
 @pytest.mark.anyio
-async def test_aclose_delegates_to_a_codex_cli_current_model(tmp_path: Path, monkeypatch):
-    """`Harness.aclose()` must not close the process-wide codex app-server
-    unconditionally — it's shared by every session in `marim serve`, and one
-    idle harness closing it would sever every other session's in-flight turn
-    (final review Important #4). It delegates to the current model's own
-    `aclose()` (which drops only that model's thread and closes the
-    singleton itself only once idle — see test_codex_cli_model.py), and only
-    when the current model actually is a CodexCliModel."""
-    from marim_harness.config.codex_cli_model import CodexCliModel
+async def test_aclose_delegates_to_a_claude_cli_current_model(tmp_path: Path, monkeypatch):
+    """Harness teardown delegates only to its own current CLI model."""
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
 
     closed: list[bool] = []
 
     async def fake_aclose(self):
         closed.append(True)
 
-    monkeypatch.setattr(CodexCliModel, "aclose", fake_aclose)
+    monkeypatch.setattr(ClaudeCliModel, "aclose", fake_aclose)
     harness = _make_harness(_text_model(), _make_deps(tmp_path))
-    harness.current_model = CodexCliModel("gpt-5.6-sol")
+    harness.current_model = ClaudeCliModel("gpt-5.6-sol")
     await harness.aclose()
     assert closed == [True]
 
 
 @pytest.mark.anyio
-async def test_aclose_does_not_touch_codex_when_current_model_is_not_codex_cli(
-    tmp_path: Path, monkeypatch
-):
-    from marim_harness.config.codex_cli_model import CodexCliModel
+async def test_aclose_does_not_touch_cli_when_current_model_is_native(tmp_path: Path, monkeypatch):
+    from marim_harness.config.claude_cli_model import ClaudeCliModel
 
     closed: list[bool] = []
 
     async def fake_aclose(self):
         closed.append(True)
 
-    monkeypatch.setattr(CodexCliModel, "aclose", fake_aclose)
+    monkeypatch.setattr(ClaudeCliModel, "aclose", fake_aclose)
     harness = _make_harness(_text_model(), _make_deps(tmp_path))  # current_model is _text_model()
     await harness.aclose()
     assert closed == []

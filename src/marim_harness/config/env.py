@@ -96,11 +96,6 @@ _PROJECT_ENV_BLOCKLIST = frozenset(
         # able to pin a ~200 MB node process open forever (0) or reap it under
         # every turn (tiny value) — machine-level, like the silence timeout.
         "MARIM_CLAUDE_CLI_IDLE_TIMEOUT",
-        # Codex CLI binary and timeout settings — same trust boundary as claude-cli
-        # (provider selection, binary pointer, timeout override). Honored only from
-        # the shell env or the trusted global config.
-        "MARIM_CODEX_CLI_BIN",
-        "MARIM_CODEX_CLI_TIMEOUT",
         # The XDG base dirs decide WHERE the "trusted" global config/data is read
         # from — and that global config IS allowed to set every key above. When
         # XDG_CONFIG_HOME is unset (the common Linux/macOS case), a project .env

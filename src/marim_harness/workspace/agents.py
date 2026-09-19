@@ -73,9 +73,7 @@ class AgentDef:
     plugin: str | None = None
     # Which runner executes this agent. "native" is the in-process Pydantic AI
     # loop; "claude-cli" spawns the Claude Code CLI (subagents/cli_spawn.py);
-    # "codex-cli" runs a thread on the shared codex app-server
-    # (subagents/codex_spawn.py). New backends slot in here without touching
-    # discovery.
+    # legacy backend strings are retained for explicit migration errors.
     backend: str = "native"
     # Backend-specific default model. For "claude-cli" this is a Claude Code model
     # name (e.g. "opus"/"sonnet" alias or a full id), passed verbatim to --model;

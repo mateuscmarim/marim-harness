@@ -10,7 +10,6 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolRetu
 from pydantic_ai.models.function import FunctionModel
 
 from marim_harness.claude.process import ClaudeProcess
-from marim_harness.codex.server import close_shared_server
 from marim_harness.runtime.builder import HarnessBuilder
 from marim_harness.session import SessionStore, TranscriptStore
 from marim_harness.subagents.cli_backend import ClaudeCliRunner
@@ -18,7 +17,7 @@ from marim_harness.workflows.catalog import WorkflowBinding
 from marim_harness.workflows.invocation import WorkflowInvocation, current_workflow
 from marim_harness.workspace.agents import AgentDef
 from tests.conftest import _make_deps
-from tests.fakes import fake_claude_bin, fake_codex_bin, read_claude_argvs, read_request_log
+from tests.fakes import fake_claude_bin, read_claude_argvs
 
 pytestmark = pytest.mark.anyio
 
@@ -344,53 +343,3 @@ async def test_claude_checkpoint_failure_preserves_cancellation_and_process_reap
     finally:
         if not running.done():
             await _cancel(running)
-
-
-async def test_codex_workflow_abort_interrupts_thread_and_checkpoints_resume_identity(
-    tmp_path, monkeypatch
-):
-    await close_shared_server()
-    binary = fake_codex_bin(
-        tmp_path,
-        {
-            "turns": [
-                [
-                    {
-                        "notify": "item/agentMessage/delta",
-                        "params": {"itemId": "m1", "delta": "partial"},
-                    },
-                    {"hang": True},
-                ]
-            ]
-        },
-    )
-    monkeypatch.setenv("MARIM_CODEX_CLI_BIN", binary)
-    codex_config = tmp_path / "codex-config"
-    codex_config.mkdir()
-    (codex_config / "auth.json").write_text("{}")
-    monkeypatch.setenv("CODEX_HOME", str(codex_config))
-    h = _harness(tmp_path, _model('await worker(task="block")'), backend="codex-cli")
-    streamed = asyncio.Event()
-
-    async def on_event(stream, event, usage):
-        if type(event).__name__ in ("PartDeltaEvent", "PartStartEvent"):
-            streamed.set()
-
-    h.deps.ui.on_subagent_event = on_event
-    running = asyncio.create_task(h.run_turn("run workflow"))
-    try:
-        await asyncio.wait_for(streamed.wait(), 3)
-        await _cancel(running)
-        log = read_request_log(tmp_path)
-        assert len([r for r in log if r["method"] == "turn/start"]) == 1
-        assert any(r["method"] == "turn/interrupt" for r in log)
-        store = h.session.store
-        _assert_paired(store.load()[0])
-        transcript = TranscriptStore(store.path, store.session_id)
-        assert transcript.read_meta("workflow::wf1")["codex_thread_id"] == "thread-1"
-        assert any("partial" in str(p) for m in transcript.read("workflow::wf1") for p in m.parts)
-    finally:
-        if not running.done():
-            await _cancel(running)
-        await h.aclose()
-        await close_shared_server()

@@ -61,6 +61,44 @@ async def test_catalog_identity(wire, tmp_path, monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_mobile_subscription_catalog(wire, tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from marim_harness.config import load_config
+    from marim_harness.workspace.catalog import ModelEntry
+
+    monkeypatch.setenv("MARIM_PROVIDER", "zen-go")
+    monkeypatch.delenv("MARIM_MODEL", raising=False)
+    monkeypatch.setenv("MARIM_CODEX_SUBSCRIPTION_MODEL", "gpt-6-astra")
+    monkeypatch.setenv("OPENCODE_API_KEY", "fake-zen-key")
+    zen_catalog = AsyncMock(return_value=[ModelEntry("glm-5.2", "GLM 5.2")])
+    monkeypatch.setattr("marim_harness.config.model.fetch_zen_models", zen_catalog)
+    app, _, _ = server(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://test"
+    ) as client:
+        assert (await client.get("/v1/models")).status_code == 401
+        zen_catalog.assert_not_awaited()
+        response = await client.get("/v1/models", headers=AUTH)
+    assert response.status_code == 200
+    assert {
+        "id": "openai-codex:gpt-6-astra",
+        "provider": "openai-codex",
+        "name": "gpt-6-astra",
+    } in response.json()["models"]
+    assert {
+        "id": "zen-go:glm-5.2",
+        "provider": "zen-go",
+        "name": "GLM 5.2",
+    } in response.json()["models"]
+    assert load_config().provider == "zen-go"
+    assert load_config().model == "glm-5.2"
+    assert MultiModelSource.from_env().default == "zen-go"
+    assert wire.requests == []
+    assert wire.refreshes == []
+
+
+@pytest.mark.anyio
 async def test_subscription_card(wire):
     app = _PaneHost()
     async with app.run_test(size=(120, 60)) as pilot:

@@ -3,7 +3,7 @@
 Marim uses Pydantic AI Harness's `ToolOutputLimits` for ordinary tool returns
 in the native main agent and native sub-agents. This covers built-in tools,
 custom tools, skill instructions and resources, and MCP results. External
-`claude-cli` and `codex-cli` agent loops manage their own tools and output.
+The `claude-cli` agent loop manages their own tools and output.
 
 ## What the model receives
 

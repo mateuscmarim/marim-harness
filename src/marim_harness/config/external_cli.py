@@ -1,18 +1,8 @@
-"""The base for models that delegate a whole turn to an external coding CLI.
+"""Base for models that delegate a whole turn to an external coding CLI.
 
-``ClaudeCliModel`` (claude-cli) and ``CodexCliModel`` (codex-cli) both make
-marim a *launcher*: the external process runs its own tool loop and marim
-receives a single text-only ``ModelResponse`` plus out-of-band activity. The
-harness binds the same late seams on either during builder construction and
-UI/model/session changes through ``Harness.wire_cli_model``,
-and ``session.ctrl.aux_model_for`` swaps either for an ``ephemeral_clone``
-before building the aux (titler/summarizer) agents. Keeping those seams on one
-base means a new external CLI never grows a second isinstance ladder.
-
-Only the seams live here. Each subclass owns its transport, its parsing and
-its ``ephemeral_clone``; ``TextFolder`` (the vendor-part-id bookkeeping the
-streamed responses share) is here too because both providers interleave prose
-with tool cards the same way.
+ClaudeCliModel owns its transport and tool loop. Harness.wire_cli_model binds
+workspace, permissions, persistence and UI seams; aux_model_for creates an
+isolated clone. TextFolder interleaves tool activity with assistant prose.
 """
 
 from __future__ import annotations
@@ -35,7 +25,7 @@ class CliModelError(Exception):
 
 
 class ExternalCliModel(Model):
-    """Seams shared by claude-cli and codex-cli. All are late-bound (None
+    """Seams for external CLI adapters. All are late-bound (None
     until ``Harness.wire_cli_model`` runs) so a model can be built off-loop
     and without a UI, exactly like ``Deps.ui``."""
 
@@ -55,17 +45,14 @@ class ExternalCliModel(Model):
         # TUI side-channels (None headless). on_activity renders the CLI's own
         # tool calls as native tool cards; on_subagent/on_subagent_model/
         # on_subagent_notice/on_subagent_usage route the CLI's sub-agents to
-        # the sub-agents screen (the last two only used by codex-cli, whose
-        # children report notices and usage out of band).
+        # the sub-agents screen, including optional notices and usage.
         self.on_activity: Callable[[list], Awaitable[None]] | None = None
         self.on_subagent: Callable[[str, object, object], Awaitable[None]] | None = None
         self.on_subagent_model: Callable[[str, str], Awaitable[None]] | None = None
         self.on_subagent_notice: Callable[[str, str], Awaitable[None]] | None = None
         self.on_subagent_usage: Callable[[str, object], Awaitable[None]] | None = None
-        # Interactive gating (Deps.ui.request_approval / ask_user). Both
-        # external CLIs broker their tool-permission requests through them:
-        # codex-cli its server-side approval requests, claude-cli the
-        # `can_use_tool` control requests of its long-lived process.
+        # Interactive gating (Deps.ui.request_approval / ask_user). Claude
+        # brokers its long-lived process can_use_tool requests through these.
         self.request_approval: Callable[[object], Awaitable[object]] | None = None
         self.ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None = None
         # The session scratchpad (auto-approved writes in ask mode).
@@ -274,7 +261,7 @@ class TextFolder:
 
     ``activity_events`` / ``fold_text`` are the provider's chunk -> events and
     chunk -> ``▸`` line translators (claude-cli passes ``cli_activity_events``
-    and ``fold_chunk_text``; codex-cli passes its own in Task 8)."""
+    and ``fold_chunk_text``)."""
 
     def __init__(
         self,

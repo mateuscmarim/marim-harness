@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from ..workspace.agents import AgentDef
 
 from ..config.model import SubagentTiers
+from ..config.retired import CODEX_CLI_REMOVED
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps, SubAgent
 from ..runtime.errors import is_context_overflow_error
@@ -57,7 +58,6 @@ from ..workspace import (
 )
 from .backend import CONTINUATION_PROMPT, SpawnRun
 from .cli_spawn import CliSpawnOrchestrator
-from .codex_spawn import CodexSpawnOrchestrator, SpawnCollaborators
 from .isolation import SpawnWorktree
 from .output_schema import resolve_output_schema
 from .persistence import SpawnTranscripts
@@ -228,18 +228,6 @@ class SubagentRunner:
             transcripts=self._transcripts,
             lifecycle=self._run_spawn_lifecycle,
             resolve_agent=self._resolve_agent,
-        )
-        # The codex-cli spawn path: one Codex thread per spawn on the shared
-        # app-server; same lifecycle-injection shape as the claude-cli path.
-        self._codex = CodexSpawnOrchestrator(
-            deps=deps,
-            collaborators=SpawnCollaborators(
-                hooks=hooks,
-                transcripts=self._transcripts,
-                lifecycle=self._run_spawn_lifecycle,
-                resolve_agent=self._resolve_agent,
-            ),
-            thinking_default=thinking_default,
         )
         # Hard depth ceiling. Spawns that would produce a sub-agent at
         # depth >= max_depth are refused. Default 3: main → sub → grandchild.
@@ -413,6 +401,12 @@ class SubagentRunner:
         if report is not None and stream_id:
             await report(stream_id, level)
 
+    def _definition_error(self, defn: AgentDef | None, type_: str) -> str | None:
+        if defn is None:
+            names = ", ".join(a.qualified_name for a in self.available_agents())
+            return f"No sub-agent type {type_!r}. Available: {names}."
+        return CODEX_CLI_REMOVED if defn.backend == "codex-cli" else None
+
     def build(
         self,
         type: str,
@@ -456,17 +450,9 @@ class SubagentRunner:
         for an unknown type or an unresolvable model, ``(None, message)``."""
         if defn is None:
             defn = self._resolve_agent(type)
-        if defn is None:
-            names = ", ".join(
-                a.qualified_name
-                for a in (
-                    *self._extra_agents,
-                    *discover_agents(
-                        self.deps.workspace.root, trust_project=self.deps.trust.project
-                    ),
-                )
-            )
-            return None, f"No sub-agent type {type!r}. Available: {names}."
+        if error := self._definition_error(defn, type):
+            return None, error
+        assert defn is not None
         instr_root = workspace_root if workspace_root is not None else self.deps.workspace.root
         read_only = not (defn.tools & GATED_TOOLS)
         model_id = _resolve_spawn_model_id(
@@ -815,6 +801,9 @@ class SubagentRunner:
         from a nested sub-agent.
         """
         iso = None
+        defn = self._resolve_agent(type)
+        if defn is not None and defn.backend == "codex-cli":
+            return self._preflight_failure(CODEX_CLI_REMOVED, background)
         # Phase timing for the spawn (harness setup vs. model time-to-first-token).
         # Only wired up under DEBUG so a normal run keeps the exact event-handler
         # path it had before (passing an on_first_event probe would otherwise force
@@ -826,16 +815,15 @@ class SubagentRunner:
             if err is not None:
                 return self._preflight_failure(err, background)
         work_root = iso.path if iso else None
-        # CLI-backed agents (claude-cli, codex-cli) run an external process
+        # Claude CLI-backed agents run an external process
         # instead of the in-process Pydantic AI loop, so they skip the native
-        # build+MCP prepare. Branch here to self._cli.execute / self._codex.execute,
-        # which each build their own meta/checkpoint and then rejoin the SAME
+        # build+MCP prepare. Branch here to self._cli.execute, which builds its
+        # own meta/checkpoint and then rejoins the SAME
         # _run_spawn_lifecycle the native tails use — the run+failure+finalize
         # wrapper is written once, not duplicated per backend.
         # Resolve the agent definition ONCE here (a filesystem discovery walk) and
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
-        defn = self._resolve_agent(type)
         depth = caller_depth + 1
         # Decide the schema enforcement path ONCE, where the backend is
         # known: object-rooted schemas on native spawns ride structured
@@ -858,21 +846,6 @@ class SubagentRunner:
                 stream_id,
                 background=background,
                 depth=depth,
-            )
-        if defn is not None and defn.backend == "codex-cli":
-            return await self._codex.execute(
-                defn,
-                task,
-                work_root,
-                iso,
-                mcp_names,
-                max_output_chars,
-                model,
-                stream_id,
-                background=background,
-                depth=depth,
-                output_schema=output_schema,
-                thinking=thinking,
             )
         prep = await self._prepare_spawn(
             type,
@@ -1470,12 +1443,10 @@ class SubagentRunner:
             # would be wasted work at best and engine-swapping at worst.
             if meta.get("backend") == "claude-cli":
                 return await self._cli.resume(stream_id, meta)
-            # A codex-cli spawn resumes by re-opening its persisted thread
-            # (thread/resume) on the shared app-server and sending the
-            # continuation prompt as a new turn — same rationale as claude-cli:
-            # Codex owns its own thread history.
+            # Never replay a removed backend's display-only transcript as a
+            # native agent history: that would silently change execution.
             if meta.get("backend") == "codex-cli":
-                return await self._codex.resume(stream_id, meta)
+                return None, CODEX_CLI_REMOVED
             messages = self._transcripts.read(stream_id)
             history = _resumable_history(messages or [])
             if history is None:

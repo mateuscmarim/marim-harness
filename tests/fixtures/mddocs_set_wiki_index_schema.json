@@ -1,0 +1,91 @@
+{
+  "type": "object",
+  "properties": {
+    "wiki_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]{8}$"
+    },
+    "expected_version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "section",
+              "page"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "document_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9]{8}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "parent_id",
+          "position",
+          "kind",
+          "label",
+          "document_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "home_document_id": {
+      "anyOf": [
+        {
+          "$ref": "#/properties/nodes/items/properties/document_id/anyOf/0"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "wiki_id",
+    "expected_version",
+    "nodes",
+    "home_document_id"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

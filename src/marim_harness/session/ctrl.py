@@ -67,7 +67,7 @@ class _HistoryState:
 def aux_model_for(model: Model, *, cwd: str) -> Model:
     """The model the aux agents (summarizer/titler) should run on.
 
-    An ``ExternalCliModel`` (claude-cli, codex-cli) carries the live provider
+    An ``ExternalCliModel`` (claude-cli) carries the live provider
     session/thread, so an aux agent sharing it would resume — and reply into —
     the user's real conversation (dropping its own instructions). Such a model
     is swapped for a stateless, read-only ``ephemeral_clone`` that never resumes
@@ -474,7 +474,7 @@ class SessionController:
         prefix, and reading its first segment as the provider (``sonnet:``)
         used to orphan the persisted thread on every same-provider switch.
         Callers without the model object (an embedder) may leave it unset,
-        and a qualified id (``codex-cli:gpt-5.4-mini``) then still names its
+        and a qualified id (``claude-cli:sonnet``) then still names its
         provider."""
         if self.store is not None:
             self.store.model = model_id

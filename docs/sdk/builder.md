@@ -27,7 +27,7 @@ HarnessBuilder(*, workspace: Path, model: Model | str)
   `build()`) or a constructed `Model` instance. See
   [Getting started](getting-started.md#models-and-api-keys).
 
-For `ClaudeCliModel` and `CodexCliModel`, `build()` binds the configured workspace,
+For `ClaudeCliModel`, `build()` binds the configured workspace,
 live permission mode, and session hooks before returning. The first turn is ready
 to run without attaching a UI or calling `wire_cli_model()` yourself.
 
