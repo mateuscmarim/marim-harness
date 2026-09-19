@@ -63,7 +63,7 @@ def _harness(tmp_path, model, *, backend="native", store=None, **config):
     )
 
 
-def _assert_paired(messages):
+def _paired(messages):
     calls = Counter(
         part.tool_call_id
         for message in messages
@@ -76,8 +76,30 @@ def _assert_paired(messages):
         for part in message.parts
         if isinstance(part, ToolReturnPart)
     )
-    assert calls == returns
-    assert calls["workflow"] == 1
+    return calls == returns and calls["workflow"] == 1
+
+
+def _assert_paired(messages):
+    assert _paired(messages), messages
+
+
+async def _assert_persisted_paired(store):
+    """Assert the abort flushed a paired, resumable history to ``store``.
+
+    ``_flush_resumable`` persists under a 0.25s deadline and *abandons* its
+    worker thread on timeout (Ctrl-C must stay snappy); the orphan still
+    lands the write, just later. Reading the file the instant the cancelled
+    turn returns therefore races that orphan on a loaded runner — it showed
+    up as an empty history on CI — so poll for the flushed state with a
+    bounded deadline rather than asserting on the first read.
+    """
+    deadline = asyncio.get_running_loop().time() + 5
+    while True:
+        messages = store.load()[0]
+        if _paired(messages) or asyncio.get_running_loop().time() >= deadline:
+            _assert_paired(messages)
+            return
+        await asyncio.sleep(0.05)
 
 
 async def _cancel(task):
@@ -141,7 +163,7 @@ async def test_native_request_cancellation_does_not_start_queued_worker(tmp_path
         assert cleaned.is_set()
         assert requests == started_requests
         assert {card[0] for card in cards} == {"workflow::wf1", "workflow::wf2"}
-        _assert_paired(h.session.store.load()[0])
+        await _assert_persisted_paired(h.session.store)
     finally:
         if not running.done():
             await _cancel(running)
@@ -237,7 +259,7 @@ async def test_repeated_interrupt_waits_for_native_cleanup_and_resume_never_repl
             await asyncio.wait_for(running, 5)
         assert cleaned.is_set()
         store = h.session.store
-        _assert_paired(store.load()[0])
+        await _assert_persisted_paired(store)
         assert completed_work.read_text() == "done\n"
         transcript = TranscriptStore(store.path, store.session_id)
         assert transcript.read_meta("workflow::wf1")["status"] == "finished"
@@ -291,7 +313,7 @@ async def test_claude_workflow_abort_terminates_process_and_saves_partial_transc
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
         store = h.session.store
-        _assert_paired(store.load()[0])
+        await _assert_persisted_paired(store)
         transcript = TranscriptStore(store.path, store.session_id)
         messages = transcript.read("workflow::wf1")
         assert any("partial" in str(part) for message in messages for part in message.parts)
