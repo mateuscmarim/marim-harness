@@ -8,6 +8,19 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`marim update` no longer reports an upgrade it did not deliver.** A uv
+  tool installed from a local wheel path keeps that path as its install
+  source, so `uv tool upgrade` exits 0 with "Nothing to upgrade" and the old
+  version stays — and the command printed "Upgraded to 0.15.0" over a binary
+  still at 0.14.0. The installed version is now read back from `uv tool list`:
+  an upgrade that stops short of the latest version is retried as a forced
+  reinstall by name from PyPI (extras preserved, the same recovery as a stale
+  source), and the success line is printed only when the tool actually
+  reached the latest version; otherwise the command says which version is
+  still installed, prints the reinstall command, and exits 1.
+
 ## [0.15.0] - 2026-09-19
 
 ### Added
