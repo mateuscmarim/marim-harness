@@ -100,12 +100,21 @@ def test_load_config_reads_subagent_request_limit(monkeypatch):
     assert load_config().subagent.request_limit == 120
 
 
-def test_subagent_request_limit_defaults_to_50(monkeypatch):
+def test_subagent_request_limit_defaults_to_200(monkeypatch):
     monkeypatch.delenv("MARIM_SUBAGENT_REQUEST_LIMIT", raising=False)
-    assert load_config().subagent.request_limit == 50
-    # A non-positive value is rejected (per _int_env) and falls back to the default.
+    assert load_config().subagent.request_limit == 200
+
+
+def test_subagent_request_limit_zero_means_unbounded(monkeypatch):
+    """``0`` (or a negative) is the explicit opt-out — it reaches the config as
+    0 rather than being rejected back to the default — while garbage still
+    falls back to the default (never silently unbounded)."""
     monkeypatch.setenv("MARIM_SUBAGENT_REQUEST_LIMIT", "0")
-    assert load_config().subagent.request_limit == 50
+    assert load_config().subagent.request_limit == 0
+    monkeypatch.setenv("MARIM_SUBAGENT_REQUEST_LIMIT", "-3")
+    assert load_config().subagent.request_limit == 0
+    monkeypatch.setenv("MARIM_SUBAGENT_REQUEST_LIMIT", "lots")
+    assert load_config().subagent.request_limit == 200
 
 
 def test_mask_observations_defaults_on(monkeypatch):

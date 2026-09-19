@@ -8,6 +8,21 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **A sub-agent that hits its request budget now wraps up instead of failing.**
+  `MARIM_SUBAGENT_REQUEST_LIMIT` is a runaway guard, but reaching it used to
+  discard the whole run: the spawner got `UsageLimitExceeded` and every finding
+  the sub-agent had collected was lost. A run that reaches the cap now has its
+  tools withheld and is asked for one final report from the work so far; that
+  report is returned prefixed with a `[note: …]` saying the budget ran out and
+  the report may be incomplete. Only a spawn that cannot produce the report
+  (keeps calling tools) still fails. The default rose from 50 to 200 — the
+  guard only has to sit above honest work, and read-only investigations
+  routinely need more than 50 requests — and `0` now means unbounded (it used
+  to be rejected and fall back to the default). `RetryPolicy.request_limit`
+  and `HarnessConfig.subagent_request_limit` follow the same rules.
+
 ## [0.15.0] - 2026-09-19
 
 ### Added

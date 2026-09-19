@@ -10,6 +10,9 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pydantic_ai.usage import UsageLimits
+
+from ..config.model import DEFAULT_SUBAGENT_REQUEST_LIMIT
 from ..session.compaction import SafeClearToolResults, safe_tool_result_clearer
 
 if TYPE_CHECKING:
@@ -54,13 +57,25 @@ class RetryPolicy:
     ``attempts`` is how many times the run is re-issued (resuming the captured
     conversation) after a gateway/timeout/rate-limit blip before the failure
     surfaces; a permanent error is never retried. ``request_limit`` caps model
-    requests per run. Backoff is exponential from ``base_delay``, capped at
-    ``max_delay``."""
+    requests per run — a runaway guard, not a task budget: a run that reaches
+    it is asked for a final report from the work so far rather than discarded
+    (see ``SpawnRunDriver.run_to_completion``); ``0`` (or negative) removes
+    the cap, leaving the context window as the only bound. Backoff is
+    exponential from ``base_delay``, capped at ``max_delay``."""
 
-    request_limit: int = 50
+    request_limit: int = DEFAULT_SUBAGENT_REQUEST_LIMIT
     attempts: int = 2
     base_delay: float = 0.5
     max_delay: float = 8.0
+
+    @property
+    def bounded(self) -> bool:
+        """Whether a request cap applies at all (``0``/negative opts out)."""
+        return self.request_limit > 0
+
+    def usage_limits(self) -> UsageLimits:
+        """The per-run pydantic-ai limits: the request cap, or none at all."""
+        return UsageLimits(request_limit=self.request_limit if self.bounded else None)
 
     async def backoff(self, attempt: int) -> None:
         """Sleep before the ``attempt``-th retry (1-based): exponential backoff,

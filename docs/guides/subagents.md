@@ -290,8 +290,9 @@ Operational knobs, briefly (full table in
   so nested foreground spawns can complete even with a limit of 1. Each CLI
   run holds one slot until it exits; its internal requests are managed by the CLI.
   `0`/negative means unbounded. SDK `subagent_concurrency=None` is also unbounded.
-- `MARIM_SUBAGENT_REQUEST_LIMIT` (default 50) — max model requests one spawn
-  may make before it is aborted; bounds a runaway sub-agent.
+- `MARIM_SUBAGENT_REQUEST_LIMIT` (default 200) — model requests one spawn may
+  make before it is asked to wrap up (see *Request budget* below); bounds a
+  runaway sub-agent. `0` removes the cap.
 - `MARIM_SUBAGENT_TRANSCRIPT_CAP` (default 2000) — the persisted sidecar
   transcript size per spawn.
 
@@ -300,7 +301,7 @@ wake), and `ctrl+x` opens the **sub-agents screen** — every spawn this
 session as a master list with a live transcript pane, where interrupted
 spawns can be resumed. See [guides/tui.md](tui.md).
 
-Two containment behaviors worth knowing:
+Three containment behaviors worth knowing:
 
 - **Failure containment.** A crashed foreground spawn is returned to the
   spawner as an error string, so one failing member of a fan-out never takes
@@ -312,3 +313,12 @@ Two containment behaviors worth knowing:
   Overflow recovery invokes the same public capability once after history repair;
   if it cannot reclaim tokens, the original overflow is reported with an actionable
   "split the task" message.
+- **Request budget.** Each native spawn may make `MARIM_SUBAGENT_REQUEST_LIMIT`
+  model requests (default 200). This is a runaway guard, not a task budget: a
+  spawn that reaches it is not discarded. Its tools are withheld and it is asked
+  for one final report from the work completed so far, which is returned to the
+  spawner prefixed with a note saying the budget ran out and the report may be
+  incomplete — so the orchestrator can narrow the task or raise the budget instead
+  of re-paying for the whole run. Only a spawn that cannot produce that report
+  (it keeps calling tools) fails with the usage-limit error. `0` disables the cap,
+  leaving the context window (and the clearing above) as the only bound.

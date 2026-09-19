@@ -75,6 +75,11 @@ def parse_qualified(
 # mis-stringified args value) is contained by queueing, not by luck. None (via
 # the explicit 0 env sentinel, or passed directly) remains "unbounded".
 DEFAULT_SUBAGENT_CONCURRENCY = 8
+# The per-run model-request cap on a sub-agent. A runaway guard (a model stuck
+# re-issuing the same tool call), NOT a task budget: a run that reaches it is
+# asked for a final report from the work so far instead of being discarded, so
+# the number only has to be higher than honest work ever needs. ``0`` opts out.
+DEFAULT_SUBAGENT_REQUEST_LIMIT = 200
 
 
 def _parse_concurrency(raw: str | None, default: int) -> int | None:
@@ -89,6 +94,21 @@ def _parse_concurrency(raw: str | None, default: int) -> int | None:
     except ValueError:
         return default
     return parsed if parsed > 0 else None
+
+
+def _parse_request_limit(raw: str | None, default: int) -> int:
+    """Resolve the sub-agent request cap from a raw env value. Unset/blank ⇒
+    the default; a parseable non-positive int (0, -1) ⇒ ``0``, the explicit
+    "unbounded" opt-out (the context window becomes the only bound);
+    unparseable garbage ⇒ the default (never silently unbounded). Pure;
+    unit-tested directly."""
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else 0
 
 
 @dataclass(frozen=True)
@@ -135,9 +155,10 @@ class SubagentConfig:
     autonomous_wake: bool = True
     wake_depth_cap: int = 8
     # Backstop on a single sub-agent run: the most model requests it may make
-    # before pydantic-ai aborts it. Bounds a runaway sub-agent (stuck calling
-    # tools and never concluding) rather than blocking the spawning turn forever.
-    request_limit: int = 50
+    # before it is asked to wrap up with a final report. Bounds a runaway
+    # sub-agent (stuck calling tools and never concluding) rather than blocking
+    # the spawning turn forever; ``0`` removes the cap.
+    request_limit: int = DEFAULT_SUBAGENT_REQUEST_LIMIT
     # The user-curated model per sub-agent tier (cheap/med/high). Empty tiers
     # inherit the main model, so an unconfigured install behaves like today.
     tiers: "SubagentTiers" = field(default_factory=SubagentTiers)
@@ -299,7 +320,9 @@ def _common_kwargs() -> dict[str, Any]:
         detach_fanout=_bool_env("MARIM_DETACH_FANOUT", True),
         autonomous_wake=_bool_env("MARIM_AUTONOMOUS_WAKE", True),
         wake_depth_cap=_int_env("MARIM_WAKE_DEPTH_CAP", 8),
-        request_limit=_int_env("MARIM_SUBAGENT_REQUEST_LIMIT", 50),
+        request_limit=_parse_request_limit(
+            os.getenv("MARIM_SUBAGENT_REQUEST_LIMIT"), DEFAULT_SUBAGENT_REQUEST_LIMIT
+        ),
         tiers=SubagentTiers(
             cheap=(os.getenv("MARIM_SUBAGENT_TIER_CHEAP") or None),
             med=(os.getenv("MARIM_SUBAGENT_TIER_MED") or None),
