@@ -8,6 +8,17 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Claude CLI tier routing.** A sub-agent model tier can now name the
+  reserved `claude-cli:<model>` execution target: an ordinary native role
+  (`explore`, `general`, a custom agent) resolving to that tier transparently
+  runs through your Claude subscription via the `claude` CLI — same
+  approvals, lifecycle, and resume behavior as an explicitly authored
+  `backend: claude-cli` spec — without naming a Claude-specific agent type.
+  An explicit `backend:` declaration always keeps its own precedence; a
+  selected Claude target never falls back to a native/API model on failure.
+
 ### Changed
 
 - **A sub-agent that hits its request budget now wraps up instead of failing.**

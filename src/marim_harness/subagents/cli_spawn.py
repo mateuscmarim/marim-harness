@@ -297,11 +297,13 @@ class CliSpawnOrchestrator:
         defn = self._resolve_agent(type_)
         if defn is None:
             return None, f"No sub-agent type {type_!r} anymore — can't resume."
-        if defn.backend != "claude-cli":
-            return None, (
-                f"Sub-agent type {type_!r} is no longer claude-cli "
-                "backed — can't resume its CLI session."
-            )
+        # The persisted sidecar `backend` (already checked by resume_spawn before
+        # calling here) is authoritative, NOT defn.backend: a tier-routed spawn's
+        # definition still declares `backend: native` (only its resolved target
+        # was Claude CLI), so requiring defn.backend == "claude-cli" here would
+        # wrongly refuse resuming it — engine-swapping to the native path
+        # underneath a CLI-owned session id even though tier config never asked
+        # for that. See AD-007 / the "resume authority" decision.
         iso = None
         branch = meta.get("isolation")
         if branch:

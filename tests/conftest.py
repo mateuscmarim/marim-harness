@@ -243,6 +243,7 @@ _TRUST_PROJECT_SUITES = frozenset(
         "test_subagent_isolation.py",
         "test_subagent_resume.py",
         "test_subagent_safety.py",
+        "test_subagent_tier_cli_routing.py",
         "test_subagent_transcript_capture.py",
     }
 )

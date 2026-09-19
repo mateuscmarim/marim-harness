@@ -492,12 +492,29 @@ async def test_resume_cli_refusals(tmp_path, monkeypatch):
     )
     job_id, msg = await harness.subagents.resume_spawn("sg-gone")
     assert job_id is None and "no-such-agent" in msg
-    # Backend changed out from under the sidecar → refuse.
+
+
+@pytest.mark.anyio
+async def test_resume_cli_spawn_survives_backend_drift(tmp_path, monkeypatch):
+    """A sidecar recorded ``backend: claude-cli`` (a tier-routed native spawn —
+    see AD-007 — or a spec later edited away from claude-cli) resumes through
+    Claude CLI on its persisted session id: the persisted meta is authoritative
+    over the resolved agent definition's CURRENT declared backend, so this must
+    NOT refuse or engine-swap to the native path underneath the CLI session."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _resume_fake_cli(tmp_path))
     d = tmp_path / ".marim" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
     (d / "flipped.md").write_text("---\ndescription: w\ntools: read_file\n---\nWork.\n")
+    store = _session_store(tmp_path)
+    harness = _make_harness(_resume_model(), _make_deps(tmp_path), store=store)
+    ts = TranscriptStore(store.path, store.session_id)
     ts.write("sg-flip", _dangling_history(), 2000, meta={**_cli_meta("sg-flip"), "type": "flipped"})
-    job_id, msg = await harness.subagents.resume_spawn("sg-flip")
-    assert job_id is None and "no longer claude-cli" in msg
+    job_id, message = await harness.subagents.resume_spawn("sg-flip")
+    assert job_id is not None, message
+    report = await harness.deps.jobs.wait(job_id)
+    assert report == "resumed-cli-ok"
+    argv = read_claude_argv(tmp_path)
+    assert "--resume" in argv and argv[argv.index("--resume") + 1] == "sess-abc"
 
 
 @pytest.mark.anyio

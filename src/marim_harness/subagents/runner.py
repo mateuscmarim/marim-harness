@@ -103,6 +103,23 @@ def _resolve_spawn_model_id(
     return tiers.model_for(name)
 
 
+def _claude_cli_target(model_id: str | None) -> tuple[bool, str | None]:
+    """Whether ``model_id`` is the reserved ``claude-cli:<model>`` execution
+    target, and the bare Claude model to run it on.
+
+    A ``native``-backed role whose resolved tier/model target is this shape
+    transparently routes through the same Claude CLI orchestrator an
+    explicit ``backend: claude-cli`` spec uses — see ``_execute_spawn``. An
+    empty suffix (``"claude-cli:"``) means the CLI's own configured/default
+    model. Pure; unit-tested directly."""
+    if model_id is None:
+        return False, None
+    head, sep, rest = model_id.partition(":")
+    if sep and head == "claude-cli":
+        return True, rest or None
+    return False, None
+
+
 class _SpawnConcurrencyLimiter(ConcurrencyLimiter):
     """Keep workflow aborts authoritative at the request admission boundary.
 
@@ -825,16 +842,36 @@ class SubagentRunner:
         # thread it through to _prepare_spawn/build so a native spawn doesn't pay the
         # walk a second time — it matters on a fan-out (2N walks → N).
         depth = caller_depth + 1
-        # Decide the schema enforcement path ONCE, where the backend is
+        # A `native`-backed role's tier/model precedence can itself resolve to
+        # the reserved `claude-cli:<model>` target (a configured tier, or an
+        # allowed explicit `model=` override) — transparently routing an
+        # ordinary role like `explore` through Claude CLI without naming a
+        # Claude-specific agent type. Resolved here, ahead of schema/dispatch,
+        # so both read the SAME effective backend; an explicitly authored
+        # `backend: claude-cli`/`codex-cli` spec is never subject to this
+        # resolution (it already picked its engine).
+        effective_backend = defn.backend if defn is not None else None
+        cli_model = model
+        if defn is not None and defn.backend == "native":
+            resolved = _resolve_spawn_model_id(
+                override_tier=tier,
+                slug=model,
+                spec_tier=defn.tier,
+                read_only=not (defn.tools & GATED_TOOLS),
+                tiers=self._tiers,
+            )
+            is_cli, cli_model = _claude_cli_target(resolved)
+            if is_cli:
+                effective_backend = "claude-cli"
+        # Decide the schema enforcement path ONCE, where the effective backend is
         # known: object-rooted schemas on native spawns ride structured
         # output (build() below sets output_type); the claude-cli backend
-        # and non-object roots get the prompt contract appended to the task
-        # instead — see subagents/output_schema.py.
-        output_schema, contract = resolve_output_schema(
-            output_schema, defn.backend if defn is not None else None
-        )
+        # (explicit or tier-routed) and non-object roots get the prompt contract
+        # appended to the task instead — see subagents/output_schema.py.
+        output_schema, contract = resolve_output_schema(output_schema, effective_backend)
         task = task + contract
-        if defn is not None and defn.backend == "claude-cli":
+        if effective_backend == "claude-cli":
+            assert defn is not None
             return await self._cli.execute(
                 defn,
                 task,
@@ -842,7 +879,7 @@ class SubagentRunner:
                 iso,
                 mcp_names,
                 max_output_chars,
-                model,
+                cli_model,
                 stream_id,
                 background=background,
                 depth=depth,
