@@ -1,5 +1,6 @@
 """Lifecycle notices use the session stream, keep their order and stay display-only."""
 
+import asyncio
 import io
 
 import pytest
@@ -292,6 +293,28 @@ async def test_attached_tui_restores_and_deduplicates_notice_through_remote_feed
         assert _texts(app, NoticeMessage) == ["· remote lifecycle", "· remote lifecycle"]
 
 
+async def _persisted_with_notice(store):
+    """The store's messages once the interrupted turn's flush has landed.
+
+    ``_flush_resumable`` persists under a 0.25s deadline and *abandons* its
+    worker thread on timeout, so Ctrl-C stays snappy; the orphan still lands
+    the write, just later. Reading the file the instant ``turn.finished``
+    arrives therefore races that orphan on a loaded runner — it showed up as
+    an empty ``markers`` list on the 3.10 leg. Poll for the flushed state with
+    a bounded deadline instead, exactly as ``_assert_persisted_paired`` in
+    tests/test_workflow_cancellation.py does for the same race.
+    """
+    deadline = asyncio.get_running_loop().time() + 5
+    while True:
+        messages = store.load()[0]
+        if (
+            any(notice_from_part(p) for m in messages for p in m.parts)
+            or asyncio.get_running_loop().time() >= deadline
+        ):
+            return messages
+        await asyncio.sleep(0.05)
+
+
 @pytest.mark.anyio
 async def test_cancel_after_backend_notice_persists_partial_notice(tmp_path, monkeypatch):
     from tests.test_claude_cli_model import _model
@@ -327,7 +350,7 @@ async def test_cancel_after_backend_notice_persists_partial_notice(tmp_path, mon
         finished = await _drain_until(events, "turn.finished")
         assert finished.data["interrupted"] is True
         assert delivered.seq < finished.seq
-        messages = harness.session.store.load()[0]
+        messages = await _persisted_with_notice(harness.session.store)
         markers = [notice_from_part(p) for m in messages for p in m.parts if notice_from_part(p)]
         assert markers == [delivered.data]
         assert any(
