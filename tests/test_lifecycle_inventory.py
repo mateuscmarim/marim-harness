@@ -192,6 +192,7 @@ async def test_vcs_observation_refreshes_same_worktree_widget_and_preserves_ask(
 
     from marim_harness.config.lifecycle import BackendObservation
     from marim_harness.interfaces.tui.widgets import AssistantMessage
+    from tests.conftest import _settle
     from tests.test_app import _app
 
     def git(*args):
@@ -230,8 +231,10 @@ async def test_vcs_observation_refreshes_same_worktree_widget_and_preserves_ask(
                 )
             ]
         )
-        await pilot.pause()
-        assert "`after`" in widget.text and "`before`" not in widget.text
+        # The observation crosses the event bus and the refresh reads git off
+        # the loop, so a pause is not a wait: settle on the rendered text.
+        await _settle(pilot, lambda: "`after`" in widget.text, what="the branch rename to render")
+        assert "`before`" not in widget.text
         assert widget.is_mounted
         assert len([w for w in app.query(AssistantMessage) if "| branch |" in w.text]) == 1
         assert app.host.pending_asks() == before_asks and not ask.future.done()
@@ -243,16 +246,18 @@ async def test_vcs_observation_refreshes_same_worktree_widget_and_preserves_ask(
         await pilot.pause()
         assert "`after`" in widget.text  # replayed observation does not re-read git
         await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 2})])
-        await pilot.pause()
-        assert "`latest`" in widget.text
+        await _settle(pilot, lambda: "`latest`" in widget.text, what="the second rename to render")
 
         def fail(*args, **kwargs):
             raise RuntimeError("PRIVATE git failure")
 
         monkeypatch.setattr("marim_harness.workspace.worktree.list_worktrees", fail)
         await app.host._on_cli_activity([BackendObservation(telemetry={"vcs_revision": 3})])
-        await pilot.pause()
-        assert "worktree view refresh failed" in caplog.text
+        await _settle(
+            pilot,
+            lambda: "worktree view refresh failed" in caplog.text,
+            what="the refresh failure log",
+        )
         assert "PRIVATE" not in caplog.text
         assert app.host.pending_asks() == before_asks and not ask.future.done()
         assert "`latest`" in widget.text
