@@ -8,12 +8,18 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
-### Removed
+## [0.15.0] - 2026-09-19
 
-- **Codex CLI executor.** Native `openai-codex` now supplies Codex subscription
-  access. Removed the app-server transport, CLI model provider, CLI child backend,
-  and their configuration/examples. Old transcripts remain readable; selecting
-  or resuming the retired backend reports migration guidance without provider fallback.
+### Added
+
+- **Native Codex subscription provider.** `MARIM_PROVIDER=openai-codex` (or an
+  `openai-codex:<model>` session) runs Marim's own agent on a Codex subscription
+  through Pydantic AI, reusing `codex login` credentials: Marim's native tools,
+  approvals, MCP, sub-agents, advisor and context management all apply, unlike
+  the launcher-style CLI backend it replaces. The model must be named explicitly
+  and there is no fallback to API billing — missing or rejected credentials fail
+  the request with login guidance. Subscription token counts are recorded while
+  the monetary cost stays unknown. See `docs/guides/codex-subscription-evaluation.md`.
 
 ### Changed
 
@@ -37,6 +43,34 @@ pre-1.0, minor versions may contain breaking changes.
   pending wait as `Waiting for <job> · <elapsed>` (actual blocked time, not
   the requested timeout) for both tool variants; the combined `job` tool's
   rows are labelled by action.
+
+### Removed
+
+- **Codex CLI executor.** Native `openai-codex` now supplies Codex subscription
+  access. Removed the app-server transport, CLI model provider, CLI child backend,
+  and their configuration/examples. Old transcripts remain readable; selecting
+  or resuming the retired backend reports migration guidance without provider fallback.
+
+### Fixed
+
+- **Nested sub-agent spawns no longer deadlock on the concurrency cap.** A
+  foreground child could wait forever when its ancestors held every
+  `MARIM_SUBAGENT_CONCURRENCY` slot (including a single parent at concurrency
+  one). The cap now bounds *model requests* through Pydantic AI's shared
+  `ConcurrencyLimiter`, releasing capacity while a tool awaits its children;
+  external CLI runs keep one slot for their whole run from the same pool. The
+  spawn-wide semaphore is gone; the workflow-abort admission check stays.
+- **`read_file` buffers a bounded amount before clipping.** Text reads streamed
+  through `TextIOWrapper` iteration, which allocates an entire physical line
+  before yielding it, so one minified line ballooned memory regardless of the
+  clip. Reads now decode fixed-size byte chunks and retain only the clipped
+  prefixes and rendered rows; pagination and the clipping footer keep their
+  meaning.
+- **An untrusted project plugin no longer shadows a global one of the same
+  name.** Discovery falls through the untrusted project record to the eligible
+  global plugin (skills, hooks, MCP and LSP contributions alike) while still
+  reporting the project plugin's status; a trusted project keeps its local
+  override.
 
 ## [0.14.0] - 2026-09-17
 
