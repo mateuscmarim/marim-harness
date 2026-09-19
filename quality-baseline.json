@@ -31,7 +31,7 @@
         "coverage_lines_pct": 94.18,
         "coverage_branches_pct": 89.9,
         "lint_errors": 0,
-        "complexity_violations": 55,
+        "complexity_violations": 54,
         "bandit_high": 0,
         "bandit_medium": 0,
         "format_drift": 0
