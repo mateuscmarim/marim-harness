@@ -184,11 +184,11 @@ class _WindowRenderer:
         self.line_open = False
 
     def consume(self, text: str) -> None:
-        while "\n" in text:
-            before, text = text.split("\n", 1)
-            self.add_text(before)
+        segments = text.split("\n")
+        for segment in segments[:-1]:
+            self.add_text(segment)
             self.finish_line()
-        self.add_text(text)
+        self.add_text(segments[-1])
 
     def result(self) -> tuple[str, bool, int, int]:
         last = self.start + len(self.rendered)
