@@ -27,12 +27,16 @@ def _dummy_model() -> FunctionModel:
     return FunctionModel(fn)
 
 
-def _write_native_agent(tmp_path: Path, name: str, *, tier: str | None = None) -> None:
+def _write_native_agent(
+    tmp_path: Path, name: str, *, tier: str | None = None, model: str | None = None
+) -> None:
     d = tmp_path / ".marim" / "agents"
     d.mkdir(parents=True, exist_ok=True)
     tier_line = f"tier: {tier}\n" if tier else ""
+    model_line = f"model: {model}\n" if model else ""
     (d / f"{name}.md").write_text(
-        f"---\ndescription: a native worker\ntools: read_file\n{tier_line}---\nYou are a worker.\n",
+        f"---\ndescription: a native worker\ntools: read_file\n{tier_line}{model_line}---\n"
+        "You are a worker.\n",
         encoding="utf-8",
     )
 
@@ -116,6 +120,24 @@ async def test_disallowed_claude_cli_override_falls_back_to_tier_default(tmp_pat
     await h.subagents.run("explore", "task", stream_id="s1", model="claude-cli:not-allowed")
     argv = read_claude_argv(tmp_path)
     assert argv[argv.index("--model") + 1] == "haiku"  # dropped override → tier default
+
+
+@pytest.mark.anyio
+async def test_empty_suffix_tier_target_ignores_native_specs_model_field(tmp_path, monkeypatch):
+    """`claude-cli:` (empty suffix) means the CLI's own configured/default
+    model — it must NOT fall back to the native spec's `model:` frontmatter
+    field, which is a claude-cli-backend-specific field the native backend
+    otherwise ignores entirely. Regression for a review finding: routing a
+    tier-routed native spawn through `run_cli`'s explicit-backend model
+    precedence chain leaked that unrelated field into the CLI's launch flags."""
+    monkeypatch.setenv("MARIM_CLAUDE_CLI_BIN", _fake_cli(tmp_path))
+    _write_native_agent(tmp_path, "picky", tier="high", model="opus")
+    tiers = SubagentTiers(high="claude-cli:")
+    deps = _make_deps(tmp_path)
+    h = _make_harness(_dummy_model(), deps, subagent_tiers=tiers)
+    await h.subagents.run("picky", "task", stream_id="s1")
+    argv = read_claude_argv(tmp_path)
+    assert "--model" not in argv  # CLI's own default, never the spec's "opus"
 
 
 @pytest.mark.anyio

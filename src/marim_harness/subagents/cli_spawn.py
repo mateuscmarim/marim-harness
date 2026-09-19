@@ -215,9 +215,12 @@ class CliSpawnOrchestrator:
         Raises CliUnavailable when no `claude` binary is found so the caller's
         contained-error path reports it. Reach is the agent's full grant — every
         tool use is gated per call by the spawn's broker instead. Model
-        precedence: per-spawn override, then the
-        agent's frontmatter model, then $MARIM_CLAUDE_CLI_MODEL, then the CLI's
-        own default."""
+        precedence: per-spawn override, then — for an explicitly authored
+        `backend: claude-cli` spec only — its frontmatter model (a tier-routed
+        `native` spec's `model:` is a DIFFERENT, ignored field; consulting it
+        here would leak an unrelated value into an empty `claude-cli:` tier
+        target that documents itself as "the CLI's own default"), then
+        $MARIM_CLAUDE_CLI_MODEL, then the CLI's own default."""
         from ..tools.names import NET_TOOLS
         from .cli_backend import (
             CLI_MODEL_ENV,
@@ -241,7 +244,8 @@ class CliSpawnOrchestrator:
         deny_net = mode is Mode.plan
         tools = effective_tools(defn, allow_gated=True, allow_net=not deny_net)
         cwd = str(work_root or self.deps.workspace.root)
-        model_name = model or defn.model or os.environ.get(CLI_MODEL_ENV)
+        spec_model = defn.model if defn.backend == "claude-cli" else None
+        model_name = model or spec_model or os.environ.get(CLI_MODEL_ENV)
         cbs = self.deps.ui
         # Every tool Claude wants to run comes back as a can_use_tool request;
         # the broker applies the live mode (auto/ask/plan) per call, so the
