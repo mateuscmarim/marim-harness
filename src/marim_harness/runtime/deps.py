@@ -195,6 +195,17 @@ class WorkspaceConfig:
     project_memory_root: Path | None = None
     # Embedder override set by HarnessBuilder, replacing skill discovery.
     skill_dirs: "tuple[Path, ...] | None" = None
+    # The ``--unsafe-full-access`` launch flag: this session may read and write
+    # anywhere on the host, not just under ``root``. Set once at construction and
+    # never mutated — unlike ``mode``, there is deliberately no way to turn it on
+    # from inside a running session (no /command, no env var, no session field),
+    # so it can only ever be true because the human typed the flag on THIS launch.
+    # It widens the file tools' path guard and stops ``decide_external``
+    # escalating an out-of-workspace write to an approval prompt; it does NOT
+    # change what any mode approves (``ask`` still asks, ``plan`` still refuses
+    # every mutation). ``bash`` is unaffected either way: a command has never
+    # been path-guarded.
+    full_access: bool = False
 
 
 @dataclass(frozen=True)

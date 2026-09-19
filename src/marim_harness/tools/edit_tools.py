@@ -5,7 +5,7 @@ import re
 from pydantic_ai import RunContext
 
 from ..runtime.deps import Deps
-from .fs_tools import scratch_roots
+from .fs_tools import write_scope
 from .impl import fs, shell
 from .lenient import Lenient, LenientList
 
@@ -73,7 +73,7 @@ async def write_file(ctx: RunContext[Deps], path: str, content: str) -> str:
         path,
         content,
         ctx.deps.reads,
-        scratch_roots(ctx),
+        write_scope(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 
@@ -93,7 +93,7 @@ async def edit_file(ctx: RunContext[Deps], path: str, edits: LenientList[Lenient
         path,
         edits,
         ctx.deps.reads,
-        scratch_roots(ctx),
+        write_scope(ctx),
     )
     return await _with_diagnostics(ctx, path, result)
 

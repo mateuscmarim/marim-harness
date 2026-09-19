@@ -56,6 +56,44 @@ class UiSeams:
 
 
 @dataclass(frozen=True)
+class Reach:
+    """How far an external CLI may reach on disk — grouped alongside
+    ``UiSeams`` so a broker's constructor reads as mode, reach, UI.
+
+    ``scratchpad`` is a getter rather than a path because the session
+    scratchpad is created on demand and moves when the session switches, while
+    ``root`` and ``full_access`` are fixed for the life of the process (see
+    ``WorkspaceConfig.full_access`` for why the flag can never change
+    mid-session)."""
+
+    root: Path | None
+    scratchpad: Callable[[], Path | None]
+    full_access: bool = False
+
+
+@dataclass(frozen=True)
+class LaunchOptions:
+    """What the human asked for on THIS launch, as one object handed from the
+    argv parser straight through ``build_harness`` to ``WorkspaceConfig``.
+
+    Grouped rather than passed as two parameters so each helper between the
+    parser and the bootstrap stays at the arity the quality gate allows, and —
+    more usefully — so a future launch-time knob has an obvious place to land
+    instead of widening every one of them."""
+
+    mode: Mode | None = None
+    # --unsafe-full-access. Deliberately not persisted anywhere: it reaches
+    # build_harness and Deps, and dies with the process.
+    full_access: bool = False
+
+
+# "the human asked for nothing in particular" — the configured default mode,
+# no full access. A module-level singleton because it is immutable and B008
+# forbids building one per call.
+DEFAULT_LAUNCH = LaunchOptions()
+
+
+@dataclass(frozen=True)
 class ExternalRequest:
     """A transport-neutral view of an external CLI request:
     would it change files / run commands / reach the
@@ -93,6 +131,8 @@ def decide_external(
     req: ExternalRequest,
     workspace_root: Path | None,
     scratchpad: Path | None,
+    *,
+    full_access: bool = False,
 ) -> Decision:
     """The one approval table both external-CLI brokers apply (spec §Shared
     policy core). ``ask`` means "prompt if a request_approval seam is bound";
@@ -108,6 +148,15 @@ def decide_external(
     ask   -> non-mutating accepted; a mutation whose paths all sit inside the
              scratchpad is accepted (mirrors ``_scratchpad_approval`` for
              native tools); everything else prompts.
+
+    ``full_access`` is the ``--unsafe-full-access`` launch flag (see
+    ``WorkspaceConfig.full_access``). It retires exactly one row of that table:
+    auto's out-of-workspace escalation. That row is the ONLY containment marim
+    has over an external CLI — marim does not own the child's tools and cannot
+    sandbox its argv — so dropping it means an unattended ``auto`` run may write
+    anywhere the user can. It deliberately changes nothing about ``ask`` (which
+    still prompts for every mutation) or ``plan`` (which still refuses them):
+    the flag widens *reach*, it does not grant *approval*.
     """
     if not req.mutating:
         # Plan mode is read-only *local* research. A prompt-injected agent could
@@ -123,11 +172,17 @@ def decide_external(
     if mode is Mode.plan:
         return Decision(accept=False, reason=PLAN_READ_ONLY)
     if mode is Mode.auto:
-        stray = [
-            p
-            for p in req.paths
-            if not within_root(p, workspace_root) and not within_root(p, scratchpad)
-        ]
+        # Under --unsafe-full-access there are no stray paths: the workspace has
+        # stopped being the boundary, so nothing is "outside" it to escalate.
+        stray = (
+            []
+            if full_access
+            else [
+                p
+                for p in req.paths
+                if not within_root(p, workspace_root) and not within_root(p, scratchpad)
+            ]
+        )
         if stray:
             return Decision(accept=False, reason=f"outside workspace: {stray[0]}", ask=True)
         return Decision(accept=True)

@@ -87,6 +87,7 @@ class HarnessBuilder:
         self._stats_dir: Path | None = None
         self._memory_root: Path | None = None
         self._skill_dirs: tuple[Path, ...] | None = None
+        self._full_access = False
         self._mode = Mode.auto
         self._hook_runner: HookRunner | None = None
         self._global_instructions = False
@@ -242,6 +243,30 @@ class HarnessBuilder:
 
     def with_mode(self, mode: Mode) -> HarnessBuilder:
         self._mode = mode
+        return self
+
+    def with_full_access(self, enabled: bool = True) -> HarnessBuilder:
+        """Let this harness read and write anywhere on the host instead of only
+        under the workspace root — the composition behind the CLI's
+        ``--unsafe-full-access`` flag.
+
+        Off by default, and it should stay off unless the embedder genuinely
+        owns the whole machine the harness runs on. With it on, the workspace
+        root stops being a boundary and becomes only a default: relative paths
+        still resolve inside it, but ``write_file``/``edit_file``/``read_file``
+        will accept any absolute path, and an external-CLI child running in
+        ``Mode.auto`` no longer escalates an out-of-workspace write to an
+        approval prompt (``runtime.permissions.decide_external``).
+
+        It grants *reach*, never *approval*: ``Mode.ask`` still prompts for
+        every mutation and ``Mode.plan`` still refuses them. Pair it with
+        ``Mode.auto`` and no approver and you have an agent that can rewrite
+        anything the user can, unattended — which is the entire point of the
+        flag, and the entire risk of it.
+
+        Ignored when ``with_deps`` supplies an explicit ``Deps``; set
+        ``deps.workspace.full_access`` on that object instead."""
+        self._full_access = enabled
         return self
 
     def with_hooks(self, runner: HookRunner) -> HarnessBuilder:
@@ -553,6 +578,17 @@ class HarnessBuilder:
                 "deps.hooks on your Deps instead"
             )
 
+        # Same silent-no-op shape as with_hooks above, and a worse one to leave
+        # quiet: an embedder who asked for full access and did not get it would
+        # see refusals it could mistake for the agent's own choice, while one
+        # who asked and silently got it on a *different* Deps would be running
+        # unsandboxed without knowing. Fail the build either way.
+        if self._full_access and self._deps_override is not None:
+            problems.append(
+                "with_full_access is ignored when with_deps supplies a Deps — set "
+                "deps.workspace.full_access on your Deps instead"
+            )
+
         grantable = builtin_names | (LSP_TOOLS if self._lsp_tools else frozenset())
         self._check_subagent_grants(grantable, problems)
 
@@ -577,6 +613,7 @@ class HarnessBuilder:
                     command_policy=self._command_policy or CommandPolicy(),
                     memory_root=self._memory_root,
                     skill_dirs=self._skill_dirs,
+                    full_access=self._full_access,
                 )
             )
             deps.hooks = self._hook_runner

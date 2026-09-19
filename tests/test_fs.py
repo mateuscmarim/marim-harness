@@ -415,7 +415,7 @@ def test_read_file_reaches_extra_read_root(tmp_path: Path):
     skill = tmp_path / "skill"
     skill.mkdir()
     (skill / "prompt.md").write_text("bundled prompt body")
-    out = fs.read_file(ws, str(skill / "prompt.md"), extra_read_roots=(skill,))
+    out = fs.read_file(ws, str(skill / "prompt.md"), scope=fs.PathScope(roots=(skill,)))
     assert "bundled prompt body" in out
 
 
@@ -430,7 +430,7 @@ def test_read_file_extra_root_does_not_widen_to_other_paths(tmp_path: Path):
     secret.mkdir()
     (secret / "key.txt").write_text("top secret")
     with pytest.raises(ModelRetry):
-        fs.read_file(ws, str(secret / "key.txt"), extra_read_roots=(skill,))
+        fs.read_file(ws, str(secret / "key.txt"), scope=fs.PathScope(roots=(skill,)))
 
 
 def test_glob_escaping_pattern_excludes_outside_files(tmp_path: Path):
@@ -816,7 +816,7 @@ class TestExtraWriteRoots:
         scratch = tmp_path / "scratch"
         ws.mkdir()
         scratch.mkdir()
-        fs.write_file(ws, str(scratch / "note.txt"), "hi", None, (scratch,))
+        fs.write_file(ws, str(scratch / "note.txt"), "hi", None, fs.PathScope(roots=(scratch,)))
         assert (scratch / "note.txt").read_text() == "hi"
 
     def test_write_file_outside_all_roots_refused(self, tmp_path):
@@ -825,7 +825,9 @@ class TestExtraWriteRoots:
         ws.mkdir()
         scratch.mkdir()
         with pytest.raises(ModelRetry):
-            fs.write_file(ws, str(tmp_path / "elsewhere.txt"), "hi", None, (scratch,))
+            fs.write_file(
+                ws, str(tmp_path / "elsewhere.txt"), "hi", None, fs.PathScope(roots=(scratch,))
+            )
 
     def test_relative_path_still_lands_in_workspace(self, tmp_path):
         """A relative path must always resolve into the workspace — an extra
@@ -834,7 +836,7 @@ class TestExtraWriteRoots:
         scratch = tmp_path / "scratch"
         ws.mkdir()
         scratch.mkdir()
-        fs.write_file(ws, "note.txt", "hi", None, (scratch,))
+        fs.write_file(ws, "note.txt", "hi", None, fs.PathScope(roots=(scratch,)))
         assert (ws / "note.txt").exists()
         assert not (scratch / "note.txt").exists()
 
@@ -846,7 +848,9 @@ class TestExtraWriteRoots:
             d.mkdir()
         (scratch / "link").symlink_to(outside)
         with pytest.raises(ModelRetry):
-            fs.write_file(ws, str(scratch / "link" / "x.txt"), "hi", None, (scratch,))
+            fs.write_file(
+                ws, str(scratch / "link" / "x.txt"), "hi", None, fs.PathScope(roots=(scratch,))
+            )
 
     def test_edit_file_reaches_extra_root(self, tmp_path):
         ws = tmp_path / "ws"
@@ -859,7 +863,7 @@ class TestExtraWriteRoots:
             str(scratch / "note.txt"),
             [fs.Edit(old_string="hello", new_string="goodbye")],
             None,
-            (scratch,),
+            fs.PathScope(roots=(scratch,)),
         )
         assert (scratch / "note.txt").read_text() == "goodbye world"
 

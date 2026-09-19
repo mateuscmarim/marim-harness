@@ -16,8 +16,19 @@ from ..history import PromptHistory, default_history_path
 
 if TYPE_CHECKING:
     from ...runtime.harness import Harness
+    from ...runtime.permissions import LaunchOptions
     from ...server.attach import RemoteTarget
     from ...session.claim import SessionClaim
+
+
+# The one line a full-access launch prints before anything else runs. It names
+# the workspace because the whole point of the flag is that the workspace has
+# stopped being the boundary, and says how it ends (this process) because there
+# is nothing else to turn it off — no /command, no setting, no session field.
+FULL_ACCESS_BANNER = (
+    "⚠ --unsafe-full-access: this run can read and write ANY file this user can, "
+    "not just files under {workspace}. It lasts until this process exits."
+)
 
 
 def _version() -> str:
@@ -85,6 +96,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="run inside a git worktree for BRANCH under <repo>/.worktrees/, "
         "creating it (from current HEAD) or reusing it",
+    )
+    p.add_argument(
+        "--unsafe-full-access",
+        action="store_true",
+        dest="full_access",
+        help="let this run read and write ANYWHERE on this machine, not just "
+        "inside the workspace. Only meaningful with --mode auto (ask still "
+        "asks, plan still refuses). Not persisted: it applies to this launch "
+        "and nothing else.",
     )
     p.add_argument(
         "--think",
@@ -292,15 +312,14 @@ def _run_claimed(
         harness.release_claim()
 
 
-def _launch_tui(harness, *, notice: str | None = None) -> int:
-    """Run the TUI on a process-local Harness. ``notice`` is a launch-time
-    line for the transcript (a stale-daemon-claim fallback, see
-    _stale_daemon_notice): anything printed to stderr before Textual starts
-    is painted over, so it has to travel into the app."""
+def _launch_tui(harness, *, notices: "tuple[str, ...]" = ()) -> int:
+    """Run the TUI on a process-local Harness. ``notices`` are launch-time
+    lines for the transcript (the full-access banner, a stale-daemon-claim
+    fallback — see _stale_daemon_notice): anything printed to stderr before
+    Textual starts is painted over, so they have to travel into the app."""
     from ..tui.app import HarnessApp
 
-    notices = [notice] if notice is not None else []
-    HarnessApp(harness, history=PromptHistory(default_history_path()), notices=notices).run()
+    HarnessApp(harness, history=PromptHistory(default_history_path()), notices=list(notices)).run()
     return 0
 
 
@@ -344,7 +363,9 @@ def _launch_target(args, workspace: Path) -> str | None:
 _Built: TypeAlias = "tuple[Harness, SessionClaim | None] | tuple[None, RemoteTarget] | None"
 
 
-def _claim_and_build(workspace: Path, *, target: str | None, mode, kind: str, err) -> _Built:
+def _claim_and_build(
+    workspace: Path, *, target: str | None, launch: "LaunchOptions", kind: str, err
+) -> _Built:
     """Claim the target session, then build the Harness onto it.
 
     Returns ``(harness, claim) | None`` — ``None`` means the refusal was
@@ -367,7 +388,7 @@ def _claim_and_build(workspace: Path, *, target: str | None, mode, kind: str, er
     try:
         harness = build_harness(
             workspace,
-            mode=mode,
+            launch=launch,
             session_id=target,
             # Never resume=True: build_harness's resume flag performs its OWN
             # unclaimed latest() lookup (bootstrap.py:133) — the exact read
@@ -392,12 +413,16 @@ def _start_headless(args, workspace: Path, stdin, out, err) -> int:
     if not prompt:
         print("no prompt provided", file=err)
         return 2
-    from ...runtime.permissions import Mode
+    from ...runtime.permissions import LaunchOptions, Mode
     from .headless import run_headless
 
-    mode = Mode(args.mode) if args.mode else Mode.auto
+    launch = LaunchOptions(
+        mode=Mode(args.mode) if args.mode else Mode.auto, full_access=args.full_access
+    )
+    if launch.full_access:
+        print(FULL_ACCESS_BANNER.format(workspace=workspace), file=err)
     target = _launch_target(args, workspace)
-    built = _claim_and_build(workspace, target=target, mode=mode, kind="headless", err=err)
+    built = _claim_and_build(workspace, target=target, launch=launch, kind="headless", err=err)
     if built is None:
         return 2
     # Only an interactive launch attaches (_refuse_or_attach): a headless
@@ -421,7 +446,7 @@ def _start_tui(args, workspace: Path, err) -> int:
     # Route logs to a file before Textual takes the screen — the stderr handler
     # installed at startup still points at the real tty and would paint WARNING+
     # records straight over the live TUI (see route_logging_to_file).
-    from ...runtime.permissions import Mode
+    from ...runtime.permissions import LaunchOptions, Mode
     from .router import route_logging_to_file
 
     route_logging_to_file()
@@ -430,19 +455,38 @@ def _start_tui(args, workspace: Path, err) -> int:
     # be silently ignored on a tty); without one, the session starts in the
     # configured default (MARIM_DEFAULT_MODE, default "ask"), resolved inside
     # build_harness.
-    mode = Mode(args.mode) if args.mode else None
+    launch = LaunchOptions(
+        mode=Mode(args.mode) if args.mode else None, full_access=args.full_access
+    )
     target = _launch_target(args, workspace)
-    built = _claim_and_build(workspace, target=target, mode=mode, kind="tui", err=err)
+    built = _claim_and_build(workspace, target=target, launch=launch, kind="tui", err=err)
     if built is None:
         return 2
     if built[0] is None:
         # The daemon owns the session: attach instead of taking it over. The
         # claim stays with the daemon, so there is nothing to adopt or release.
+        # --unsafe-full-access is NOT forwarded: the daemon built that session
+        # with its own (always contained) reach, and an attached TUI cannot
+        # widen it retroactively. Say so rather than letting the flag look
+        # applied.
+        if launch.full_access:
+            print(
+                "--unsafe-full-access ignored: this session is owned by a "
+                "marim serve daemon, which never grants it.",
+                file=err,
+            )
         return _launch_remote_tui(built[1])
     harness, claim = built
-    notice = _stale_daemon_notice(claim, target)
+    notices = tuple(
+        line
+        for line in (
+            FULL_ACCESS_BANNER.format(workspace=workspace) if launch.full_access else None,
+            _stale_daemon_notice(claim, target),
+        )
+        if line is not None
+    )
     return _run_claimed(
-        harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness, notice=notice)
+        harness, kind="tui", err=err, claim=claim, run=lambda: _launch_tui(harness, notices=notices)
     )
 
 

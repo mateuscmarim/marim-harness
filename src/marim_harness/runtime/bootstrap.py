@@ -25,7 +25,7 @@ from ..trust import resolve_project_trust
 from ..trust_surface import scan_project_surface
 from .deps import Deps, TrustState, UIHooks, WorkspaceConfig
 from .harness import Harness
-from .permissions import Mode
+from .permissions import DEFAULT_LAUNCH, LaunchOptions, Mode
 
 if TYPE_CHECKING:
     from ..stats.ledger import StatsLedger
@@ -69,7 +69,7 @@ def _suppress_upstream_banner() -> None:
 def build_harness(
     workspace: Path,
     *,
-    mode: Mode | None = None,
+    launch: LaunchOptions = DEFAULT_LAUNCH,
     resume: bool = False,
     session_id: str | None = None,
     project_memory_root: Path | None = None,
@@ -79,17 +79,27 @@ def build_harness(
     identically. When ``resume`` is set, reattaches to the latest saved session
     and replays its history.
 
-    ``mode`` is the initial approval mode. Pass it explicitly to force a mode
-    (the headless ``--mode`` flag does this); leave it ``None`` to use the
-    configured default (``MARIM_DEFAULT_MODE``, falling back to ``ask``) — the
-    interactive TUI takes this path.
+    ``launch`` carries what the human asked for on this launch. Its ``mode`` is
+    the initial approval mode: set it to force one (the headless ``--mode`` flag
+    does this); leave it ``None`` to use the configured default
+    (``MARIM_DEFAULT_MODE``, falling back to ``ask``) — the interactive TUI takes
+    this path.
 
     ``session_id`` opens exactly that session (used by the server, which picks
     sessions explicitly rather than "latest"); it replays any saved history,
     and is mutually exclusive with ``resume``.
 
     ``project_memory_root`` replaces only the project's memory directory.
-    Global memory remains in the user's configured global memory directory."""
+    Global memory remains in the user's configured global memory directory.
+
+    ``launch.full_access`` is the ``--unsafe-full-access`` flag: the session may
+    read and write anywhere on the host rather than only under ``workspace``.
+    It rides on a PARAMETER and is not a config knob on purpose — there is no
+    ``MARIM_*`` env var and nothing persists it on the session — so it can only
+    ever be true because the human typed the flag on this launch. The TUI and
+    headless front-ends pass it through; ``marim serve`` deliberately does not
+    offer it, because a daemon reachable over the network must not be able to
+    hand out the whole filesystem."""
     _suppress_upstream_banner()
     cfg = load_config()
     # Resolve project trust once, store-aware: an explicit env decision wins,
@@ -106,8 +116,7 @@ def build_harness(
         surface_empty=surface.empty,
     )
     trusted = resolution.trusted
-    if mode is None:
-        mode = Mode(cfg.default_mode)
+    mode = launch.mode or Mode(cfg.default_mode)
     configs, default_provider = detect_active_providers()
     model_source = MultiModelSource(
         {p: ModelSource(c) for p, c in configs.items()}, default_provider
@@ -130,6 +139,7 @@ def build_harness(
             tool_search=cfg.tool_search,
             tool_search_threshold=cfg.tool_search_threshold,
             project_memory_root=project_memory_root,
+            full_access=launch.full_access,
         ),
         trust=TrustState(
             project=trusted, source=resolution.source, fingerprint=surface.fingerprint

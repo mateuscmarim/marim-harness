@@ -158,7 +158,7 @@ def test_session_flag_opens_an_unowned_session_locally(tmp_path, monkeypatch):
         def release_claim(self):
             seen["released"] = True
 
-    def fake_build(workspace, *, mode, session_id, resume):
+    def fake_build(workspace, *, launch, session_id, resume):
         seen["session_id"] = session_id
         return _Harness()
 

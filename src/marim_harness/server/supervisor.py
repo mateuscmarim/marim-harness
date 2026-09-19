@@ -66,10 +66,13 @@ async def default_harness_factory(
     TUI/headless (models, MCP, LSP, hooks) via build_harness, plus the connect
     + session_start lifecycle headless performs around a run."""
     from ..runtime.bootstrap import build_harness
+    from ..runtime.permissions import LaunchOptions
 
     harness = build_harness(
         workspace,
-        mode=mode,
+        # No full_access here on purpose: a daemon reachable over the network
+        # must not be able to hand out the whole filesystem (see build_harness).
+        launch=LaunchOptions(mode=mode),
         session_id=session_id,
         project_memory_root=project_memory_root,
     )

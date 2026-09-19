@@ -356,6 +356,12 @@ environment or the global config. An invalid value falls back to `ask` with a
 warning. The headless one-shot has its own `--mode` flag and does not consult
 this variable.
 
+The file tools' workspace confinement has **no variable at all**. The only way
+to lift it is the launch flag `--unsafe-full-access`, typed on the command line
+for one run: it is not readable from any `.env`, nothing persists it on a
+session, and `marim serve` never grants it. See
+[Trust and permissions](../guides/trust.md#turning-the-guard-off---unsafe-full-access).
+
 The command lists are comma- or newline-separated regular expressions matched
 with `re.search` against the whole command string; deny takes precedence over
 allow, and an empty policy allows everything. A pattern needing a literal

@@ -14,7 +14,7 @@ import marim_harness.server.supervisor as supervisor_mod
 from marim_harness.runtime.deps import Deps, UIHooks, WorkspaceConfig
 from marim_harness.runtime.harness import Harness
 from marim_harness.runtime.instructions import _memory_index_block
-from marim_harness.runtime.permissions import Mode
+from marim_harness.runtime.permissions import LaunchOptions, Mode
 from marim_harness.server.supervisor import SessionSupervisor
 from marim_harness.server.workspaces import WorkspaceRegistry
 from marim_harness.session import SessionManager
@@ -41,7 +41,7 @@ def test_default_harness_factory_forwards_project_memory_root(monkeypatch):
     def fake_build_harness(
         workspace,
         *,
-        mode=None,
+        launch=None,
         resume=False,
         session_id=None,
         project_memory_root=None,
@@ -64,7 +64,9 @@ def test_build_harness_sets_project_memory_root(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(bootstrap, "make_titler", lambda model: None)
 
     shared = tmp_path / "chat-memory"
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask, project_memory_root=shared)
+    harness = bootstrap.build_harness(
+        tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask), project_memory_root=shared
+    )
 
     assert harness.deps.workspace.project_memory_root == shared
 

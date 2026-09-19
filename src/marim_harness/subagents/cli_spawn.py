@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 from ..claude.approvals import ClaudeApprovalBroker
 from ..hooks.dispatch import TurnHooks
 from ..runtime.deps import Deps
-from ..runtime.permissions import Mode, UiSeams
+from ..runtime.permissions import Mode, Reach, UiSeams
 from ..workspace import effective_tools
 from .backend import CONTINUATION_PROMPT, SpawnLifecycle, SpawnRun
 from .isolation import SpawnWorktree
@@ -256,8 +256,11 @@ class CliSpawnOrchestrator:
         get_scratchpad = getattr(getattr(self.deps, "services", None), "get_scratchpad", None)
         broker = ClaudeApprovalBroker(
             mode_getter=lambda: self.deps.workspace.mode,
-            workspace_root=Path(cwd),
-            scratchpad_getter=get_scratchpad or (lambda: None),
+            reach=Reach(
+                root=Path(cwd),
+                scratchpad=get_scratchpad or (lambda: None),
+                full_access=self.deps.workspace.full_access,
+            ),
             ui=UiSeams(request_approval=cbs.request_approval, ask_user=cbs.ask_user),
             label=defn.name,
         )

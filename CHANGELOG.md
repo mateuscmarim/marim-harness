@@ -8,6 +8,29 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`--unsafe-full-access`: a launch-time flag that retires the workspace path
+  guard.** With it, `read_file`/`write_file`/`edit_file` accept any absolute
+  path the user can reach, and an external-CLI child running in `auto` mode no
+  longer escalates an out-of-workspace write to an approval prompt — the row
+  that turned a sub-agent working outside the workspace into one prompt per
+  edit. It widens *reach*, not permission: `ask` still prompts for every
+  mutation and `plan` still refuses them, relative paths still resolve inside
+  the workspace (anchored at its root, so `../notes.md` is the workspace's
+  sibling and not `/notes.md`), and `bash` is unchanged because it was never
+  path-confined. The run announces itself — a stderr banner headless, a
+  transcript notice plus a red `full-access` status chip in the TUI — and the
+  model is told in its system prompt that the guard is off and that the
+  workspace is still where its work belongs. Deliberately typed per launch and
+  nowhere else: no `MARIM_*` variable, nothing persisted on the session, no
+  `/command`, and `marim serve` never grants it (attaching a TUI to a
+  daemon-owned session says the flag was ignored rather than pretending it
+  applied). Embedders compose the same thing with
+  `HarnessBuilder.with_full_access()`, which is a `BuilderError` alongside
+  `with_deps` rather than a silent no-op. See
+  [Trust and permissions](docs/guides/trust.md#turning-the-guard-off---unsafe-full-access).
+
 ## [0.16.0] - 2026-09-19
 
 ### Added

@@ -127,8 +127,8 @@ def test_run_default_headless_uses_auto_mode(monkeypatch, tmp_path: Path):
 
     captured = {}
 
-    def fake_build(workspace, *, mode, resume, session_id=None):
-        captured.update(mode=mode, workspace=workspace, resume=resume, session_id=session_id)
+    def fake_build(workspace, *, launch, resume, session_id=None):
+        captured.update(mode=launch.mode, workspace=workspace, resume=resume, session_id=session_id)
         return _cli_harness(tmp_path, "auto-ran")
 
     monkeypatch.setattr(bootstrap, "build_harness", fake_build)
@@ -146,8 +146,8 @@ def test_run_default_respects_mode_override(monkeypatch, tmp_path: Path):
 
     captured = {}
 
-    def fake_build(workspace, *, mode, resume, session_id=None):
-        captured["mode"] = mode
+    def fake_build(workspace, *, launch, resume, session_id=None):
+        captured["mode"] = launch.mode
         return _cli_harness(tmp_path)
 
     monkeypatch.setattr(bootstrap, "build_harness", fake_build)
@@ -163,7 +163,7 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         bootstrap,
         "build_harness",
-        lambda workspace, *, mode, resume, session_id=None: _cli_harness(tmp_path, "piped-ok"),
+        lambda workspace, *, launch, resume, session_id=None: _cli_harness(tmp_path, "piped-ok"),
     )
     out = io.StringIO()
     stdin = io.StringIO("read the file")
@@ -176,7 +176,7 @@ def test_piped_stdin_triggers_headless(monkeypatch, tmp_path: Path):
 def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path: Path):
     # The interactive TUI no longer hardcodes a mode: it omits it so build_harness
     # resolves the configured default (MARIM_DEFAULT_MODE, default "ask"). The
-    # mock therefore receives mode=None and accepts it as optional.
+    # mock therefore receives launch.mode=None and accepts it as optional.
     import marim_harness.interfaces.tui.app as tui_app
     import marim_harness.runtime.bootstrap as bootstrap
 
@@ -190,8 +190,8 @@ def test_run_default_tui_omits_mode_for_configured_default(monkeypatch, tmp_path
         def run(self):
             captured["ran"] = True
 
-    def fake_build(workspace, *, mode=None, resume, session_id=None):
-        captured["mode"] = mode
+    def fake_build(workspace, *, launch, resume, session_id=None):
+        captured["mode"] = launch.mode
         stub = SimpleNamespace()
         stub.adopt_claim = lambda claim, *, kind: None
         stub.release_claim = lambda: None
@@ -247,7 +247,7 @@ def test_headless_works_without_textual(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(
         bootstrap,
         "build_harness",
-        lambda workspace, *, mode, resume, session_id=None: _cli_harness(tmp_path, "bare-ok"),
+        lambda workspace, *, launch, resume, session_id=None: _cli_harness(tmp_path, "bare-ok"),
     )
     monkeypatch.setattr(default_cmd, "_tui_available", lambda: False)
     out = io.StringIO()
