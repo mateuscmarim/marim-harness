@@ -60,6 +60,15 @@ _PATH_KEYS = {
 }
 
 PLAN_DENY_MESSAGE = "plan mode: read-only — describe the change instead of making it"
+# A refused WebFetch/WebSearch is the same PLAN_READ_ONLY verdict but a
+# different refusal: nothing was being *changed*, so "describe the change
+# instead" is advice Claude cannot act on. Deny messages land verbatim in the
+# tool_result, so the egress case gets its own wording — say what you wanted
+# to look up, and the user decides whether to leave plan mode for it.
+PLAN_EGRESS_MESSAGE = (
+    "plan mode: no outbound requests — say what you would look up and why; the user "
+    "switches out of plan mode with /mode if they want it fetched"
+)
 # Claude's own plan mode (the process runs in it whenever marim is in plan
 # mode, see ``controls.py``) ends with an ``ExitPlanMode`` call asking the
 # user to approve the plan and switch modes. marim owns the mode, so the
@@ -122,10 +131,13 @@ def deny_reply(message: str) -> dict:
 
 def wire_deny_message(decision: Decision, tool_name: str = "") -> str:
     """The shared core's reason is a log label; on the wire plan mode gets
-    the fuller hint Claude can act on (and its ``ExitPlanMode`` the one that
-    names who owns the mode)."""
+    the fuller hint Claude can act on — the one that names who owns the mode
+    for ``ExitPlanMode``, and the egress wording for a refused web tool, which
+    is read-only and so has no "change" to describe instead."""
     if decision.reason == PLAN_READ_ONLY:
-        return EXIT_PLAN_MESSAGE if tool_name == "ExitPlanMode" else PLAN_DENY_MESSAGE
+        if tool_name == "ExitPlanMode":
+            return EXIT_PLAN_MESSAGE
+        return PLAN_EGRESS_MESSAGE if tool_name in NETWORK_TOOLS else PLAN_DENY_MESSAGE
     return decision.reason or "not permitted"
 
 

@@ -89,7 +89,7 @@ from ..claude.protocol import CLOSED, ControlError, ProcessClosed
 from ..claude.quota import quota_from_usage
 from ..runtime.context import strip_turn_context
 from ..runtime.permissions import Mode, UiSeams
-from ..usage import COST_DETAIL_KEY
+from ..usage import COST_DETAIL_KEY, SUBSCRIPTION_DETAIL_KEY
 from .cli_input import (
     attachment_content,
     claude_input,
@@ -139,9 +139,15 @@ def request_usage_from_cli(cli_usage: dict | None, total_cost_usd: float | None)
     Anthropic reports ``input_tokens`` as the uncached bucket only, so we fold the
     cache read/write buckets back in to match the harness's cache-inclusive
     convention, and store the billed cost as integer micro-USD under
-    ``details[COST_DETAIL_KEY]`` so the cost display needs no model-id lookup."""
+    ``details[COST_DETAIL_KEY]`` so the cost display needs no model-id lookup.
+
+    Every usage built here is subscription traffic, so it also carries
+    ``SUBSCRIPTION_DETAIL_KEY``: the consumers that price a usage against a
+    *bare* model id (the status bar reads ``harness.model_id``, which under
+    this provider is just ``haiku`` or a catalog id) cannot tell from the id
+    alone that API list prices do not apply."""
     u = cli_usage or {}
-    details: dict = {}
+    details: dict = {SUBSCRIPTION_DETAIL_KEY: 1}
     if total_cost_usd is not None:
         # round(), not int() truncation, so the micro-USD conversion matches
         # openrouter_cost.read_cost_micro_usd and a sub-cent cost isn't floored away.
@@ -169,7 +175,11 @@ def charge_cost(usage: RequestUsage, cost_usd: float | None) -> RequestUsage:
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_tokens,
         cache_write_tokens=usage.cache_write_tokens,
-        details={**usage.details, COST_DETAIL_KEY: round(cost_usd * 1_000_000)},
+        details={
+            **usage.details,
+            SUBSCRIPTION_DETAIL_KEY: 1,
+            COST_DETAIL_KEY: round(cost_usd * 1_000_000),
+        },
     )
 
 

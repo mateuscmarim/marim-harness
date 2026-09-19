@@ -10,6 +10,16 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Added
 
+- **Claude CLI subscription evaluation record.** `docs/guides/claude-cli-subscription-evaluation.md`
+  documents a live run of ten cases against a real Claude subscription and a
+  real Claude Code binary, covering the seam marim actually owns under the
+  launcher: permission gating, approval denial, plan mode, interrupt and
+  resume, Claude's own compaction, live `/mode` `/model` `/think` control
+  parity, Claude's Agent sub-agents demuxed and persisted, a native main loop
+  driving a `claude-cli` child and tier, and quota/context reporting through
+  both the harness and `marim serve`. A doc-lint guard keeps every row's
+  verdict tied to the observation that earned it.
+
 - **Claude CLI tier routing.** A sub-agent model tier can now name the
   reserved `claude-cli:<model>` execution target: an ordinary native role
   (`explore`, `general`, a custom agent) resolving to that tier transparently
@@ -35,6 +45,28 @@ pre-1.0, minor versions may contain breaking changes.
   and `HarnessConfig.subagent_request_limit` follow the same rules.
 
 ### Fixed
+
+- **Subscription spend is attributed and never priced at API rates.** A
+  `claude-cli` turn recorded a *bare* model id in the stats ledger (`haiku`),
+  so `marim stats` summed subscription and metered-API spend on the same model
+  into one row; only the `backend_result` block told them apart. Every
+  subscription-backed provider is now qualified the way `openai-codex` already
+  was (`claude-cli:haiku`). The same gap had a latent cost bug behind it: where
+  the CLI reported no `total_cost_usd`, the fallback priced subscription tokens
+  at API list rates. A bare alias escaped that only by accident — `haiku` is
+  absent from the price table, but `claude-haiku-4-5-20251001`, which the live
+  model picker offers, is not. `resolve_cost` now refuses the estimate for
+  subscription usage, and the CLI backends mark their usage so the consumers
+  that only have a bare model id to go on (the status bar prices the raw
+  selection) are covered too. A cost the backend *does* report is still shown,
+  exactly as before.
+
+- **Plan mode gives a refused web tool advice it can act on.** Under
+  `claude-cli`, a `WebSearch` or `WebFetch` denied in plan mode was told "plan
+  mode: read-only — describe the change instead of making it". Nothing was
+  being changed, so there was no change to describe. The egress denial now says
+  to state what it wanted to look up and why, and that the user switches out of
+  plan mode with `/mode` if they want it fetched.
 
 - **`marim update` no longer reports an upgrade it did not deliver.** A uv
   tool installed from a local wheel path keeps that path as its install
