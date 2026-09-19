@@ -39,43 +39,75 @@ def _check_latest() -> UpdateInfo:
     return UpdateInfo(current=current, latest=latest, release_url=url)
 
 
-def _uv_tool_extras(name: str) -> list[str] | None:
-    """Return the extras `name` is currently installed with as a uv tool.
+@dataclass(frozen=True)
+class _ToolEntry:
+    """What `uv tool list` knows about an installed tool: its version and
+    the extras it was installed with."""
+
+    version: str
+    extras: list[str]
+
+    def spec(self, name: str) -> str:
+        return f"{name}[{','.join(self.extras)}]" if self.extras else name
+
+
+def _uv_tool_entry(name: str) -> _ToolEntry | None:
+    """Return `name`'s installed version and extras as a uv tool.
 
     Returns None when `name` isn't a known uv tool at all (as distinct from
-    a known uv tool installed with no extras, which returns []).
+    a known uv tool installed with no extras, which returns an entry with
+    `extras == []`).
     """
-    result = subprocess.run(
-        ["uv", "tool", "list", "--show-extras"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["uv", "tool", "list", "--show-extras"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
     if result.returncode != 0:
         return None
     match = re.search(
-        rf"^{re.escape(name)} v\S+(?: \[extras: ([^\]]+)\])?$",
+        rf"^{re.escape(name)} v(\S+)(?: \[extras: ([^\]]+)\])?$",
         result.stdout,
         re.MULTILINE,
     )
     if match is None:
         return None
-    extras = match.group(1)
-    return [extra.strip() for extra in extras.split(",")] if extras else []
+    extras = match.group(2)
+    return _ToolEntry(
+        version=match.group(1),
+        extras=[extra.strip() for extra in extras.split(",")] if extras else [],
+    )
 
 
-def _do_upgrade() -> int:
+def _uv_tool_extras(name: str) -> list[str] | None:
+    """The extras `name` is installed with as a uv tool, or None when it is
+    not a uv tool (see `_uv_tool_entry`)."""
+    entry = _uv_tool_entry(name)
+    return None if entry is None else entry.extras
+
+
+def _do_upgrade(target: str | None = None, *, out=None) -> int:
     """Upgrade marim-harness: try `uv tool upgrade`, then — if it's a known uv
-    tool — a forced reinstall from PyPI, then pip as a last resort.
+    tool that did not reach `target` — a forced reinstall from PyPI, then pip
+    as a last resort.
 
     `uv tool upgrade` reuses the source recorded in the tool's install
     receipt. When marim-harness was installed from a local wheel path (a dev
-    build, a release scratchpad artifact) that path can go stale once the
-    file is cleaned up, and `uv tool upgrade` fails trying to reuse it even
-    though the package is readily available on PyPI. Reinstalling by name
-    forces uv to re-resolve from PyPI instead, preserving whatever extras
-    were originally installed.
+    build, a release scratchpad artifact) that source can only ever yield
+    the version baked into the file: if the file is gone `uv tool upgrade`
+    FAILS trying to reuse it, and if the file is still there it SUCCEEDS with
+    "Nothing to upgrade" and the tool stays at the old version. Both are
+    handled the same way — reinstalling by name forces uv to re-resolve from
+    PyPI, preserving whatever extras were originally installed. That is why
+    a zero exit from `uv tool upgrade` is not taken at its word when a
+    `target` version is known: the installed version is read back and only
+    a tool that actually reached the target counts as upgraded.
     """
+    out = sys.stdout if out is None else out
     try:
         result = subprocess.run(
             ["uv", "tool", "upgrade", "marim-harness"],
@@ -84,15 +116,22 @@ def _do_upgrade() -> int:
     except FileNotFoundError:
         result = None
 
-    if result is not None and result.returncode == 0:
+    if result is not None and result.returncode == 0 and target is None:
         return 0
 
     if result is not None:
-        extras = _uv_tool_extras("marim-harness")
-        if extras is not None:
-            spec = f"marim-harness[{','.join(extras)}]" if extras else "marim-harness"
+        entry = _uv_tool_entry("marim-harness")
+        if result.returncode == 0 and (entry is None or entry.version == target):
+            return 0
+        if entry is not None:
+            if result.returncode == 0:
+                print(
+                    f"uv tool upgrade left marim-harness at {entry.version} (its install "
+                    "source is pinned to that version); reinstalling from PyPI...",
+                    file=out,
+                )
             result = subprocess.run(
-                ["uv", "tool", "install", "--force", "--reinstall", spec],
+                ["uv", "tool", "install", "--force", "--reinstall", entry.spec("marim-harness")],
                 check=False,
             )
             if result.returncode == 0:
@@ -168,7 +207,25 @@ def main(argv: list[str], *, out=None, err=None) -> int:
         return 0
 
     print(f"Upgrading marim-harness from {info.current} to {info.latest}...", file=out)
-    code = _do_upgrade()
-    if code == 0:
-        print(f"Upgraded to marim-harness {info.latest}.", file=out)
-    return code
+    code = _do_upgrade(info.latest, out=out)
+    if code != 0:
+        return code
+    return _report_upgrade(info.latest, out=out, err=err)
+
+
+def _report_upgrade(latest: str, *, out, err) -> int:
+    """Never report an upgrade the install did not actually deliver: a uv
+    tool is read back after the fact, and "Upgraded" is printed only when it
+    is at `latest`. (A pip install has no receipt to read back; its exit
+    code is the only word we have.)"""
+    entry = _uv_tool_entry("marim-harness")
+    if entry is not None and entry.version != latest:
+        print(
+            f"marim-harness is still {entry.version} after the upgrade (expected "
+            f"{latest}). Reinstall it by name to re-resolve from PyPI:\n"
+            f"  uv tool install --force --reinstall {entry.spec('marim-harness')}",
+            file=err,
+        )
+        return 1
+    print(f"Upgraded to marim-harness {latest}.", file=out)
+    return 0

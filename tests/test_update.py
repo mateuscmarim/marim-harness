@@ -219,6 +219,56 @@ def test_do_upgrade_uv_not_found():
         assert mock_run.call_args_list[1][0][0] == expected
 
 
+def _result(returncode: int, stdout: str = ""):
+    return type("Result", (), {"returncode": returncode, "stdout": stdout, "stderr": ""})()
+
+
+def test_do_upgrade_reads_the_version_back_when_a_target_is_known():
+    """With a target version, a zero exit from `uv tool upgrade` is confirmed
+    against `uv tool list` before it counts."""
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    with patch(
+        "subprocess.run",
+        side_effect=[_result(0), _result(0, "marim-harness v0.15.0 [extras: tui]\n")],
+    ) as mock_run:
+        assert _do_upgrade("0.15.0", out=StringIO()) == 0
+        assert mock_run.call_count == 2
+        assert mock_run.call_args_list[1][0][0][:3] == ["uv", "tool", "list"]
+
+
+def test_do_upgrade_reinstalls_when_upgrade_is_a_noop_short_of_target():
+    """A receipt pinned to a local wheel makes `uv tool upgrade` succeed with
+    "Nothing to upgrade" and leave the old version installed. That is the
+    same stale-source case as a failed upgrade: reinstall by name from PyPI
+    with the original extras."""
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    out = StringIO()
+    with patch(
+        "subprocess.run",
+        side_effect=[
+            _result(0),
+            _result(0, "marim-harness v0.14.0 [extras: serve, tui]\n"),
+            _result(0),
+        ],
+    ) as mock_run:
+        assert _do_upgrade("0.15.0", out=out) == 0
+        assert mock_run.call_count == 3
+        reinstall_args = mock_run.call_args_list[2][0][0]
+        assert reinstall_args[:4] == ["uv", "tool", "install", "--force"]
+        assert "marim-harness[serve,tui]" in reinstall_args
+    assert "left marim-harness at 0.14.0" in out.getvalue()
+
+
+def test_do_upgrade_noop_upgrade_of_a_non_uv_tool_is_trusted():
+    from marim_harness.interfaces.cli.update import _do_upgrade
+
+    with patch("subprocess.run", side_effect=[_result(0), _result(0, "")]) as mock_run:
+        assert _do_upgrade("0.15.0", out=StringIO()) == 0
+        assert mock_run.call_count == 2
+
+
 # --- main() tests ---
 
 
@@ -288,7 +338,7 @@ def test_main_check_not_installed():
 
 
 def test_main_upgrade_succeeds():
-    from marim_harness.interfaces.cli.update import main
+    from marim_harness.interfaces.cli.update import _ToolEntry, main
 
     info = UpdateInfo(
         current="0.3.0",
@@ -297,7 +347,11 @@ def test_main_upgrade_succeeds():
     )
     with (
         patch("marim_harness.interfaces.cli.update._check_latest", return_value=info),
-        patch("marim_harness.interfaces.cli.update._do_upgrade", return_value=0),
+        patch("marim_harness.interfaces.cli.update._do_upgrade", return_value=0) as do_upgrade,
+        patch(
+            "marim_harness.interfaces.cli.update._uv_tool_entry",
+            return_value=_ToolEntry(version="9.9.9", extras=[]),
+        ),
     ):
         out = StringIO()
         err = StringIO()
@@ -305,6 +359,30 @@ def test_main_upgrade_succeeds():
         output = out.getvalue()
         assert result == 0
         assert "Upgraded" in output
+        assert do_upgrade.call_args[0][0] == "9.9.9"
+
+
+def test_main_upgrade_does_not_claim_a_version_it_did_not_install():
+    """The bug: `uv tool upgrade` exited 0 with "Nothing to upgrade" and the
+    command printed "Upgraded to 0.15.0" over a binary still at 0.14.0."""
+    from marim_harness.interfaces.cli.update import _ToolEntry, main
+
+    info = UpdateInfo(current="0.14.0", latest="0.15.0", release_url="")
+    with (
+        patch("marim_harness.interfaces.cli.update._check_latest", return_value=info),
+        patch("marim_harness.interfaces.cli.update._do_upgrade", return_value=0),
+        patch(
+            "marim_harness.interfaces.cli.update._uv_tool_entry",
+            return_value=_ToolEntry(version="0.14.0", extras=["tui"]),
+        ),
+    ):
+        out = StringIO()
+        err = StringIO()
+        result = main([], out=out, err=err)
+    assert result == 1
+    assert "Upgraded" not in out.getvalue()
+    assert "still 0.14.0" in err.getvalue()
+    assert "uv tool install --force --reinstall marim-harness[tui]" in err.getvalue()
 
 
 def test_main_upgrade_fails():
