@@ -7,7 +7,9 @@ the project trust gate, since their registry travels with the repo (see
 _enabled_inert). Hooks, MCP servers, and LSP providers are contributed only for
 *enabled + trusted* plugins, since they all execute code (an LSP provider's
 declarative ``command`` launches a process on connect, same as an MCP server).
-Project plugins shadow global plugins of the same name."""
+Trusted project plugins shadow global plugins of the same name for contributions;
+untrusted project entries remain visible in discovery but cannot suppress global
+plugins."""
 
 import json
 import logging
@@ -108,15 +110,12 @@ def _discovery_signature(scope_dirs: list[tuple[str, Path]]) -> tuple:
     return tuple(sig)
 
 
-def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
-    """All installed plugins across both scopes (enabled and disabled), project
-    shadowing global by name, sorted by name. Entries whose directory or
-    manifest fails to load are skipped with a warning.
+def _discovered_candidates(workspace_root) -> list[ResolvedPlugin]:
+    """All loadable plugin records, ordered project then global within each name.
 
-    Cached per workspace root and reused while the registries and manifests on
-    disk are unchanged (by name/mtime/size), so the repeated per-turn calls from
-    skills/agents discovery don't re-parse every ``plugins.json`` and
-    ``plugin.json`` each time."""
+    The full candidate set is cached so contribution selection can fall through
+    an untrusted project record to an eligible global record. ``discover_plugins``
+    still reports the project winner for useful status visibility."""
     scope_dirs = _scope_dirs(workspace_root)
     sig = _discovery_signature(scope_dirs)
     key = str(Path(workspace_root).resolve())
@@ -124,11 +123,9 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
     if cached is not None and cached[0] == sig:
         return cached[1]
 
-    seen: dict[str, ResolvedPlugin] = {}
+    result: list[ResolvedPlugin] = []
     for scope, plugins_dir in scope_dirs:
         for name, record in load_state(plugins_dir).items():
-            if name in seen:
-                continue
             # ``name`` is joined onto ``plugins_dir`` and its manifest is read, so
             # a traversal name would read manifests out of tree. load_state
             # guarantees every returned name is a valid kebab-case identifier, so
@@ -143,14 +140,42 @@ def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
                     root,
                 )
                 continue
-            seen[name] = ResolvedPlugin(name, scope, root, record, manifest)
-    result = sorted(seen.values(), key=lambda p: p.name)
+            result.append(ResolvedPlugin(name, scope, root, record, manifest))
     _DISCOVERY_CACHE[key] = (sig, result)
     return result
 
 
-def _enabled(workspace_root) -> list[ResolvedPlugin]:
-    return [p for p in discover_plugins(workspace_root) if p.enabled]
+def discover_plugins(workspace_root) -> list[ResolvedPlugin]:
+    """One installed plugin per name for status discovery, project first.
+
+    Disabled and untrusted project records remain visible here. Contribution
+    helpers use ``_contribution_candidates`` instead so such records cannot
+    suppress an eligible global plugin in an untrusted workspace."""
+    seen: set[str] = set()
+    result: list[ResolvedPlugin] = []
+    for plugin in _discovered_candidates(workspace_root):
+        if plugin.name not in seen:
+            seen.add(plugin.name)
+            result.append(plugin)
+    return sorted(result, key=lambda p: p.name)
+
+
+def _contribution_candidates(workspace_root, *, trust_project: bool) -> list[ResolvedPlugin]:
+    """Select the highest-precedence contribution candidate for each name.
+
+    A project registry travels with its repository, so an untrusted project
+    record must be ignored before precedence is resolved. Once the project is
+    trusted, its record deliberately wins even when disabled or per-plugin
+    untrusted; this preserves its explicit local override semantics."""
+    selected: list[ResolvedPlugin] = []
+    seen: set[str] = set()
+    for plugin in _discovered_candidates(workspace_root):
+        if plugin.scope == "project" and not trust_project:
+            continue
+        if plugin.name not in seen:
+            seen.add(plugin.name)
+            selected.append(plugin)
+    return selected
 
 
 # Resolve the project-trust signal for the inert helpers below. An explicit
@@ -179,7 +204,7 @@ def _enabled_inert(workspace_root, trust_project: bool | None) -> list[ResolvedP
     bit is deliberately NOT required here — inert text doesn't execute code;
     the executable surface keeps its stricter gate in _enabled_trusted."""
     trusted = _project_trusted(trust_project)
-    return [p for p in _enabled(workspace_root) if p.scope != "project" or trusted]
+    return [p for p in _contribution_candidates(workspace_root, trust_project=trusted) if p.enabled]
 
 
 def _linked_elevation_revokes_trust(p: ResolvedPlugin) -> bool:
@@ -252,7 +277,7 @@ def _project_scope_untrusted(p: ResolvedPlugin, trust_project: bool) -> bool:
 def _enabled_trusted(workspace_root, *, trust_project: bool) -> list[ResolvedPlugin]:
     return [
         p
-        for p in discover_plugins(workspace_root)
+        for p in _contribution_candidates(workspace_root, trust_project=trust_project)
         if p.enabled
         and p.trusted
         and not _linked_elevation_revokes_trust(p)
@@ -408,8 +433,14 @@ def plugin_lsp_providers(workspace_root, *, trust_project: bool = False) -> list
     trust gate. Third-party providers are declarative only: the bundled-only
     ``backend``/named-``diagnostics`` keys are dropped by the lenient parse.
     ``${MARIM_PLUGIN_ROOT}`` is substituted in each provider's command/args."""
+    # LspRegistry resolves colliding languages and extensions by taking the
+    # later provider. Other contribution types can retain project-first order,
+    # but LSP providers must be global-first so a trusted project provider wins
+    # both over globals and over bundled providers assembled in bootstrap.
+    plugins = _enabled_trusted(workspace_root, trust_project=trust_project)
+    plugins.sort(key=lambda p: p.scope == "project")
     out: list[LspProvider] = []
-    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
+    for p in plugins:
         block = p.manifest.lsp_block()
         if block is None:
             continue
