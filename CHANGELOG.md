@@ -8,6 +8,8 @@ pre-1.0, minor versions may contain breaking changes.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-19
+
 ### Added
 
 - **Claude CLI subscription evaluation record.** `docs/guides/claude-cli-subscription-evaluation.md`
@@ -19,6 +21,12 @@ pre-1.0, minor versions may contain breaking changes.
   driving a `claude-cli` child and tier, and quota/context reporting through
   both the harness and `marim serve`. A doc-lint guard keeps every row's
   verdict tied to the observation that earned it.
+
+- **The Codex subscription evaluation is now a live record too.**
+  `docs/guides/codex-subscription-evaluation.md` was a proposed procedure; it
+  now carries the observations from a real run against a Codex subscription,
+  so both subscription providers document what was actually verified rather
+  than what could be.
 
 - **Claude CLI tier routing.** A sub-agent model tier can now name the
   reserved `claude-cli:<model>` execution target: an ordinary native role
