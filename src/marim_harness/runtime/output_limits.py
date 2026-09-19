@@ -15,13 +15,31 @@ from pydantic_ai.capabilities import DynamicCapability
 from pydantic_ai.messages import ToolCallPart, ToolReturn
 from pydantic_ai.tools import RunContext, ToolDefinition
 from pydantic_ai_harness.tool_output_limits import (
+    Band,
     LocalFileStore,
+    Spill,
     ToolOutputLimits,
+    Truncate,
     indented_json,
 )
 
 from ..binary_safe import has_binary_content
 from .deps import Deps
+
+# A skill body is instructions, not data: the point of activating one is that
+# the whole text sits in context for the rest of the task, so the general
+# 10k-character spill (a 1k preview plus a read-back handle) would hand the
+# model a fragment of what it was told to follow. Real skills run 17-35k
+# characters; pass them through whole and spill only a pathological one, so a
+# runaway SKILL.md still cannot swallow the window. `read_skill_file` keeps the
+# default policy on purpose — bundled references are consulted selectively.
+SKILL_PASSTHROUGH_CHARS = 60_000
+
+
+def skill_output_bands() -> list[Band]:
+    """The `activate_skill` band list: untouched below the ceiling, the default
+    lossless spill (bounded truncation if storage fails) at or above it."""
+    return [Band(over=SKILL_PASSTHROUGH_CHARS, action=Spill(then=Truncate()))]
 
 
 class MediaSafeOutputLimits(ToolOutputLimits[Deps]):
@@ -68,7 +86,11 @@ class OutputStorage:
         return cls(root, scratch)
 
     def capability(self) -> MediaSafeOutputLimits:
-        return MediaSafeOutputLimits(store=LocalFileStore(self.root), serializer=indented_json)
+        return MediaSafeOutputLimits(
+            store=LocalFileStore(self.root),
+            serializer=indented_json,
+            per_tool={"activate_skill": skill_output_bands()},
+        )
 
 
 def session_output_limits() -> DynamicCapability[Deps]:

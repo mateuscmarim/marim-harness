@@ -10,6 +10,13 @@ pre-1.0, minor versions may contain breaking changes.
 
 ### Changed
 
+- **Skill activation is exempt from the 10k tool-output spill.** A SKILL.md
+  body is instructions to follow, not data to page through, and real skills
+  run 17-35k characters — under the general policy `activate_skill` returned a
+  1k preview plus a read-back handle, so the model acted on a fragment. Its
+  result (directory header plus body) now passes through whole below 60,000
+  characters (a per-tool band list on the upstream `ToolOutputLimits`,
+  `SKILL_PASSTHROUGH_CHARS`) and spills at or above that. `read_skill_file` keeps the general threshold.
 - **Job waits hold through completion and yield to steering.** `wait_for_job`
   and `job(action="wait")` no longer default to a 60-second timeout: one call
   blocks until the job finishes (an explicit `timeout` still bounds it). A
