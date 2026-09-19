@@ -433,8 +433,14 @@ def plugin_lsp_providers(workspace_root, *, trust_project: bool = False) -> list
     trust gate. Third-party providers are declarative only: the bundled-only
     ``backend``/named-``diagnostics`` keys are dropped by the lenient parse.
     ``${MARIM_PLUGIN_ROOT}`` is substituted in each provider's command/args."""
+    # LspRegistry resolves colliding languages and extensions by taking the
+    # later provider. Other contribution types can retain project-first order,
+    # but LSP providers must be global-first so a trusted project provider wins
+    # both over globals and over bundled providers assembled in bootstrap.
+    plugins = _enabled_trusted(workspace_root, trust_project=trust_project)
+    plugins.sort(key=lambda p: p.scope == "project")
     out: list[LspProvider] = []
-    for p in _enabled_trusted(workspace_root, trust_project=trust_project):
+    for p in plugins:
         block = p.manifest.lsp_block()
         if block is None:
             continue
