@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
 
+from marim_harness.lsp.provider import LspRegistry
 from marim_harness.plugins.discovery import plugin_lsp_providers
 from marim_harness.plugins.state import (
     InstalledPlugin,
+    global_plugins_dir,
     project_plugins_dir,
     save_state,
 )
@@ -17,6 +19,36 @@ def _install_project_plugin(ws: Path, name: str, lsp: dict, *, trusted: bool):
         project_plugins_dir(ws),
         {name: InstalledPlugin(name=name, version=None, source={}, enabled=True, trusted=trusted)},
     )
+
+
+def test_project_lsp_provider_overrides_global_on_language_collision(tmp_path, monkeypatch):
+    """LspRegistry takes later providers, so plugins must be global-first."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    global_dir = global_plugins_dir()
+    global_plugin = global_dir / "global-go"
+    (global_plugin / ".marim-plugin").mkdir(parents=True)
+    (global_plugin / ".marim-plugin" / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "global-go",
+                "lsp": {"language": "go", "extensions": [".go"], "command": "global-gopls"},
+            }
+        )
+    )
+    save_state(
+        global_dir,
+        {"global-go": InstalledPlugin("global-go", None, {}, enabled=True, trusted=True)},
+    )
+    _install_project_plugin(
+        tmp_path,
+        "project-go",
+        {"language": "go", "extensions": [".go"], "command": "project-gopls"},
+        trusted=True,
+    )
+
+    providers = plugin_lsp_providers(tmp_path, trust_project=True)
+    assert [provider.source for provider in providers] == ["global", "project"]
+    assert LspRegistry(providers).provider_for("go").command == "project-gopls"
 
 
 def test_project_plugin_lsp_gated_by_trust(tmp_path):
