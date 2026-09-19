@@ -46,6 +46,18 @@ pre-1.0, minor versions may contain breaking changes.
   source), and the success line is printed only when the tool actually
   reached the latest version; otherwise the command says which version is
   still installed, prints the reinstall command, and exits 1.
+- **The in-process TUI saw every turn as already over.** Textual runs its
+  event loop with an eager task factory, so the session host's turn task ran
+  its first slice inside `create_task` — before the host had recorded the
+  task — and the `session.status` it published right after `turn.started`
+  read `idle`. The TUI folds that status into its busy answer, so from the
+  first request of a turn it believed nothing was running: a `ctrl+g` steer
+  was submitted as a new turn instead of reaching the running one (and could
+  not release a parked `wait_for_job`), Esc found nothing to cancel, and the
+  prompt queue drained under a live turn. The host now marks the running
+  turn before creating its task, so the status is `running` whichever task
+  factory the loop uses. Regressed with the event-driven transcript in
+  0.8.0; the daemon (`marim serve`) and attached TUIs were unaffected.
 
 ## [0.15.0] - 2026-09-19
 

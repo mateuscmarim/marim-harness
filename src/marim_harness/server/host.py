@@ -108,6 +108,17 @@ class SessionHost:
         )
         self._pending: dict[str, PendingAsk] = {}
         self._turn_task: asyncio.Task | None = None
+        # The id of the turn the worker is running, set BEFORE its task is
+        # created and cleared when the task is done. ``status`` reads this,
+        # not ``_turn_task``: under an eager task factory (Textual installs
+        # ``asyncio.eager_task_factory`` on its loop) ``create_task`` runs the
+        # turn's first slice synchronously, so ``_turn_body`` publishes
+        # ``turn.started`` and the status right after it before the
+        # ``self._turn_task = ...`` assignment lands. Read off the task, that
+        # status said ``idle`` mid-turn, and every in-process TUI folded the
+        # turn as already over (steers submitted as new turns, Esc found
+        # nothing to cancel, the queue drained under a running turn).
+        self._running_turn: str | None = None
         self._closing = False
         loop = asyncio.get_running_loop()
         self._idle_since = loop.time()
@@ -178,7 +189,7 @@ class SessionHost:
     def status(self) -> str:
         if self._pending:
             return "waiting_ask"
-        if self._turn_task is not None or not self._queue.empty():
+        if self._running_turn is not None or not self._queue.empty():
             return "running"
         return "idle"
 
@@ -457,6 +468,10 @@ class SessionHost:
     async def _worker_loop(self) -> None:
         while True:
             turn_id, prompt, attachments, trigger = await self._queue.get()
+            # Mark the turn as running before creating its task: an eager task
+            # factory runs the body up to its first await inside create_task,
+            # and that slice publishes the turn's first status (see the field).
+            self._running_turn = turn_id
             self._turn_task = asyncio.get_running_loop().create_task(
                 self._run_one_turn(turn_id, prompt, attachments, trigger)
             )
@@ -468,6 +483,7 @@ class SessionHost:
                 self.bus.publish("turn.finished", {"turn_id": turn_id, "interrupted": True})
             finally:
                 self._turn_task = None
+                self._running_turn = None
                 self._cancel_pending("interrupted")
                 self._idle_since = asyncio.get_running_loop().time()
                 self._publish_status()

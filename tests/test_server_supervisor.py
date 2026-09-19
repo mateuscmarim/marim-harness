@@ -165,9 +165,11 @@ async def test_set_mode_raises_when_host_busy(tmp_path):
     _seed_session(record, "s1")
     sup = SessionSupervisor(_factory([]))
     host = await sup.host_for(record, "s1")
-    # host.busy reads status, which is "running" whenever _turn_task is not
-    # None (or the queue is non-empty) -- simulate a running turn the same
-    # way the worker loop itself would set it, not via a made-up field.
+    # host.busy reads status, which is "running" whenever _running_turn is
+    # set (or the queue is non-empty) -- simulate a running turn the same way
+    # the worker loop itself does (id first, then the task), not via a
+    # made-up field.
+    host._running_turn = "t1"
     host._turn_task = asyncio.create_task(asyncio.sleep(1000))
 
     with pytest.raises(SessionBusy):
