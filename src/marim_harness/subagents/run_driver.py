@@ -254,9 +254,14 @@ class SpawnRunDriver:
         that would exceed the cap, so the captured conversation is intact;
         it is repaired like any resume and continued ONCE with
         ``WRAPUP_PROMPT`` as the next user turn, every tool withheld
-        (``_withheld_tools``) and room for exactly one more request. The
-        report that produces comes back prefixed with ``budget_note`` so the
-        spawner can tell a bounded report from a finished one. A run that
+        (``_withheld_tools``) and room for exactly one more request. A text
+        report comes back prefixed with ``budget_note`` so the spawner can
+        tell a bounded report from a finished one. A structured (dict) report
+        is returned as-is: its schema is the spawner's contract, and a key
+        injected into it could fail a strict schema downstream, so for a
+        structured spawn the wrap-up is visible only on the card notice and
+        in the log — the spawner should treat a report as complete only if
+        its own schema says so (a ``done``/``confidence`` field). A run that
         cannot produce it — the model insists on a tool call, which pydantic-ai
         answers with a retry prompt that needs a request the budget no longer
         allows — surfaces the usage error as before; an unbounded policy
