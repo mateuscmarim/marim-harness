@@ -6,7 +6,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 
 from marim_harness.runtime import bootstrap
-from marim_harness.runtime.permissions import Mode
+from marim_harness.runtime.permissions import LaunchOptions, Mode
 from marim_harness.session import SessionManager
 
 
@@ -59,7 +59,7 @@ def test_build_harness_wires_mcp_servers(tmp_path: Path, monkeypatch):
         encoding="utf-8",
     )
 
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
     assert [s.id for s in harness.mcp.mcp_servers] == ["files"]
 
 
@@ -78,7 +78,7 @@ def test_build_harness_skips_untrusted_project_mcp_servers(tmp_path: Path, monke
         encoding="utf-8",
     )
 
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
     assert harness.mcp.mcp_servers == []  # untrusted project config dropped
 
 
@@ -102,7 +102,7 @@ def test_build_harness_seeds_config_disabled_servers(tmp_path: Path, monkeypatch
         encoding="utf-8",
     )
 
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
     # Both servers are built (so "off" can be enabled in-session)...
     assert {s.id for s in harness.mcp.mcp_servers} == {"on", "off"}
     # ...but the config-disabled one is seeded as disabled.
@@ -128,7 +128,7 @@ def test_build_harness_logs_malformed_mcp_spec(tmp_path: Path, monkeypatch, capl
     )
 
     with caplog.at_level(logging.WARNING, logger="marim_harness.runtime.bootstrap"):
-        harness = bootstrap.build_harness(ws, mode=Mode.ask)
+        harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
 
     assert harness.mcp.mcp_servers == []  # the bad spec was dropped
     assert any("bad" in r.getMessage() for r in caplog.records)
@@ -142,7 +142,7 @@ def test_build_harness_wires_command_policy(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MARIM_COMMAND_DENYLIST", "rm -rf")
     _stub_model_plumbing(monkeypatch)
 
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.auto)
+    harness = bootstrap.build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.auto))
     assert harness.deps.workspace.command_policy.check("rm -rf /") is not None
     assert harness.deps.workspace.command_policy.check("ls") is None
 
@@ -150,7 +150,7 @@ def test_build_harness_wires_command_policy(tmp_path: Path, monkeypatch):
 def test_build_harness_no_mcp_config_is_empty(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     _stub_model_plumbing(monkeypatch)
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask)
+    harness = bootstrap.build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask))
     assert harness.mcp.mcp_servers == []
 
 
@@ -175,7 +175,7 @@ def test_fresh_harness_inherits_model_from_latest_session(tmp_path, monkeypatch)
     seeded.save(_history(), RunUsage())
     assert seeded.model != bootstrap.load_config().model  # genuinely differs
 
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
 
     assert harness.model_id == "openai/gpt-5.2"
     # MultiModelSource.label uses ':' as provider:model separator (was '/' with ModelSource).
@@ -192,7 +192,7 @@ def test_fresh_harness_falls_back_to_config_default(tmp_path, monkeypatch):
     _isolate_sessions(monkeypatch, tmp_path)
 
     default_model = bootstrap.load_config().model
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask)
+    harness = bootstrap.build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask))
 
     # model_id is now the qualified form "provider:bare_model" produced by MultiModelSource.
     assert harness.model_id == f"openrouter:{default_model}"
@@ -213,7 +213,7 @@ def test_build_harness_sets_hooks_when_global_config_present(tmp_path, monkeypat
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps({"hooks": {"Stop": [{"hooks": []}]}}))
 
-    harness = build_harness(tmp_path / "ws", mode=Mode.ask)
+    harness = build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask))
     assert harness.deps.hooks is not None
 
 
@@ -225,7 +225,7 @@ def test_build_harness_hooks_none_without_config(tmp_path, monkeypatch):
     monkeypatch.setenv("MARIM_API_KEY", "x")
     _stub_model_plumbing(monkeypatch)
 
-    harness = build_harness(tmp_path / "ws", mode=Mode.ask)
+    harness = build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask))
     assert harness.deps.hooks is None
 
 
@@ -240,7 +240,7 @@ def test_build_harness_uses_multi_model_source(monkeypatch, tmp_path):
     # Avoid constructing real provider models or aux agents in the test:
     monkeypatch.setattr(MultiModelSource, "build", lambda self, mid: TestModel())
     monkeypatch.setattr(b, "make_titler", lambda model: None)
-    h = b.build_harness(tmp_path, mode=Mode.ask)
+    h = b.build_harness(tmp_path, launch=LaunchOptions(mode=Mode.ask))
     assert isinstance(h.model_source, MultiModelSource)
     assert set(h.model_source.sources) >= {"openrouter", "local"}
     assert h.model_id.startswith("openrouter:")  # qualified default
@@ -263,7 +263,7 @@ def test_resume_reattaches_to_latest_and_replays_history(tmp_path, monkeypatch):
     seeded.model = "openai/gpt-5.2"
     seeded.save(history, RunUsage())
 
-    harness = bootstrap.build_harness(ws, mode=Mode.ask, resume=True)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask), resume=True)
 
     # Reattached to the saved session, not a fresh one.
     assert harness.session.store.session_id == seeded.session_id
@@ -294,7 +294,7 @@ def test_build_harness_explicit_mode_overrides_config_default(monkeypatch, tmp_p
     _stub_model_plumbing(monkeypatch)
     _isolate_sessions(monkeypatch, tmp_path)
     monkeypatch.setenv("MARIM_DEFAULT_MODE", "auto")
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.plan)
+    harness = bootstrap.build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.plan))
     assert harness.deps.workspace.mode is Mode.plan
 
 
@@ -368,7 +368,9 @@ def test_build_harness_opens_specific_session(tmp_path: Path, monkeypatch):
     decoy = seed_manager.create("decoy")
     decoy.save(_history(), RunUsage())
 
-    harness = bootstrap.build_harness(ws, mode=Mode.auto, session_id=target.session_id)
+    harness = bootstrap.build_harness(
+        ws, launch=LaunchOptions(mode=Mode.auto), session_id=target.session_id
+    )
     assert harness.session.store is not None
     assert harness.session.store.session_id == target.session_id
     assert len(harness.session.history) > 0  # history replayed
@@ -424,7 +426,7 @@ def test_lsp_tools_gated_off_without_workspace_coverage(tmp_path: Path, monkeypa
     ws.mkdir()
     (ws / "mod.py").write_text("x = 1")
     monkeypatch.setattr(registry.shutil, "which", lambda b: None)
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
     assert harness.provider.lsp_toolset() is None
 
 
@@ -436,7 +438,7 @@ def test_build_harness_threads_subagent_tiers(monkeypatch, tmp_path):
     _stub_model_plumbing(monkeypatch)
     _isolate_sessions(monkeypatch, tmp_path)
 
-    harness = bootstrap.build_harness(tmp_path / "ws", mode=Mode.ask)
+    harness = bootstrap.build_harness(tmp_path / "ws", launch=LaunchOptions(mode=Mode.ask))
     assert harness.subagents._tiers.cheap == "openrouter:some/cheap-model"
 
 
@@ -453,7 +455,7 @@ def test_lsp_tools_stay_on_with_workspace_coverage(tmp_path: Path, monkeypatch):
         "which",
         lambda b: "/usr/bin/jedi-language-server" if b == "jedi-language-server" else None,
     )
-    harness = bootstrap.build_harness(ws, mode=Mode.ask)
+    harness = bootstrap.build_harness(ws, launch=LaunchOptions(mode=Mode.ask))
     ts = harness.provider.lsp_toolset()
     assert ts is not None
 
@@ -464,5 +466,5 @@ def test_cli_bootstrap_suppresses_upstream_banner(tmp_path, monkeypatch):
     monkeypatch.setattr(pydantic_ai, "BANNER_ENABLED", True)
     _stub_model_plumbing(monkeypatch)
     _isolate_sessions(monkeypatch, tmp_path)
-    bootstrap.build_harness(tmp_path, mode=Mode.ask)
+    bootstrap.build_harness(tmp_path, launch=LaunchOptions(mode=Mode.ask))
     assert pydantic_ai.BANNER_ENABLED is False

@@ -26,6 +26,7 @@ from ..runtime.permissions import (
     Decision,
     ExternalRequest,
     Mode,
+    Reach,
     UiSeams,
     decide_external,
 )
@@ -183,14 +184,17 @@ class ClaudeApprovalBroker:
         self,
         *,
         mode_getter: Callable[[], Mode],
-        workspace_root: Path | None,
-        scratchpad_getter: Callable[[], Path | None],
+        reach: Reach,
         ui: UiSeams,
         label: str = "",
     ) -> None:
         self._mode_getter = mode_getter
-        self._root = workspace_root
-        self._scratchpad_getter = scratchpad_getter
+        # Only the mode is read through a getter per request: the workspace
+        # root and the --unsafe-full-access flag inside ``reach`` cannot change
+        # while the session runs (see WorkspaceConfig.full_access), and the
+        # scratchpad carries its own getter.
+        self._reach = reach
+        self._root = reach.root
         self._ui = ui
         self._label = label
         self._lock = asyncio.Lock()
@@ -221,7 +225,11 @@ class ClaudeApprovalBroker:
         if req.question or request.get("requires_user_interaction"):
             return await self._ask(tool_input)
         decision = decide_external(
-            self._mode_getter(), self._anchored(req), self._root, self._scratchpad_getter()
+            self._mode_getter(),
+            self._anchored(req),
+            self._root,
+            self._reach.scratchpad(),
+            full_access=self._reach.full_access,
         )
         if decision.ask:
             return await self._prompt(tool_name, tool_input, request, decision)

@@ -57,6 +57,11 @@ class ExternalCliModel(Model):
         self.ask_user: Callable[[list[Question]], Awaitable[dict | None]] | None = None
         # The session scratchpad (auto-approved writes in ask mode).
         self.scratchpad_getter: Callable[[], Path | None] | None = None
+        # The --unsafe-full-access launch flag (WorkspaceConfig.full_access).
+        # A plain bool, not a getter: it is fixed for the life of the session.
+        # An ephemeral_clone deliberately does not inherit it — aux agents run
+        # in plan mode, where it would mean nothing anyway.
+        self.full_access: bool = False
         # The live thinking level id (Harness.thinking_level_id), read per turn.
         self.thinking_getter: Callable[[], str | None] | None = None
         # The provider-side conversation reference persisted with the marim

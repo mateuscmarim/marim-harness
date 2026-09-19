@@ -1098,8 +1098,8 @@ class Harness:
         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     def wire_cli_model(self, model: Model) -> None:
-        """Bind an ``ExternalCliModel`` to live approval mode and the workspace
-        (or worktree)
+        """Bind an ``ExternalCliModel`` to live approval mode, the session's
+        full-access flag and the workspace (or worktree)
         cwd, the TUI tool-card and sub-agents side-channels, interactive gating
         (request_approval/ask_user — external CLIs broker their tool-permission
         prompts through them), the scratchpad, the live thinking level and the
@@ -1111,6 +1111,7 @@ class Harness:
             return
         model.mode_getter = lambda: self.mode.value
         model.cwd = str(self.deps.workspace.root)
+        model.full_access = self.deps.workspace.full_access
         model.on_activity = self.deps.ui.on_cli_activity
         model.job_registry = self.deps.jobs
         model.on_subagent = self.deps.ui.on_subagent_event

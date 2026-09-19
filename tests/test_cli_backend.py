@@ -6,7 +6,7 @@ import pytest
 from pydantic_ai.messages import ToolReturnPart
 
 from marim_harness.claude.approvals import HEADLESS_DENY_MESSAGE, ClaudeApprovalBroker
-from marim_harness.runtime.permissions import Mode, UiSeams
+from marim_harness.runtime.permissions import Mode, Reach, UiSeams
 from marim_harness.subagents.cli_backend import ClaudeCliRunner, CliRunError, synth_usage
 from marim_harness.usage import COST_DETAIL_KEY
 from tests.fakes import fake_claude_bin, read_claude_argv, read_claude_log
@@ -29,8 +29,7 @@ def _run_kwargs(binary: str, cwd: Path, **overrides) -> dict:
 def _broker(mode: Mode, root: Path, *, panel=None) -> ClaudeApprovalBroker:
     return ClaudeApprovalBroker(
         mode_getter=lambda: mode,
-        workspace_root=root,
-        scratchpad_getter=lambda: None,
+        reach=Reach(root=root, scratchpad=lambda: None),
         ui=UiSeams(request_approval=panel, ask_user=None),
         label="worker",
     )

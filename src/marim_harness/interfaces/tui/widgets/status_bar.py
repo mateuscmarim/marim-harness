@@ -49,6 +49,11 @@ class StatusBar(Static):
     last_ttft: reactive[float | None] = reactive(None, init=False)
     model_name: reactive[str] = reactive("", init=False)
     mode: reactive[str] = reactive("", init=False)
+    # --unsafe-full-access. Fixed for the life of the process, but it lives here
+    # rather than being rendered once at launch: it changes what every later
+    # approval means, and a warning that scrolled out of the transcript an hour
+    # ago is not a warning.
+    full_access: reactive[bool] = reactive(False, init=False)
     # Where the session lives when it is not this process ("daemon",
     # "daemon · reconnecting…", "daemon · lost"); empty for a local session.
     link_label: reactive[str] = reactive("", init=False)
@@ -123,7 +128,9 @@ class StatusBar(Static):
             tokens_text += f" · {format_cost(cost)}"
         session_text = f"session {format_duration(time.monotonic() - self.session_start)}"
         fields = [
-            Content(self.mode),
+            Content.assemble((f"{self.mode} · full-access", "bold red"))
+            if self.full_access
+            else Content(self.mode),
             Content(self.model_name or cfg),
             Content.assemble((ctx_text, ctx_style)) if ctx_style else Content(ctx_text),
             Content(tokens_text),
@@ -157,6 +164,7 @@ class StatusBar(Static):
         reactives so a caller that only touches ``app.stream`` still shows up."""
         app: HarnessApp = self.app  # type: ignore[assignment]
         self.mode = app.link.info.mode
+        self.full_access = app.link.info.full_access
         self.model_name = app.link.info.model_label
         stream = getattr(app, "stream", None)
         if stream is not None:

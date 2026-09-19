@@ -88,6 +88,11 @@ class RemoteInfo:
     session_id: str
     session_name: str | None = None
     mode: str = "ask"
+    # Never set from the wire, and not an oversight: --unsafe-full-access is a
+    # launch flag of the process that owns the session, `marim serve` does not
+    # take it, and an attached TUI cannot widen a reach the daemon never had.
+    # False here is the permanent, correct answer for a remote session.
+    full_access: bool = False
     model_id: str | None = None
     model_label: str = ""
     advisor_model_id: str | None = None

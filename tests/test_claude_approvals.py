@@ -23,7 +23,7 @@ from marim_harness.claude.approvals import (
     classify,
     deny_reply,
 )
-from marim_harness.runtime.permissions import Mode, UiSeams
+from marim_harness.runtime.permissions import Mode, Reach, UiSeams
 
 pytestmark = pytest.mark.anyio
 
@@ -103,8 +103,7 @@ def _broker(
 ):
     return ClaudeApprovalBroker(
         mode_getter=lambda: mode,
-        workspace_root=root,
-        scratchpad_getter=lambda: pad,
+        reach=Reach(root=root, scratchpad=lambda: pad),
         ui=UiSeams(request_approval=panel, ask_user=ask_user),
         label=label,
     )

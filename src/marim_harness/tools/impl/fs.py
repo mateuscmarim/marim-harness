@@ -97,39 +97,88 @@ def _require_read_before_write(ledger: ReadLedger | None, p: Path, path: str) ->
         )
 
 
-def _resolve_with_extra_roots(root: Path, path: str, extra_roots: tuple[Path, ...]) -> Path:
+@dataclass(frozen=True)
+class PathScope:
+    """How far a file tool may reach outside the workspace root.
+
+    ``roots`` are named escape hatches that widen the guard to specific
+    directories — skill directories for reads, the session scratchpad for
+    writes — and only to files genuinely inside one of them. ``full_access``
+    is the ``--unsafe-full-access`` launch flag (see
+    ``WorkspaceConfig.full_access``), which retires the guard altogether.
+
+    The two travel together because every resolution needs both, and the pair
+    reads at a call site as one policy answer ("how far may this reach?")
+    rather than two unrelated arguments.
+    """
+
+    roots: tuple[Path, ...] = ()
+    full_access: bool = False
+
+
+# The default every caller that has no extra roots and no flag wants: the
+# workspace guard exactly as it was before either existed. A module-level
+# singleton because it is immutable and B008 forbids building one per call.
+WORKSPACE_ONLY = PathScope()
+
+
+def _resolve_unrestricted(root: Path, path: str) -> Path:
+    """``path`` resolved exactly as ``resolve_in_workspace`` would — symlinks and
+    ``..`` collapsed, a relative path anchored at the workspace root — but with
+    the containment check dropped. Only ever reached under ``--unsafe-full-access``
+    (``WorkspaceConfig.full_access``).
+
+    Anchoring at ``root`` rather than the process cwd is what keeps a relative
+    escape honest: from a workspace ``/home/u/proj``, ``../notes.md`` means
+    ``/home/u/notes.md``, the file the agent is plainly naming. Resolving it
+    against marim's own cwd — or against a bare ``/`` handed in as an extra root
+    — would silently land on ``/notes.md`` instead, which is the wrong file
+    without ever saying so."""
+    return (root.resolve() / path).resolve()
+
+
+def _resolve_in_scope(root: Path, path: str, scope: PathScope) -> Path:
     """Resolve ``path`` inside ``root``, or failing that inside one of
-    ``extra_roots``. The root-first ordering is load-bearing: a relative path
+    ``scope.roots``. The root-first ordering is load-bearing: a relative path
     always resolves against — and lands in — the workspace; only a path the
     workspace guard rejects (an absolute path outside it) may fall through to
     an extra root, so an extra root can never capture a relative workspace
     path. Shared by ``_safe_read``/``_safe_write``, which exist as named
     wrappers because *which* roots widen reads vs writes is a policy decision
-    their call sites should state by name."""
+    their call sites should state by name.
+
+    ``scope.full_access`` removes the guard entirely for whatever the named
+    roots did not already cover. It is kept as the LAST fallback, after the
+    workspace and the extra roots, so the resolution a path gets is unchanged
+    by the flag wherever the guard would have allowed it anyway — the flag only
+    converts what used to be a refusal into a resolved path."""
     try:
         return resolve_in_workspace(root, path)
     except WorkspaceError as exc:
-        for extra in extra_roots:
+        for extra in scope.roots:
             try:
                 return resolve_in_workspace(extra, path)
             except WorkspaceError:
                 continue
+        if scope.full_access:
+            return _resolve_unrestricted(root, path)
         raise ModelRetry(str(exc)) from exc
 
 
-def _safe_read(root: Path, path: str, extra_read_roots: tuple[Path, ...]) -> Path:
+def _safe_read(root: Path, path: str, scope: PathScope) -> Path:
     """Resolve ``path`` for reading, permitting it if it stays inside ``root`` or
-    inside any of ``extra_read_roots``. The extra roots are read-only escape hatches
+    inside any of ``scope.roots``. Those extra roots are read-only escape hatches
     (e.g. skill directories that live outside the workspace) — they widen reads only,
-    never writes, and only to files genuinely inside one of them."""
-    return _resolve_with_extra_roots(root, path, extra_read_roots)
+    never writes, and only to files genuinely inside one of them.
+    ``scope.full_access`` lifts the guard altogether (see ``_resolve_in_scope``)."""
+    return _resolve_in_scope(root, path, scope)
 
 
-def _safe_write(root: Path, path: str, extra_write_roots: tuple[Path, ...]) -> Path:
+def _safe_write(root: Path, path: str, scope: PathScope) -> Path:
     """Resolve ``path`` for writing: inside ``root``, or inside one of
-    ``extra_write_roots`` (the session scratchpad) — see
-    ``_resolve_with_extra_roots`` for why the root-first ordering matters."""
-    return _resolve_with_extra_roots(root, path, extra_write_roots)
+    ``scope.roots`` (the session scratchpad) — see ``_resolve_in_scope`` for why
+    the root-first ordering matters, and what ``full_access`` lifts."""
+    return _resolve_in_scope(root, path, scope)
 
 
 def _render_line(prefix: str, length: int, line_no: int) -> tuple[str, bool]:
@@ -311,7 +360,7 @@ def read_file(
     path: str,
     offset: int = 1,
     limit: int | None = None,
-    extra_read_roots: tuple[Path, ...] = (),
+    scope: PathScope = WORKSPACE_ONLY,
     ledger: ReadLedger | None = None,
 ) -> "str | ImageRead":
     """Read a text file relative to the workspace root, returning numbered lines.
@@ -332,14 +381,16 @@ def read_file(
     A binary file (detected by a NUL byte in its first chunk, like grep) is not
     decoded — it returns a short "binary file" notice instead of mojibake.
 
-    ``extra_read_roots`` are additional directories a path may resolve into besides
-    the workspace (read-only) — used to let reads reach skill directories that live
-    outside the workspace."""
+    ``scope`` says how far the read may reach outside the workspace: its extra
+    roots are additional directories a path may resolve into (used to let reads
+    reach skill directories that live outside the workspace), and its
+    ``full_access`` flag drops the containment check entirely, so any readable
+    file on the host can be named by absolute path."""
     if offset < 1:
         raise ModelRetry("offset must be >= 1 (1-based line number).")
     if limit is not None and limit < 1:
         raise ModelRetry("limit must be >= 1.")
-    p = _safe_read(root, path, extra_read_roots)
+    p = _safe_read(root, path, scope)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     # An image is returned as raw bytes for the tool layer to wrap as
@@ -425,11 +476,12 @@ def write_file(
     path: str,
     content: str,
     ledger: ReadLedger | None = None,
-    extra_write_roots: tuple[Path, ...] = (),
+    scope: PathScope = WORKSPACE_ONLY,
 ) -> str:
     """Create or overwrite a file relative to the workspace root (or, by
-    absolute path, inside an extra write root such as the session scratchpad)."""
-    p = _safe_write(root, path, extra_write_roots)
+    absolute path, inside one of ``scope``'s extra write roots such as the
+    session scratchpad — or anywhere on the host under full access)."""
+    p = _safe_write(root, path, scope)
     # Read-before-edit applies only to *overwriting* an existing file (clobbering
     # content the agent may not have seen). Creating a brand-new file needs no
     # prior read — there's nothing to clobber.
@@ -522,14 +574,14 @@ def edit_file(
     path: str,
     edits: list[Edit],
     ledger: ReadLedger | None = None,
-    extra_write_roots: tuple[Path, ...] = (),
+    scope: PathScope = WORKSPACE_ONLY,
 ) -> str:
     """Apply a list of edits to one file, in order and all-or-nothing. Each edit
     sees the result of the previous one; the file is written only if all succeed.
     The file's existing line endings are preserved (a CRLF file stays CRLF)."""
     if not edits:
         raise ModelRetry("no edits given: pass at least one {old_string, new_string}.")
-    p = _safe_write(root, path, extra_write_roots)
+    p = _safe_write(root, path, scope)
     if not p.is_file():
         raise ModelRetry(f"not a file: {path}")
     # Editing always modifies existing content, so the read-before-edit guard

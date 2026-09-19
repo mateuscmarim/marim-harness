@@ -105,6 +105,29 @@ persists per session and can be switched live with
 the spawn call overrides it. Providers that don't support reasoning effort
 ignore the setting.
 
+### `with_full_access(enabled=True)`
+
+Lets the harness read and write anywhere on the host instead of only under the
+workspace root — the composition behind the CLI's `--unsafe-full-access` flag.
+Off by default, and it should stay off unless the embedder owns the whole
+machine the harness runs on.
+
+With it on, the workspace root stops being a boundary and becomes only a
+default: relative paths still resolve inside it, but `read_file`, `write_file`
+and `edit_file` accept any absolute path, and an external-CLI child in
+`Mode.auto` no longer escalates an out-of-workspace write to an approval
+prompt. The model is told so in its system prompt, so it uses the tools
+directly rather than routing around them through `bash`.
+
+It grants *reach*, never *approval*: `Mode.ask` still prompts for every
+mutation and `Mode.plan` still refuses them. Pair it with `Mode.auto` and no
+approver and you have an agent that can rewrite anything the user can,
+unattended — which is the whole point of the flag and the whole risk of it.
+See [Trust and permissions](guides/trust.md#turning-the-guard-off---unsafe-full-access).
+
+Calling it alongside `with_deps` is a `BuilderError`, not a silent no-op: set
+`deps.workspace.full_access` on your own `Deps` instead.
+
 ### Structured output
 
 `with_output_type(schema)` (a pydantic `BaseModel` subclass or an

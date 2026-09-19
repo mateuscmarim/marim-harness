@@ -252,6 +252,32 @@ def _scratchpad(ctx: RunContext[Deps]) -> str:
     return _scratchpad_block(ctx)
 
 
+def _full_access(ctx: RunContext[Deps]) -> str:
+    """Tell the model its path guard is off, or "" in the normal case.
+
+    Without this the tool docstrings actively mislead: they say a path is
+    "relative to the workspace root, or an absolute path inside the session
+    scratchpad", which under ``--unsafe-full-access`` is no longer the whole
+    truth. A model that believes the guard is still there will route around it
+    through ``bash`` — losing the read-before-edit ledger and the diff cards —
+    for work it was just granted the tools to do directly.
+
+    The caution is part of the text on purpose. Reach this wide is the user
+    saying "you may", not "you should"; the workspace is still where the work
+    belongs unless the task names somewhere else."""
+    if not ctx.deps.workspace.full_access:
+        return ""
+    return (
+        "This session was launched with --unsafe-full-access: read_file, "
+        "write_file and edit_file accept ANY absolute path on this machine, "
+        "not only paths under the workspace root. Relative paths still resolve "
+        "inside the workspace, and that is still where your work belongs — "
+        "reach outside it only for files the task actually names, and never "
+        "write outside it incidentally (caches, config, dotfiles in the home "
+        "directory) without saying what you are doing and why."
+    )
+
+
 def _plugin_instructions(ctx: RunContext[Deps]) -> str:
     # The live TrustState on ctx.deps carries this turn's resolved trust
     # decision (store-aware, resolved once by bootstrap) so a cloned repo's
@@ -347,6 +373,11 @@ def register_instructions(
     - ``_scratchpad`` (advertises that ``write_file``/``edit_file`` writes to
       the scratchpad bypass approval) is gated on ``groups.files_write``.
 
+    ``_full_access`` registers unconditionally: it describes where the *path
+    guard* stands, which is true of ``read_file`` alone just as much as of the
+    write tools, and it returns "" unless the session actually carries the
+    flag — so an ordinary harness pays one empty closure for it.
+
     ``groups=None`` means "all groups on" — the CLI/bootstrap default, and
     also what a bare ``HarnessConfig()`` gets when constructed directly
     (matching ``BuiltinToolProvider``'s own None-means-all convention, so the
@@ -400,6 +431,7 @@ def register_instructions(
         (global_instructions, _global_instructions),
         (project_instructions, _project_instructions),
         (files_write_on, _scratchpad),
+        (True, _full_access),
         (global_instructions, _plugin_instructions),
         (memory_on, _memory_indexes),
         (skills_on, _skill_index),

@@ -88,7 +88,7 @@ from ..claude.process import (
 from ..claude.protocol import CLOSED, ControlError, ProcessClosed
 from ..claude.quota import quota_from_usage
 from ..runtime.context import strip_turn_context
-from ..runtime.permissions import Mode, UiSeams
+from ..runtime.permissions import Mode, Reach, UiSeams
 from ..usage import COST_DETAIL_KEY, SUBSCRIPTION_DETAIL_KEY
 from .cli_input import (
     attachment_content,
@@ -929,8 +929,11 @@ class ClaudeCliModel(ExternalCliModel):
     def _make_broker(self) -> ClaudeApprovalBroker:
         return ClaudeApprovalBroker(
             mode_getter=self._mode,
-            workspace_root=Path(self.cwd),
-            scratchpad_getter=self._scratchpad,
+            reach=Reach(
+                root=Path(self.cwd),
+                scratchpad=self._scratchpad,
+                full_access=self.full_access,
+            ),
             ui=UiSeams(request_approval=self.request_approval, ask_user=self.ask_user),
         )
 

@@ -10,8 +10,9 @@ protect you from. For the short version and how to report a vulnerability, see
 The one-paragraph summary: gated tools go through an approval flow driven by the
 current **mode** (`auto` / `ask` / `plan`); the `bash` tool additionally honors a
 regex **command policy**; file tools are **path-confined** to the workspace (plus
-the session scratchpad); and anything a cloned repo could use to run code on
-startup — project hooks, project MCP servers, project plugins, third-party LSP
+the session scratchpad) unless the run was launched with the one flag that
+retires that guard, **`--unsafe-full-access`**; and anything a cloned repo could
+use to run code on startup — project hooks, project MCP servers, project plugins, third-party LSP
 manifests, project skills/agents — loads only behind the
 **`MARIM_TRUST_PROJECT_HOOKS`** gate.
 
@@ -157,7 +158,55 @@ Two deliberate widenings, one per direction
 error — `path outside workspace: <path>` — before any filesystem access. The
 model sees the message and can correct itself; nothing outside the root is read
 or written by these tools. (The `bash` tool is *not* path-confined — see the
-honest limits below.)
+honest limits below.) The one way to lift this is the launch flag below.
+
+## Turning the guard off: `--unsafe-full-access`
+
+There is one launch-time flag that retires the path guard entirely:
+
+```bash
+marim --unsafe-full-access                 # interactive
+marim -p "fix the build" --unsafe-full-access
+```
+
+With it on, `read_file`, `write_file` and `edit_file` accept **any** absolute
+path this user can reach, and an external CLI child running in `auto` mode no
+longer escalates an out-of-workspace write to an approval prompt
+(`decide_external` in `src/marim_harness/runtime/permissions.py`). The run
+prints a banner saying so — on stderr headless, as a transcript notice in the
+TUI — and the TUI status bar carries a red `full-access` chip for as long as the
+process lives.
+
+What it does **not** do is grant approval. `ask` still prompts for every
+mutation, in the workspace and outside it alike; `plan` still refuses them. It
+widens *reach*, not permission — so the useful (and dangerous) combination is
+`--unsafe-full-access` together with `--mode auto` and nobody watching, which is
+an agent that can rewrite anything you can.
+
+Two properties are deliberate:
+
+- **The workspace is still the default.** A relative path resolves inside the
+  workspace exactly as before, anchored at the root rather than the process cwd,
+  so `../notes.md` means the workspace's sibling — not `/notes.md`. Turning the
+  flag on can only convert a refusal into a resolved path; it never moves a
+  write that already worked.
+- **Nothing can turn it on but you, on this launch.** There is no `MARIM_*`
+  variable for it, nothing persists it on the session, no `/command` and no
+  settings row, and `marim serve` never passes it — a daemon reachable over the
+  network must not be able to hand out the whole filesystem, so attaching a TUI
+  to a daemon-owned session says the flag was ignored rather than pretending it
+  applied. It dies with the process.
+
+The model is told, in its system prompt, that the guard is off and that the
+workspace is still where the work belongs. Without that it would keep believing
+the tool docstrings ("relative to the workspace root") and route around the
+tools through `bash` — losing the read-before-edit ledger and the diff cards for
+work it had just been granted the tools to do directly.
+
+Embedders reach the same composition through
+`HarnessBuilder.with_full_access()` ([embedding](../embedding.md)); it is
+refused at build time when `with_deps` supplies an explicit `Deps`, rather than
+being silently ignored.
 
 ## The project trust gate
 

@@ -21,6 +21,14 @@ def scratch_roots(ctx: RunContext[Deps]) -> tuple[Path, ...]:
     return (p,) if p is not None else ()
 
 
+def write_scope(ctx: RunContext[Deps]) -> fs.PathScope:
+    """How far a write may reach beyond the workspace: the session scratchpad,
+    plus this launch's ``--unsafe-full-access`` flag (see
+    ``WorkspaceConfig.full_access``). Assembled per tool call, like
+    ``scratch_roots`` itself."""
+    return fs.PathScope(roots=scratch_roots(ctx), full_access=ctx.deps.workspace.full_access)
+
+
 async def read_file(
     ctx: RunContext[Deps], path: str, offset: int = 1, limit: int | None = None
 ) -> str | BinaryContent:
@@ -53,7 +61,10 @@ async def read_file(
         path,
         offset=offset,
         limit=limit,
-        extra_read_roots=skill_roots + scratch_roots(ctx),
+        scope=fs.PathScope(
+            roots=skill_roots + scratch_roots(ctx),
+            full_access=ctx.deps.workspace.full_access,
+        ),
         ledger=ctx.deps.reads,
     )
     if isinstance(out, str):

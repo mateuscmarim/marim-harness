@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from marim_harness.interfaces.cli.default_cmd import _build_parser
+from marim_harness.runtime.permissions import LaunchOptions
 
 
 def test_think_flag_sets_env():
@@ -223,7 +224,7 @@ def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_p
 
     seen: dict = {}
 
-    def fake_build(workspace, *, mode, session_id, resume):
+    def fake_build(workspace, *, launch, session_id, resume):
         seen["session_id"] = session_id
         seen["resume"] = resume
         return object()
@@ -235,7 +236,7 @@ def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_p
     target = "20260101-000000-tttttt"
     _write_session(tmp_path, target)
     harness, claim = default_cmd._claim_and_build(
-        tmp_path, target=target, mode=None, kind="headless", err=err
+        tmp_path, target=target, launch=LaunchOptions(), kind="headless", err=err
     )
     assert harness is not None and err.getvalue() == ""
     assert seen == {"session_id": target, "resume": False}
@@ -245,7 +246,7 @@ def test_claim_and_build_never_lets_build_harness_look_up_latest_unclaimed(tmp_p
     # No target (fresh or mid-race deleted): a fresh build, never a second
     # unclaimed lookup.
     harness, claim = default_cmd._claim_and_build(
-        tmp_path, target=None, mode=None, kind="headless", err=err
+        tmp_path, target=None, launch=LaunchOptions(), kind="headless", err=err
     )
     assert harness is not None
     assert seen == {"session_id": None, "resume": False}
@@ -349,7 +350,7 @@ def test_stale_daemon_notice_is_none_without_a_daemon_predecessor():
 
 def test_start_tui_hands_the_stale_daemon_notice_to_the_app(tmp_path, monkeypatch):
     """The interactive path: stderr is painted over by Textual, so the same
-    line travels into the app through _launch_tui's ``notice`` keyword."""
+    line travels into the app through _launch_tui's ``notices`` keyword."""
     from marim_harness.interfaces.cli import default_cmd
     from marim_harness.interfaces.cli import headless as headless_mod
     from marim_harness.interfaces.cli.default_cmd import run_default
@@ -369,8 +370,9 @@ def test_start_tui_hands_the_stale_daemon_notice_to_the_app(tmp_path, monkeypatc
     err = io.StringIO()
     code = run_default([str(tmp_path), "--resume"], stdin=_TtyStdin(), out=io.StringIO(), err=err)
     assert code == 0
-    assert launched["notice"] is not None and "stale" in launched["notice"]
-    assert launched["notice"] in err.getvalue()
+    (notice,) = launched["notices"]
+    assert "stale" in notice
+    assert notice in err.getvalue()
 
 
 def test_claim_target_refuses_vanished_session(tmp_path):

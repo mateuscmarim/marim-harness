@@ -73,6 +73,8 @@ class LinkInfo(Protocol):
     @property
     def mode(self) -> str: ...
     @property
+    def full_access(self) -> bool: ...
+    @property
     def model_id(self) -> str | None: ...
     @property
     def model_label(self) -> str: ...
@@ -165,6 +167,10 @@ class LocalLinkInfo:
     @property
     def mode(self) -> str:
         return self._harness.mode.value
+
+    @property
+    def full_access(self) -> bool:
+        return self._harness.deps.workspace.full_access
 
     @property
     def model_id(self) -> str | None:
