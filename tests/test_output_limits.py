@@ -633,6 +633,52 @@ async def test_text_boundaries(tmp_path, size):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("size", [10000, 35000, 59999, 60000])
+async def test_skill_activation_passes_through_whole(tmp_path, size):
+    """A skill body is instructions the model must follow in full: activate_skill
+    keeps returns under SKILL_PASSTHROUGH_CHARS intact where every other tool
+    would already have spilled at 10k, and still spills a pathological one."""
+    from pydantic_ai_harness.tool_output_limits import LocalFileStore
+
+    from marim_harness.runtime.output_limits import SKILL_PASSTHROUGH_CHARS, OutputStorage
+
+    cap = OutputStorage(root=tmp_path, scratchpad=None).capability()
+    text = "s" * size
+
+    async def reduce(tool_name):
+        return await cap.after_tool_execute(
+            _ctx(),
+            call=ToolCallPart(tool_name, {}, tool_call_id=f"call-{tool_name}"),
+            tool_def=ToolDefinition(name=tool_name),
+            args={},
+            result=text,
+        )
+
+    skill = await reduce("activate_skill")
+    other = await reduce("read_skill_file")
+    # The carve-out is per tool: bundled references keep the general policy.
+    assert isinstance(other, ToolReturn) and len(other.return_value) < size
+    if size < SKILL_PASSTHROUGH_CHARS:
+        assert skill == text
+    else:
+        assert isinstance(skill, ToolReturn)
+        stored = await LocalFileStore(tmp_path).read(skill.metadata["overflow_handle"])
+        assert stored == text.encode()
+
+    agent = Agent(TestModel(call_tools=["activate_skill"]), capabilities=[cap])
+
+    @agent.tool_plain
+    def activate_skill(name: str = "") -> str:
+        return text
+
+    (model_return,) = _returns(await agent.run("go"))
+    if size < SKILL_PASSTHROUGH_CHARS:
+        assert model_return.content == text
+    else:
+        assert "read_tool_result" in model_return.content
+
+
+@pytest.mark.anyio
 async def test_storage_failure(tmp_path, monkeypatch):
     from pydantic_ai_harness.tool_output_limits import LocalFileStore
 

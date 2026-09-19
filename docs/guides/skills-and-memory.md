@@ -77,6 +77,11 @@ metadata: {}                      # optional free-form dict
 The full instructions the agent follows once the skill is activated.
 ```
 
+The body reaches the model whole on activation — up to 60,000 characters,
+well past the general 10,000-character [tool-output spill](tool-output.md) —
+because a skill is instructions to follow, not data to page through. Files the
+skill bundles (`read_skill_file`) use the general policy.
+
 Only `description` is required. A malformed skill — no `SKILL.md`, bad YAML,
 missing description, a `name` that doesn't match the directory, or an illegal
 directory name — is silently skipped, never fatal.
