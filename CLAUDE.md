@@ -39,7 +39,7 @@ an argument to an already-wide function or dropping coverage will turn it red
 without breaking `ci.yml`. See `docs/quality-gate.md` to run it locally.
 
 Set `MARIM_DEBUG=1` for DEBUG logging. Provider config lives in env vars / `.env`
-(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`|`codex-cli`|`zen`|`zen-go`), `MARIM_MODEL`,
+(see `.env.example`): `MARIM_PROVIDER` (`openrouter`|`local`|`google`|`claude-cli`|`openai-codex`|`zen`|`zen-go`), `MARIM_MODEL`,
 `OPENROUTER_API_KEY`, etc. Default provider is OpenRouter, default model
 `anthropic/claude-sonnet-4-6`. `claude-cli` runs the conversation on one long-lived bidirectional `claude`
 process (`claude/` package: `protocol.py` stream-json client, `process.py`
@@ -54,20 +54,17 @@ requests before the next turn (a same-provider `/model` keeps the process). Clau
 screen, for both the main-loop provider and `backend: claude-cli` spawns. The
 session id persists as `claude-cli:<id>` on `SessionStore.cli_thread_id` and
 resumes after idle close/crash/restart; interrupted spawns resume the same way
-(the id is checkpointed in the spawn's sidecar meta). `codex-cli` delegates each turn to
-`codex app-server` (JSON-RPC over stdio, `codex/` package) — one app-server
-per marim *process*, a module-level singleton shared by the main-loop model
-and every `backend: codex-cli` spawn (not one process per session; a
-`marim serve` daemon holding many sessions shares a single app-server).
-Codex runs its own tools in its own sandbox, but its approval and
-user-input requests are brokered back through marim's approval panel /
-ask-user flow (`codex/approvals.py`), so `auto`/`ask`/`plan` keep their
-meaning. The thread id persists on the session (`SessionStore.cli_thread_id`)
-and resumes via `thread/resume`. Codex's own collab sub-agents are adopted as
-child threads of the parent's handle (`CodexServer.adopt_thread`; same queue,
-same broker) and `codex/collab.py`'s `CollabRouter` renders them as first-class
-`spawn_agent` cards — the Codex counterpart of the claude-cli demux — for
-both the main-loop provider and `backend: codex-cli` spawns.
+(the id is checkpointed in the spawn's sidecar meta). `openai-codex` runs
+native Pydantic AI agents on a Codex subscription, reusing `codex login`
+credentials through upstream OAuth (`config/codex_subscription.py`; the
+account's visible model catalog in `config/codex_subscription_catalog.py`,
+MCP schema-reference normalization in `config/codex_schema.py`) — marim owns
+its tools, permissions, MCP, sub-agents and sessions there, exactly as for
+any API provider. The former `codex-cli` executor (app-server, collab
+sub-agents, `backend: codex-cli` spawns) is retired: a saved `codex-cli`
+selection or an interrupted `codex-cli` child fails with migration guidance
+(`config/retired.py`) instead of silently falling back, while old transcripts
+stay readable.
 
 ## Architecture
 
@@ -189,10 +186,7 @@ to avoid import cycles.
   token-budget compaction helpers.)
 - `subagents/` — `runner.py` (`SubagentRunner`: spawn-lifecycle coordinator),
   `run_driver.py` (model-loop retry/overflow/contention recovery),
-  `cli_spawn.py` (`backend: claude-cli` execute/resume orchestration: builds the spawn's approval broker), `codex_spawn.py`
-  (`backend: codex-cli` spawns: one Codex thread per spawn on the shared
-  app-server, read-only sandbox unless the agent has a mutating tool, native
-  `outputSchema`), `masking.py`
+  `cli_spawn.py` (`backend: claude-cli` execute/resume orchestration: builds the spawn's approval broker), `masking.py`
   (per-spawn context masking of stale tool observations), and `cli_backend.py`
   (the `ClaudeCliRunner` that drives one `ClaudeProcess` per spawn). Re-exported as
   `marim_harness.subagents.SubagentRunner`. Native spawns pick a model by **tier** (`cheap`/`med`/`high`, in `subagents/tiers.py`): resolved from the spawner's `tier=` override → the spec's `tier:` frontmatter → tool reach (read-only→cheap, mutating→high), mapped to `MARIM_SUBAGENT_TIER_*`; unset tiers inherit the main model and a `model=` slug stays a bounded escape hatch.
