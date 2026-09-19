@@ -94,8 +94,9 @@ model won't auto-activate them). When a task matches a description, the model
 calls:
 
 - `activate_skill(name)` — returns the full `SKILL.md` body plus the skill's
-  absolute directory. Oversized bodies are spilled to a file with a preview
-  rather than flooding the context.
+  absolute directory. The body arrives whole below 60,000 characters; only a
+  pathological one is spilled to a file with a preview (see
+  [Large tool output](tool-output.md)).
 - `read_skill_file(name, path)` — reads a bundled file (e.g.
   `references/REFERENCE.md`) by path relative to the skill directory, guarded
   against escaping it. Works for global skills outside the workspace too.
